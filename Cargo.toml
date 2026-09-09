@@ -1,0 +1,53 @@
+[workspace]
+members = ["crates/wizard", "xtask"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Adrian Raduk"]
+edition = "2024"
+rust-version = "1.95.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+dead_code = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+alloc_instead_of_core = "warn"
+allow_attributes = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+std_instead_of_alloc = "warn"
+std_instead_of_core = "warn"
+str_to_string = "warn"
+implicit_clone = "warn"
+suboptimal_flops = "warn"
+unnecessary_self_imports = "warn"
+unused_trait_names = "warn"
+unwrap_used = "warn"
+use_self = "warn"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+clap = "4.5.60"
+semver = "1.0.28"
+serde_json = "1.0.151"
+tauri = "2.11.5"
+tauri-build = "2.6.3"
+tauri-plugin-updater = { version = "2.11.0", default-features = false, features = ["rustls-tls"] }
+tempfile = "3.27.0"
+
+# Read the optimization guideline for more details:
+# https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
