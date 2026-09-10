@@ -1,5 +1,6 @@
 use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt as _};
 
+// TODO: errors?
 async fn install_available_update(app: tauri::AppHandle) {
     let updater = match app.updater() {
         Ok(updater) => updater,
