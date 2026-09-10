@@ -41,8 +41,10 @@
   },
   "plugins": {
     "updater": {
-      "endpoints": [],
-      "pubkey": ""
+      "endpoints": [
+        "https://github.com/CoreInfraAI/wizard/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyMEE1QkNBNDdCREYyQUEKUldTcThyMUh5bHNLTWtyVU5LYWtZcmI4VE1QRTZvbHF6K1daUHByNDZsd2VIUHBjWWV5cFVrazgK"
     }
   }
 }

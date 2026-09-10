@@ -131,7 +131,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/wizard
-          tauriScript: npm run tauri --prefix ff-wizard-ui --
+          tauriScript: node ff-wizard-ui/node_modules/@tauri-apps/cli/tauri.js
           args: --target ${{ matrix.target }}
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: ${{ github.ref_name }}

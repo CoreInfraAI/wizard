@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -18,6 +18,7 @@ mod utils;
 const TEST_PRIVATE_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5TmlGT0xMc0FVYnN1aXZzWHZlWU9Ra3FzcFp3R1IwNGVDdk8rTTZsRTlTQUFBQkFBQUFBQUFBQUFBQUlBQUFBQUxqTG12cnlGellHNHRkNWo4ejdhRUt5YzdlUmZQZFg1dys2WE1QVHI5YWx6WnA5aTI2SlZrdWtwVDZ0emFCcTRnKy9DWFRZc2UvbGFHelVvaUY2dDNTNzJKanJZYVkrSjN4MTlQMHJXUUQxODg4ZTZWOS91Q0dCV1JDMlBVbHlIRmFuUnRBT3lVNzA9Cg==";
 const TEST_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFREVCMTI0NjlGQzY5QkUKUldTK2FmeHBKTEhlN3N6SWd1MG9QMU1XdmlydzhROEM3Q1dwdjhUbEFVbFBEV0hTczhKcCtBV3QK";
 const TEST_ENDPOINT: &str = "http://127.0.0.1:49173/latest.json";
+const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
 
 #[derive(Parser)]
 /// The task runner
@@ -28,7 +29,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run with `cargo tauri dev` and the test updater.
+    /// Run with `cargo tauri dev` and the dev updater channel.
     Run {
         /// Use the standard Cargo release profile.
         #[arg(long)]
@@ -54,8 +55,6 @@ enum Commands {
     },
     /// Run formatting, compilation, lint, and test checks for the workspace.
     Ci,
-    /// Build signed release bundles and updater artifacts for publication.
-    BuildRelease,
     /// Print the current application version.
     Version,
 }
@@ -67,7 +66,6 @@ fn main() -> Result<()> {
         | Commands::App { release, .. }
         | Commands::UpdateServer { release } => *release,
         Commands::Ci | Commands::Version => false,
-        Commands::BuildRelease => true,
     };
     let paths = paths(release)?;
 
@@ -80,7 +78,6 @@ fn main() -> Result<()> {
         } => run_app(&paths, reinstall, console, release),
         Commands::UpdateServer { release } => update_server(&paths, release),
         Commands::Ci => run_ci(&paths),
-        Commands::BuildRelease => build_release(&paths),
         Commands::Version => print_version(&paths),
     }
 }
@@ -138,7 +135,7 @@ fn generate_config(
     version: &Version,
     create_updater_artifacts: bool,
     updater_endpoint: &str,
-    updater_public_key: &str,
+    updater_public_key: Option<&str>,
     allow_insecure_updater: bool,
 ) -> Result<()> {
     let mut config: Value = serde_json::from_slice(
@@ -147,11 +144,12 @@ fn generate_config(
     )?;
     config["version"] = json!(version.to_string());
     config["bundle"]["createUpdaterArtifacts"] = json!(create_updater_artifacts);
-    config["plugins"]["updater"] = json!({
-        "endpoints": [updater_endpoint],
-        "pubkey": updater_public_key,
-        "dangerousInsecureTransportProtocol": allow_insecure_updater,
-    });
+    config["plugins"]["updater"]["endpoints"] = json!([updater_endpoint]);
+    if let Some(updater_public_key) = updater_public_key {
+        config["plugins"]["updater"]["pubkey"] = json!(updater_public_key);
+    }
+    config["plugins"]["updater"]["dangerousInsecureTransportProtocol"] =
+        json!(allow_insecure_updater);
     fs::write(output, serde_json::to_vec_pretty(&config)?)
         .with_context(|| format!("failed to write {}", output.display()))
 }
@@ -212,7 +210,7 @@ fn next_update_version(paths: &Paths) -> Result<Version> {
     .context("failed to construct update version")
 }
 
-/// Runs the application through Tauri with the local test updater configured.
+/// Runs the application through Tauri with the dev updater channel configured.
 fn run_dev(paths: &Paths, release: bool) -> Result<()> {
     let configs = temporary_configs()?;
     let config = configs.path().join("tauri-dev.conf.json");
@@ -221,9 +219,9 @@ fn run_dev(paths: &Paths, release: bool) -> Result<()> {
         &config,
         &stable_version(paths)?,
         false,
-        TEST_ENDPOINT,
-        TEST_PUBLIC_KEY,
-        true,
+        DEV_ENDPOINT,
+        None,
+        false,
     )?;
 
     let mut command = Command::new("cargo");
@@ -248,11 +246,11 @@ fn run_app(paths: &Paths, reinstall: bool, console: bool, release: bool) -> Resu
             &config,
             &stable_version(paths)?,
             false,
-            TEST_ENDPOINT,
-            TEST_PUBLIC_KEY,
-            true,
+            DEV_ENDPOINT,
+            None,
+            false,
         )?;
-        build_app(paths, Some(&config), false, release, true)?;
+        build_app(paths, &config, false, release)?;
         install_app(paths)?;
     }
 
@@ -266,39 +264,23 @@ fn run_app(paths: &Paths, reinstall: bool, console: bool, release: bool) -> Resu
     require_success(command.status()?, "failed to launch application")
 }
 
-/// Builds Tauri bundles, optionally limiting output to the app bundle and using the test key.
-fn build_app(
-    paths: &Paths,
-    custom_config: Option<&Path>,
-    test_signing: bool,
-    release: bool,
-    app_bundle_only: bool,
-) -> Result<()> {
+/// Builds the app bundle, optionally signing updater artifacts with the test key.
+fn build_app(paths: &Paths, config: &Path, test_signing: bool, release: bool) -> Result<()> {
     let mut command = Command::new("cargo");
     command.arg("tauri").arg("build");
     if !release {
         command.arg("--debug");
     }
-    if app_bundle_only {
-        command.args(["--bundles", "app"]);
-    }
-    if let Some(config) = custom_config {
-        command.arg("--config").arg(config);
-    }
-    command.current_dir(&paths.wizard);
+    command
+        .args(["--bundles", "app", "--config"])
+        .arg(config)
+        .current_dir(&paths.wizard);
     if test_signing {
         command
             .env("TAURI_SIGNING_PRIVATE_KEY", TEST_PRIVATE_KEY)
             .env("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "");
     }
     require_success(command.status()?, "cargo tauri build")
-}
-
-/// Builds production bundles and updater artifacts using the checked-in Tauri config.
-fn build_release(paths: &Paths) -> Result<()> {
-    env::var_os("TAURI_SIGNING_PRIVATE_KEY")
-        .context("TAURI_SIGNING_PRIVATE_KEY must be set for build-release")?;
-    build_app(paths, None, false, true, false)
 }
 
 /// Atomically replaces the application installed in `/Applications` with the built bundle.
@@ -342,7 +324,7 @@ fn update_server(paths: &Paths, release: bool) -> Result<()> {
         &version,
         true,
         TEST_ENDPOINT,
-        TEST_PUBLIC_KEY,
+        Some(TEST_PUBLIC_KEY),
         true,
     )?;
 
@@ -350,7 +332,7 @@ fn update_server(paths: &Paths, release: bool) -> Result<()> {
     remove_old_updater_archives(&paths.bundle_dir)?;
 
     println!("Building ff-wizard {version}...");
-    build_app(paths, Some(&config), true, release, true)?;
+    build_app(paths, &config, true, release)?;
     let archive = find_update_archive(&paths.bundle_dir)?;
     write_latest_json(&serve_dir, &version, &archive)?;
 

@@ -142,10 +142,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.DEV_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/wizard
-          tauriScript: npm run tauri --prefix ff-wizard-ui --
+          tauriScript: node ff-wizard-ui/node_modules/@tauri-apps/cli/tauri.js
           args: >-
             --target ${{ matrix.target }}
-            --config '{"version":"${{ needs.create-release.outputs.version }}"}'
+            --config '{"version":"${{ needs.create-release.outputs.version }}","plugins":{"updater":{"endpoints":["https://coreinfraai.github.io/wizard/latest-dev.json"]}}}'
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: ${{ needs.create-release.outputs.tag }}
           releaseDraft: true
@@ -168,9 +168,44 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         run: |
-          release_json="$(
-            gh api --method PATCH \
-              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-              -F draft=false \
-              -F prerelease=true
-          )"
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -F draft=false \
+            -F prerelease=true
+
+  publish-update-channel:
+    name: Publish dev updater channel
+    needs:
+      - create-release
+      - publish-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Download updater metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          mkdir site
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json \
+            --dir site
+          mv site/latest.json site/latest-dev.json
+          jq --exit-status '.version and (.platforms | length > 0)' site/latest-dev.json >/dev/null
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: site
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
