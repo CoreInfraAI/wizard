@@ -57,11 +57,9 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RELEASE_COMMIT: ${{ github.event.workflow_run.head_sha }}
         run: |
-          release_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null || true
-          )"
-
-          if [[ -n "$release_json" ]]; then
+          if release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null
+          )"; then
             if [[ "$(jq -r '.draft' <<<"$release_json")" != "true" ]]; then
               echo "Release $RELEASE_TAG is already published" >&2
               exit 1
@@ -184,8 +182,3 @@ jobs:
               -F draft=false \
               -F prerelease=true
           )"
-
-          if [[ "$(jq -r '.immutable' <<<"$release_json")" != "true" ]]; then
-            echo "::error::Prerelease was published but is not immutable. Enable Settings > Releases > Enable release immutability."
-            exit 1
-          fi

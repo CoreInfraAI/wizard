@@ -41,11 +41,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          release_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" 2>/dev/null || true
-          )"
-
-          if [[ -n "$release_json" ]]; then
+          if release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" 2>/dev/null
+          )"; then
             if [[ "$(jq -r '.draft' <<<"$release_json")" != "true" ]]; then
               echo "Release ${GITHUB_REF_NAME} is already published" >&2
               exit 1
