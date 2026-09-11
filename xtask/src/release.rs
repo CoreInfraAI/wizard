@@ -10,6 +10,7 @@ use crate::utils::{
 };
 
 const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
+const DEV_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyMEE1QkNBNDdCREYyQUEKUldTcThyMUh5bHNLTWtyVU5LYWtZcmI4VE1QRTZvbHF6K1daUHByNDZsd2VIUHBjWWV5cFVrazgK";
 
 /// Finds or creates the draft release used by the release workflow.
 pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
@@ -161,12 +162,17 @@ pub(crate) fn build(paths: &Paths, dev: bool, target: &str, output: &Path) -> Re
     let dev_config = dev.then(|| {
         json!({
             "version": version.to_string(),
-            "plugins": { "updater": { "endpoints": [DEV_ENDPOINT] } },
+            "plugins": {
+                "updater": {
+                    "endpoints": [DEV_ENDPOINT],
+                    "pubkey": DEV_PUBLIC_KEY,
+                },
+            },
         })
         .to_string()
     });
     let bundles: &[&str] = match target {
-        "aarch64-apple-darwin" | "x86_64-apple-darwin" => &["dmg"],
+        "aarch64-apple-darwin" | "x86_64-apple-darwin" => &["app", "dmg"],
         "x86_64-unknown-linux-gnu" => &["appimage", "deb", "rpm"],
         "x86_64-pc-windows-msvc" => &["nsis"],
         _ => bail!("unsupported release target: {target}"),

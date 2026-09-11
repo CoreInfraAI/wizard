@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use semver::Version;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::utils::{
     Paths, files_recursively, remove_path, require_success, stable_version, temporary_configs,
@@ -19,17 +19,16 @@ const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json
 
 /// Runs the application through Tauri with the dev updater channel configured.
 pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
-    let configs = temporary_configs()?;
-    let config = configs.path().join("tauri-dev.conf.json");
-    generate_config(
-        paths,
-        &config,
-        &stable_version(paths)?,
-        false,
-        DEV_ENDPOINT,
-        None,
-        false,
-    )?;
+    let config = json!({
+        "bundle": { "createUpdaterArtifacts": false },
+        "plugins": {
+            "updater": {
+                "endpoints": [DEV_ENDPOINT],
+                "dangerousInsecureTransportProtocol": false,
+            },
+        },
+    })
+    .to_string();
 
     let mut command = Command::new("cargo");
     command.arg("tauri").arg("dev");
@@ -37,8 +36,7 @@ pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
         command.arg("--release");
     }
     command
-        .arg("--config")
-        .arg(&config)
+        .args(["--config", &config])
         .current_dir(&paths.wizard);
     require_success(command.status()?, "cargo tauri dev")
 }
@@ -46,17 +44,16 @@ pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
 /// Installs the application when needed and launches it directly or via `LaunchServices`.
 pub(crate) fn app(paths: &Paths, reinstall: bool, console: bool, release: bool) -> Result<()> {
     if reinstall || !paths.installed_executable.is_file() {
-        let configs = temporary_configs()?;
-        let config = configs.path().join("tauri-dev.conf.json");
-        generate_config(
-            paths,
-            &config,
-            &stable_version(paths)?,
-            false,
-            DEV_ENDPOINT,
-            None,
-            false,
-        )?;
+        let config = json!({
+            "bundle": { "createUpdaterArtifacts": false },
+            "plugins": {
+                "updater": {
+                    "endpoints": [DEV_ENDPOINT],
+                    "dangerousInsecureTransportProtocol": false,
+                },
+            },
+        })
+        .to_string();
         build_app(paths, &config, false, release)?;
         install_app(paths)?;
     }
@@ -75,17 +72,19 @@ pub(crate) fn app(paths: &Paths, reinstall: bool, console: bool, release: bool) 
 pub(crate) fn update_server(paths: &Paths, release: bool) -> Result<()> {
     let version = next_update_version(paths)?;
     let temporary = temporary_configs()?;
-    let config = temporary.path().join("tauri-update.conf.json");
     let serve_dir = temporary.path().join("server");
-    generate_config(
-        paths,
-        &config,
-        &version,
-        true,
-        TEST_ENDPOINT,
-        Some(TEST_PUBLIC_KEY),
-        true,
-    )?;
+    let config = json!({
+        "version": version.to_string(),
+        "bundle": { "createUpdaterArtifacts": true },
+        "plugins": {
+            "updater": {
+                "endpoints": [TEST_ENDPOINT],
+                "pubkey": TEST_PUBLIC_KEY,
+                "dangerousInsecureTransportProtocol": true,
+            },
+        },
+    })
+    .to_string();
 
     fs::create_dir(&serve_dir)?;
     remove_old_updater_archives(&paths.bundle_dir)?;
@@ -113,32 +112,6 @@ pub(crate) fn update_server(paths: &Paths, release: bool) -> Result<()> {
         .arg(&serve_dir)
         .current_dir(&paths.workspace);
     require_success(command.status()?, "local update server")
-}
-
-/// Writes a temporary Tauri config with the requested version and updater.
-fn generate_config(
-    paths: &Paths,
-    output: &Path,
-    version: &Version,
-    create_updater_artifacts: bool,
-    updater_endpoint: &str,
-    updater_public_key: Option<&str>,
-    allow_insecure_updater: bool,
-) -> Result<()> {
-    let mut config: Value = serde_json::from_slice(
-        &fs::read(&paths.tauri_config)
-            .with_context(|| format!("failed to read {}", paths.tauri_config.display()))?,
-    )?;
-    config["version"] = json!(version.to_string());
-    config["bundle"]["createUpdaterArtifacts"] = json!(create_updater_artifacts);
-    config["plugins"]["updater"]["endpoints"] = json!([updater_endpoint]);
-    if let Some(updater_public_key) = updater_public_key {
-        config["plugins"]["updater"]["pubkey"] = json!(updater_public_key);
-    }
-    config["plugins"]["updater"]["dangerousInsecureTransportProtocol"] =
-        json!(allow_insecure_updater);
-    fs::write(output, serde_json::to_vec_pretty(&config)?)
-        .with_context(|| format!("failed to write {}", output.display()))
 }
 
 /// Reads the currently installed application's version from its macOS property list.
@@ -185,15 +158,14 @@ fn next_update_version(paths: &Paths) -> Result<Version> {
 }
 
 /// Builds the app bundle, optionally signing updater artifacts with the test key.
-fn build_app(paths: &Paths, config: &Path, test_signing: bool, release: bool) -> Result<()> {
+fn build_app(paths: &Paths, config: &str, test_signing: bool, release: bool) -> Result<()> {
     let mut command = Command::new("cargo");
     command.arg("tauri").arg("build");
     if !release {
         command.arg("--debug");
     }
     command
-        .args(["--bundles", "app", "--config"])
-        .arg(config)
+        .args(["--bundles", "app", "--config", config])
         .current_dir(&paths.wizard);
     if test_signing {
         command
