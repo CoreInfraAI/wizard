@@ -9,35 +9,22 @@ use crate::utils::{
     require_success, stable_version,
 };
 
+const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
+
 /// Finds or creates the draft release used by the release workflow.
 pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
     let repository = required_env("GITHUB_REPOSITORY")?;
     let commit = required_env("GITHUB_SHA")?;
-    let stable = stable_version(paths)?;
-    let (version, tag) = if dev {
-        let run_number: u64 = required_env("GITHUB_RUN_NUMBER")?
-            .parse()
-            .context("GITHUB_RUN_NUMBER must be an integer")?;
-        if run_number > 65_535 {
-            bail!("GITHUB_RUN_NUMBER exceeds the MSI limit of 65535");
-        }
-        let patch = stable
-            .patch
-            .checked_add(1)
-            .context("patch version overflow")?;
-        let version = Version::parse(&format!(
-            "{}.{}.{patch}-{run_number}",
-            stable.major, stable.minor
-        ))?;
-        let tag = format!("v{version}");
-        (version, tag)
+    let version = release_version(paths, dev)?;
+    let expected_tag = format!("v{version}");
+    let tag = if dev {
+        expected_tag
     } else {
         let tag = required_env("GITHUB_REF_NAME")?;
-        let expected_tag = format!("v{stable}");
         if tag != expected_tag {
             bail!("release tag is {tag}, expected {expected_tag}");
         }
-        (stable, tag)
+        tag
     };
 
     let endpoint = format!("repos/{repository}/releases/tags/{tag}");
@@ -135,8 +122,31 @@ fn required_env(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("{name} must be set"))
 }
 
-/// Builds production bundles and stages release assets using stable, predictable names.
-pub(crate) fn build(paths: &Paths, target: &str, output: &Path) -> Result<()> {
+fn release_version(paths: &Paths, dev: bool) -> Result<Version> {
+    let stable = stable_version(paths)?;
+    if !dev {
+        return Ok(stable);
+    }
+
+    let run_number: u64 = required_env("GITHUB_RUN_NUMBER")?
+        .parse()
+        .context("GITHUB_RUN_NUMBER must be an integer")?;
+    if run_number > 65_535 {
+        bail!("GITHUB_RUN_NUMBER exceeds the MSI limit of 65535");
+    }
+    let patch = stable
+        .patch
+        .checked_add(1)
+        .context("patch version overflow")?;
+    Version::parse(&format!(
+        "{}.{}.{patch}-{run_number}",
+        stable.major, stable.minor
+    ))
+    .context("failed to construct development version")
+}
+
+/// Builds and stages release assets using stable, predictable names.
+pub(crate) fn build(paths: &Paths, dev: bool, target: &str, output: &Path) -> Result<()> {
     let platform = match target {
         "x86_64-unknown-linux-gnu" => "linux",
         "aarch64-apple-darwin" | "x86_64-apple-darwin" => "darwin",
@@ -146,7 +156,7 @@ pub(crate) fn build(paths: &Paths, target: &str, output: &Path) -> Result<()> {
 
     let signing_key = env::var_os("TAURI_SIGNING_PRIVATE_KEY")
         .context("TAURI_SIGNING_PRIVATE_KEY must be set for release-build")?;
-    let version = stable_version(paths)?;
+    let version = release_version(paths, dev)?;
     let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
     let product_name = config["productName"]
         .as_str()
@@ -161,10 +171,21 @@ pub(crate) fn build(paths: &Paths, target: &str, output: &Path) -> Result<()> {
     remove_path(&bundle_dir)?;
     remove_path(output)?;
 
+    let dev_config = dev.then(|| {
+        json!({
+            "version": version.to_string(),
+            "plugins": { "updater": { "endpoints": [DEV_ENDPOINT] } },
+        })
+        .to_string()
+    });
     let mut command = Command::new("node");
     command
         .arg("ff-wizard-ui/node_modules/@tauri-apps/cli/tauri.js")
-        .args(["build", "--target", target])
+        .args(["build", "--target", target]);
+    if let Some(dev_config) = &dev_config {
+        command.args(["--config", dev_config]);
+    }
+    command
         .env("TAURI_SIGNING_PRIVATE_KEY", signing_key)
         .current_dir(&paths.wizard);
     if platform == "darwin" {
@@ -260,12 +281,17 @@ fn move_artifact(source: &Path, destination: &Path) -> Result<()> {
 }
 
 /// Generates `latest.json` from the complete set of assets in a GitHub draft release.
-pub(crate) fn generate_latest_json(paths: &Paths, repository: &str, tag: &str) -> Result<()> {
+pub(crate) fn generate_latest_json(
+    paths: &Paths,
+    dev: bool,
+    repository: &str,
+    tag: &str,
+) -> Result<()> {
     if repository.split('/').count() != 2 {
         bail!("repository must use owner/name format");
     }
 
-    let version = stable_version(paths)?;
+    let version = release_version(paths, dev)?;
     let expected_tag = format!("v{version}");
     if tag != expected_tag {
         bail!("release tag {tag} does not match application version; expected {expected_tag}");
@@ -274,6 +300,9 @@ pub(crate) fn generate_latest_json(paths: &Paths, repository: &str, tag: &str) -
     let release = gh_api_json(&format!("repos/{repository}/releases/tags/{tag}"))?;
     if release["draft"].as_bool() != Some(true) {
         bail!("release {tag} must still be a draft");
+    }
+    if release["prerelease"].as_bool() != Some(dev) {
+        bail!("release {tag} has an unexpected prerelease status");
     }
     let notes = release["body"].as_str().unwrap_or_default();
     let pub_date = release["created_at"]

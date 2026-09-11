@@ -50,8 +50,11 @@ enum Commands {
         #[arg(long)]
         dev: bool,
     },
-    /// Build, rename, and stage production release artifacts.
+    /// Build, rename, and stage release artifacts.
     ReleaseBuild {
+        /// Build a development prerelease for the current workflow run.
+        #[arg(long)]
+        dev: bool,
         /// Rust target triple to build.
         #[arg(long)]
         target: String,
@@ -61,6 +64,9 @@ enum Commands {
     },
     /// Generate and upload Tauri updater metadata for a GitHub draft release.
     LatestJson {
+        /// Generate metadata for a development prerelease.
+        #[arg(long)]
+        dev: bool,
         /// GitHub repository in `owner/name` format.
         #[arg(long)]
         repository: String,
@@ -100,10 +106,16 @@ fn main() -> Result<()> {
         Commands::UpdateServer { release } => dev::update_server(&paths, release),
         Commands::Ci => run_ci(&paths),
         Commands::CreateRelease { dev } => release::create(&paths, dev),
-        Commands::ReleaseBuild { target, output } => release::build(&paths, &target, &output),
-        Commands::LatestJson { repository, tag } => {
-            release::generate_latest_json(&paths, &repository, &tag)
-        }
+        Commands::ReleaseBuild {
+            dev,
+            target,
+            output,
+        } => release::build(&paths, dev, &target, &output),
+        Commands::LatestJson {
+            dev,
+            repository,
+            tag,
+        } => release::generate_latest_json(&paths, dev, &repository, &tag),
         Commands::Version { check } => version(&paths, check.as_deref()),
     }
 }
