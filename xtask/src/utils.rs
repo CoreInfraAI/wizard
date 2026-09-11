@@ -100,17 +100,33 @@ pub(crate) fn require_success(status: ExitStatus, action: &str) -> Result<()> {
 }
 
 pub(crate) fn gh_api_json(endpoint: &str) -> Result<Value> {
+    gh_api_json_optional(endpoint)?
+        .with_context(|| format!("GitHub resource not found: {endpoint}"))
+}
+
+pub(crate) fn gh_api_json_optional(endpoint: &str) -> Result<Option<Value>> {
     let output = Command::new("gh")
         .args(["api", endpoint])
         .output()
         .context("failed to run gh api")?;
-    if !output.status.success() {
-        bail!(
-            "gh api {endpoint} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    if output.status.success() {
+        return serde_json::from_slice(&output.stdout)
+            .context("gh api returned invalid JSON")
+            .map(Some);
     }
-    serde_json::from_slice(&output.stdout).context("gh api returned invalid JSON")
+
+    let response: Option<Value> = serde_json::from_slice(&output.stdout).ok();
+    let not_found = response.as_ref().is_some_and(|value| {
+        value["status"].as_str() == Some("404") || value["status"].as_u64() == Some(404)
+    }) || String::from_utf8_lossy(&output.stderr).contains("HTTP 404");
+    if not_found {
+        return Ok(None);
+    }
+
+    bail!(
+        "gh api {endpoint} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
 }
 
 pub(crate) fn gh_api_bytes(endpoint: &str) -> Result<Vec<u8>> {

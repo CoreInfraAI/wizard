@@ -1,12 +1,139 @@
-use std::{env, fs, path::Path, process::Command};
+use std::{env, fs, io::Write as _, path::Path, process::Command};
 
 use anyhow::{Context as _, Result, bail};
+use semver::Version;
 use serde_json::{Value, json};
 
 use crate::utils::{
-    Paths, gh_api_bytes, gh_api_json, gh_release_upload, remove_path, require_success,
-    stable_version,
+    Paths, gh_api_bytes, gh_api_json, gh_api_json_optional, gh_release_upload, remove_path,
+    require_success, stable_version,
 };
+
+/// Finds or creates the draft release used by the release workflow.
+pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
+    let repository = required_env("GITHUB_REPOSITORY")?;
+    let commit = required_env("GITHUB_SHA")?;
+    let stable = stable_version(paths)?;
+    let (version, tag) = if dev {
+        let run_number: u64 = required_env("GITHUB_RUN_NUMBER")?
+            .parse()
+            .context("GITHUB_RUN_NUMBER must be an integer")?;
+        if run_number > 65_535 {
+            bail!("GITHUB_RUN_NUMBER exceeds the MSI limit of 65535");
+        }
+        let patch = stable
+            .patch
+            .checked_add(1)
+            .context("patch version overflow")?;
+        let version = Version::parse(&format!(
+            "{}.{}.{patch}-{run_number}",
+            stable.major, stable.minor
+        ))?;
+        let tag = format!("v{version}");
+        (version, tag)
+    } else {
+        let tag = required_env("GITHUB_REF_NAME")?;
+        let expected_tag = format!("v{stable}");
+        if tag != expected_tag {
+            bail!("release tag is {tag}, expected {expected_tag}");
+        }
+        (stable, tag)
+    };
+
+    let endpoint = format!("repos/{repository}/releases/tags/{tag}");
+    let release_id = if let Some(release) = gh_api_json_optional(&endpoint)? {
+        if release["draft"].as_bool() != Some(true) {
+            bail!("release {tag} is already published");
+        }
+        if release["prerelease"].as_bool() != Some(dev) {
+            bail!("release {tag} has an unexpected prerelease status");
+        }
+        release["id"]
+            .as_u64()
+            .context("GitHub release has no numeric ID")?
+    } else {
+        let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
+        let product_name = config["productName"]
+            .as_str()
+            .context("tauri.conf.json productName must be a string")?;
+        let body = if dev {
+            format!(
+                "Development build from commit `{commit}` on the `dev` branch.\n\n\
+                 This prerelease may be unstable and is intended for testing only."
+            )
+        } else {
+            "Release builds for Linux, macOS, and Windows.\n\n\
+             See the generated release notes below for the complete list of changes."
+                .to_owned()
+        };
+        create_github_release(
+            &repository,
+            &tag,
+            &commit,
+            &format!("{product_name} {version}"),
+            &body,
+            dev,
+        )?
+    };
+
+    let output_path = required_env("GITHUB_OUTPUT")?;
+    let mut output = fs::OpenOptions::new()
+        .append(true)
+        .open(&output_path)
+        .with_context(|| format!("failed to open {output_path}"))?;
+    writeln!(output, "release_id={release_id}")?;
+    writeln!(output, "version={version}")?;
+    writeln!(output, "tag={tag}")?;
+    Ok(())
+}
+
+fn create_github_release(
+    repository: &str,
+    tag: &str,
+    commit: &str,
+    name: &str,
+    body: &str,
+    prerelease: bool,
+) -> Result<u64> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "--method",
+            "POST",
+            &format!("repos/{repository}/releases"),
+            "-f",
+            &format!("tag_name={tag}"),
+            "-f",
+            &format!("target_commitish={commit}"),
+            "-f",
+            &format!("name={name}"),
+            "-f",
+            &format!("body={body}"),
+            "-F",
+            "draft=true",
+            "-F",
+            &format!("prerelease={prerelease}"),
+            "-F",
+            "generate_release_notes=true",
+        ])
+        .output()
+        .context("failed to run gh api")?;
+    if !output.status.success() {
+        bail!(
+            "failed to create release {tag}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let release: Value =
+        serde_json::from_slice(&output.stdout).context("gh api returned invalid JSON")?;
+    release["id"]
+        .as_u64()
+        .context("created GitHub release has no numeric ID")
+}
+
+fn required_env(name: &str) -> Result<String> {
+    env::var(name).with_context(|| format!("{name} must be set"))
+}
 
 /// Builds production bundles and stages release assets using stable, predictable names.
 pub(crate) fn build(paths: &Paths, target: &str, output: &Path) -> Result<()> {

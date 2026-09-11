@@ -44,6 +44,12 @@ enum Commands {
     },
     /// Run formatting, compilation, lint, and test checks for the workspace.
     Ci,
+    /// Find or create a GitHub draft release.
+    CreateRelease {
+        /// Create a development prerelease for the current workflow run.
+        #[arg(long)]
+        dev: bool,
+    },
     /// Build, rename, and stage production release artifacts.
     ReleaseBuild {
         /// Rust target triple to build.
@@ -77,6 +83,7 @@ fn main() -> Result<()> {
         | Commands::App { release, .. }
         | Commands::UpdateServer { release } => *release,
         Commands::Ci
+        | Commands::CreateRelease { .. }
         | Commands::ReleaseBuild { .. }
         | Commands::LatestJson { .. }
         | Commands::Version { .. } => false,
@@ -92,6 +99,7 @@ fn main() -> Result<()> {
         } => dev::app(&paths, reinstall, console, release),
         Commands::UpdateServer { release } => dev::update_server(&paths, release),
         Commands::Ci => run_ci(&paths),
+        Commands::CreateRelease { dev } => release::create(&paths, dev),
         Commands::ReleaseBuild { target, output } => release::build(&paths, &target, &output),
         Commands::LatestJson { repository, tag } => {
             release::generate_latest_json(&paths, &repository, &tag)
