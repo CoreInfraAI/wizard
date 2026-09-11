@@ -28,13 +28,7 @@ jobs:
           cache: false
 
       - name: Verify tag matches application version
-        run: |
-          version="$(cargo x version)"
-          expected_tag="v${version}"
-          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match application version $version; expected $expected_tag"
-            exit 1
-          fi
+        run: cargo x version --check "${GITHUB_REF_NAME#v}"
 
       - name: Create or find draft release
         id: release
@@ -76,7 +70,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         include:
           - name: Linux x86_64
@@ -123,29 +116,50 @@ jobs:
         working-directory: crates/wizard/ff-wizard-ui
         run: npm ci
 
-      - name: Build and publish release bundles
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+      - name: Build and stage release bundles
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: crates/wizard
-          tauriScript: node ff-wizard-ui/node_modules/@tauri-apps/cli/tauri.js
-          args: --target ${{ matrix.target }}
-          releaseId: ${{ needs.create-release.outputs.release_id }}
-          tagName: ${{ github.ref_name }}
-          releaseDraft: true
-          uploadUpdaterJson: true
-          updaterJsonPreferNsis: true
-          uploadUpdaterSignatures: true
-          releaseAssetNamePattern: "[name]-[version]-[platform]-[arch][setup][ext]"
+        run: >-
+          cargo x release-build
+          --target ${{ matrix.target }}
+          --output release-assets
 
-  publish-release:
-    name: Publish and verify immutable release
+      - name: Upload release bundles
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+
+  generate-latest-json:
+    name: Generate updater metadata
     needs:
       - create-release
       - build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
+        with:
+          cache-key: release-latest-json
+
+      - name: Generate and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          cargo x latest-json
+          --repository "$GITHUB_REPOSITORY"
+          --tag "$GITHUB_REF_NAME"
+
+  publish-release:
+    name: Publish
+    needs:
+      - create-release
+      - generate-latest-json
     runs-on: ubuntu-latest
 
     steps:

@@ -1,10 +1,12 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::ExitStatus,
+    process::{Command, ExitStatus},
 };
 
 use anyhow::{Context as _, Result, bail};
+use semver::Version;
+use serde_json::Value;
 use tempfile::TempDir;
 
 const APP_NAME: &str = "ff-wizard.app";
@@ -44,6 +46,19 @@ pub(crate) fn paths(release: bool) -> Result<Paths> {
 }
 
 /// Creates a temporary directory for generated Tauri configuration files.
+/// Reads the stable base version from `tauri.conf.json` and rejects pre-release versions.
+pub(crate) fn stable_version(paths: &Paths) -> Result<Version> {
+    let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
+    let version = config["version"]
+        .as_str()
+        .context("tauri.conf.json version must be a string")?;
+    let version = Version::parse(version)?;
+    if !version.pre.is_empty() || !version.build.is_empty() {
+        bail!("tauri.conf.json must contain a stable version, got {version}");
+    }
+    Ok(version)
+}
+
 pub(crate) fn temporary_configs() -> Result<TempDir> {
     tempfile::Builder::new()
         .prefix("ff-wizard-tauri.")
@@ -82,4 +97,47 @@ pub(crate) fn require_success(status: ExitStatus, action: &str) -> Result<()> {
     } else {
         bail!("{action} exited with {status}")
     }
+}
+
+pub(crate) fn gh_api_json(endpoint: &str) -> Result<Value> {
+    let output = Command::new("gh")
+        .args(["api", endpoint])
+        .output()
+        .context("failed to run gh api")?;
+    if !output.status.success() {
+        bail!(
+            "gh api {endpoint} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("gh api returned invalid JSON")
+}
+
+pub(crate) fn gh_api_bytes(endpoint: &str) -> Result<Vec<u8>> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            endpoint,
+            "--header",
+            "Accept: application/octet-stream",
+        ])
+        .output()
+        .context("failed to download GitHub release asset")?;
+    if !output.status.success() {
+        bail!(
+            "gh api {endpoint} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
+}
+
+pub(crate) fn gh_release_upload(repository: &str, tag: &str, asset: &Path) -> Result<()> {
+    let status = Command::new("gh")
+        .args(["release", "upload", tag])
+        .arg(asset)
+        .args(["--clobber", "--repo", repository])
+        .status()
+        .context("failed to run gh release upload")?;
+    require_success(status, "gh release upload")
 }

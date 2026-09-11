@@ -37,7 +37,11 @@ jobs:
         run: |
           stable_version="$(cargo x version)"
           IFS=. read -r major minor patch <<<"$stable_version"
-          version="${major}.${minor}.$((patch + 1))-dev.${GITHUB_RUN_NUMBER}"
+          if (( GITHUB_RUN_NUMBER > 65535 )); then
+            echo "::error::GITHUB_RUN_NUMBER exceeds the MSI limit of 65535"
+            exit 1
+          fi
+          version="${major}.${minor}.$((patch + 1))-${GITHUB_RUN_NUMBER}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
@@ -156,7 +160,7 @@ jobs:
           releaseAssetNamePattern: "[name]-[version]-[platform]-[arch][setup][ext]"
 
   publish-release:
-    name: Publish and verify immutable prerelease
+    name: Publish
     needs:
       - create-release
       - build
