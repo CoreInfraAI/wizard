@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use semver::Version;
 use serde_json::Value;
 
-use crate::utils::{Paths, gh_api_json, required_env, stable_version};
+use crate::utils::{Paths, gh_api_json, stable_version};
 
 struct DevTag {
     version: Version,
@@ -40,16 +40,21 @@ pub(crate) fn get_or_create(paths: &Paths, repository: &str, commit: &str) -> Re
     bail!("failed to allocate a unique dev tag after 10 attempts")
 }
 
-pub(crate) fn current(paths: &Paths) -> Result<Version> {
+pub(crate) fn parse_version(paths: &Paths, value: &str) -> Result<Version> {
     let stable = stable_version(paths)?;
-    let repository = required_env("GITHUB_REPOSITORY")?;
-    let commit = required_env("GITHUB_SHA")?;
-    find(&repository, &stable)?
-        .into_iter()
-        .filter(|tag| tag.commit == commit)
-        .max_by_key(|tag| tag.sequence)
-        .map(|tag| tag.version)
-        .context("current commit has no dev tag; create-release --dev must run first")
+    let sequence = value
+        .strip_prefix(&format!("{stable}-dev."))
+        .context("dev version must use the <stable>-dev.<sequence> format")?
+        .parse::<u64>()
+        .context("dev version sequence must be an integer")?;
+    if sequence == 0 {
+        bail!("dev version sequence must be greater than zero");
+    }
+    let version = Version::parse(value)?;
+    if version.to_string() != value {
+        bail!("dev version is not canonical: {value}");
+    }
+    Ok(version)
 }
 
 fn find(repository: &str, stable: &Version) -> Result<Vec<DevTag>> {

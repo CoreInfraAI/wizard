@@ -126,16 +126,23 @@ fn find_github_release(repository: &str, tag: &str) -> Result<Option<Value>> {
     gh_api_json_optional(&format!("repos/{repository}/releases/tags/{tag}"))
 }
 
-fn release_version(paths: &Paths, dev: bool) -> Result<semver::Version> {
-    if dev {
-        dev_tag::current(paths)
-    } else {
-        stable_version(paths)
+fn release_version(paths: &Paths, dev: bool, version: Option<&str>) -> Result<semver::Version> {
+    match (dev, version) {
+        (true, Some(version)) => dev_tag::parse_version(paths, version),
+        (true, None) => bail!("--version must be set with --dev"),
+        (false, Some(_)) => bail!("--version can only be used with --dev"),
+        (false, None) => stable_version(paths),
     }
 }
 
 /// Builds and stages release assets using stable, predictable names.
-pub(crate) fn build(paths: &Paths, dev: bool, target: &str, output: &Path) -> Result<()> {
+pub(crate) fn build(
+    paths: &Paths,
+    dev: bool,
+    version: Option<&str>,
+    target: &str,
+    output: &Path,
+) -> Result<()> {
     let platform = match target {
         "x86_64-unknown-linux-gnu" => "linux",
         "aarch64-apple-darwin" | "x86_64-apple-darwin" => "darwin",
@@ -144,7 +151,7 @@ pub(crate) fn build(paths: &Paths, dev: bool, target: &str, output: &Path) -> Re
     };
 
     let signing_key = required_env("TAURI_SIGNING_PRIVATE_KEY")?;
-    let version = release_version(paths, dev)?;
+    let version = release_version(paths, dev, version)?;
     let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
     let product_name = config["productName"]
         .as_str()
@@ -291,7 +298,14 @@ pub(crate) fn generate_latest_json(
         bail!("repository must use owner/name format");
     }
 
-    let version = release_version(paths, dev)?;
+    let version = if dev {
+        let value = tag
+            .strip_prefix('v')
+            .context("dev release tag must start with v")?;
+        dev_tag::parse_version(paths, value)?
+    } else {
+        stable_version(paths)?
+    };
     let expected_tag = format!("v{version}");
     if tag != expected_tag {
         bail!("release tag {tag} does not match application version; expected {expected_tag}");

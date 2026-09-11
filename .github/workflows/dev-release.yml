@@ -78,7 +78,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
         with:
           target: ${{ matrix.target }}
-          cache-key: dev-release-${{ matrix.target }}
+          cache-key: release-${{ matrix.target }}
 
       - name: Install Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -98,6 +98,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.DEV_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: >-
           cargo x release-build --dev
+          --version ${{ needs.create-release.outputs.version }}
           --target ${{ matrix.target }}
           --output release-assets
 
@@ -126,7 +127,7 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
         with:
-          cache-key: dev-release-latest-json
+          cache: false
 
       - name: Generate and upload latest.json
         env:

@@ -56,6 +56,9 @@ enum Commands {
         /// Build a development prerelease for the current workflow run.
         #[arg(long)]
         dev: bool,
+        /// Version produced by `create-release --dev`.
+        #[arg(long, requires = "dev")]
+        version: Option<String>,
         /// Rust target triple to build.
         #[arg(long)]
         target: String,
@@ -109,9 +112,10 @@ fn main() -> Result<()> {
         Commands::CreateRelease { dev } => release::create(&paths, dev),
         Commands::ReleaseBuild {
             dev,
+            version,
             target,
             output,
-        } => release::build(&paths, dev, &target, &output),
+        } => release::build(&paths, dev, version.as_deref(), &target, &output),
         Commands::LatestJson {
             dev,
             repository,
