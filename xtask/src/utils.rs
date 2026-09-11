@@ -108,7 +108,7 @@ pub(crate) fn gh_api_json(endpoint: &str) -> Result<Value> {
         .with_context(|| format!("GitHub resource not found: {endpoint}"))
 }
 
-pub(crate) fn gh_api_json_optional(endpoint: &str) -> Result<Option<Value>> {
+fn gh_api_json_optional(endpoint: &str) -> Result<Option<Value>> {
     let output = Command::new("gh")
         .args(["api", endpoint])
         .output()

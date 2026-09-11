@@ -74,9 +74,9 @@ enum Commands {
         /// GitHub repository in `owner/name` format.
         #[arg(long)]
         repository: String,
-        /// GitHub release tag containing all updater assets.
+        /// Numeric ID of the GitHub draft release containing all updater assets.
         #[arg(long)]
-        tag: String,
+        release_id: u64,
     },
     /// Print or check the current application version.
     Version {
@@ -119,8 +119,8 @@ fn main() -> Result<()> {
         Commands::LatestJson {
             dev,
             repository,
-            tag,
-        } => release::generate_latest_json(&paths, dev, &repository, &tag),
+            release_id,
+        } => release::generate_latest_json(&paths, dev, &repository, release_id),
         Commands::Version { check } => version(&paths, check.as_deref()),
     }
 }

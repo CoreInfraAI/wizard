@@ -132,11 +132,11 @@ jobs:
       - name: Generate and upload latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         run: >-
           cargo x latest-json --dev
           --repository "$GITHUB_REPOSITORY"
-          --tag "$RELEASE_TAG"
+          --release-id "$RELEASE_ID"
 
   publish-release:
     name: Publish

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::dev_tag;
 use crate::utils::{
-    Paths, gh_api_bytes, gh_api_json_optional, gh_release_upload, remove_path, require_success,
+    Paths, gh_api_bytes, gh_api_json, gh_release_upload, remove_path, require_success,
     required_env, stable_version,
 };
 
@@ -32,7 +32,7 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
         tag
     };
 
-    let release_id = if let Some(release) = find_github_release(&repository, &tag)? {
+    let release_id = if let Some(release) = find_github_release_by_tag(&repository, &tag)? {
         if release["draft"].as_bool() != Some(true) {
             bail!("release {tag} is already published");
         }
@@ -117,13 +117,36 @@ fn create_github_release(
     }
     let release: Value =
         serde_json::from_slice(&output.stdout).context("gh api returned invalid JSON")?;
+    if release["tag_name"].as_str() != Some(tag) {
+        bail!("created GitHub release has an unexpected tag");
+    }
     release["id"]
         .as_u64()
         .context("created GitHub release has no numeric ID")
 }
 
-fn find_github_release(repository: &str, tag: &str) -> Result<Option<Value>> {
-    gh_api_json_optional(&format!("repos/{repository}/releases/tags/{tag}"))
+fn find_github_release_by_tag(repository: &str, tag: &str) -> Result<Option<Value>> {
+    let mut page = 1_u64;
+    loop {
+        let releases = gh_api_json(&format!(
+            "repos/{repository}/releases?per_page=100&page={page}"
+        ))?;
+        let releases = releases
+            .as_array()
+            .context("GitHub releases response must be an array")?;
+        if let Some(release) = releases
+            .iter()
+            .find(|release| release["tag_name"].as_str() == Some(tag))
+        {
+            return Ok(Some(release.clone()));
+        }
+        if releases.len() < 100 {
+            return Ok(None);
+        }
+        page = page
+            .checked_add(1)
+            .context("release page number overflow")?;
+    }
 }
 
 fn release_version(paths: &Paths, dev: bool, version: Option<&str>) -> Result<semver::Version> {
@@ -292,12 +315,16 @@ pub(crate) fn generate_latest_json(
     paths: &Paths,
     dev: bool,
     repository: &str,
-    tag: &str,
+    release_id: u64,
 ) -> Result<()> {
     if repository.split('/').count() != 2 {
         bail!("repository must use owner/name format");
     }
 
+    let release = gh_api_json(&format!("repos/{repository}/releases/{release_id}"))?;
+    let tag = release["tag_name"]
+        .as_str()
+        .context("GitHub release has no tag_name")?;
     let version = if dev {
         let value = tag
             .strip_prefix('v')
@@ -311,8 +338,6 @@ pub(crate) fn generate_latest_json(
         bail!("release tag {tag} does not match application version; expected {expected_tag}");
     }
 
-    let release = find_github_release(repository, tag)?
-        .with_context(|| format!("GitHub release not found: {tag}"))?;
     if release["draft"].as_bool() != Some(true) {
         bail!("release {tag} must still be a draft");
     }
