@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
@@ -97,6 +97,10 @@ pub(crate) fn require_success(status: ExitStatus, action: &str) -> Result<()> {
     } else {
         bail!("{action} exited with {status}")
     }
+}
+
+pub(crate) fn required_env(name: &str) -> Result<String> {
+    env::var(name).with_context(|| format!("{name} must be set"))
 }
 
 pub(crate) fn gh_api_json(endpoint: &str) -> Result<Value> {

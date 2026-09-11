@@ -1,12 +1,12 @@
-use std::{env, fs, io::Write as _, path::Path, process::Command};
+use std::{fs, io::Write as _, path::Path, process::Command};
 
 use anyhow::{Context as _, Result, bail};
-use semver::Version;
 use serde_json::{Value, json};
 
+use crate::dev_tag;
 use crate::utils::{
-    Paths, gh_api_bytes, gh_api_json, gh_api_json_optional, gh_release_upload, remove_path,
-    require_success, stable_version,
+    Paths, gh_api_bytes, gh_api_json_optional, gh_release_upload, remove_path, require_success,
+    required_env, stable_version,
 };
 
 const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
@@ -15,7 +15,11 @@ const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json
 pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
     let repository = required_env("GITHUB_REPOSITORY")?;
     let commit = required_env("GITHUB_SHA")?;
-    let version = release_version(paths, dev)?;
+    let version = if dev {
+        dev_tag::get_or_create(paths, &repository, &commit)?
+    } else {
+        stable_version(paths)?
+    };
     let expected_tag = format!("v{version}");
     let tag = if dev {
         expected_tag
@@ -27,8 +31,7 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
         tag
     };
 
-    let endpoint = format!("repos/{repository}/releases/tags/{tag}");
-    let release_id = if let Some(release) = gh_api_json_optional(&endpoint)? {
+    let release_id = if let Some(release) = find_github_release(&repository, &tag)? {
         if release["draft"].as_bool() != Some(true) {
             bail!("release {tag} is already published");
         }
@@ -118,31 +121,16 @@ fn create_github_release(
         .context("created GitHub release has no numeric ID")
 }
 
-fn required_env(name: &str) -> Result<String> {
-    env::var(name).with_context(|| format!("{name} must be set"))
+fn find_github_release(repository: &str, tag: &str) -> Result<Option<Value>> {
+    gh_api_json_optional(&format!("repos/{repository}/releases/tags/{tag}"))
 }
 
-fn release_version(paths: &Paths, dev: bool) -> Result<Version> {
-    let stable = stable_version(paths)?;
-    if !dev {
-        return Ok(stable);
+fn release_version(paths: &Paths, dev: bool) -> Result<semver::Version> {
+    if dev {
+        dev_tag::current(paths)
+    } else {
+        stable_version(paths)
     }
-
-    let run_number: u64 = required_env("GITHUB_RUN_NUMBER")?
-        .parse()
-        .context("GITHUB_RUN_NUMBER must be an integer")?;
-    if run_number > 65_535 {
-        bail!("GITHUB_RUN_NUMBER exceeds the MSI limit of 65535");
-    }
-    let patch = stable
-        .patch
-        .checked_add(1)
-        .context("patch version overflow")?;
-    Version::parse(&format!(
-        "{}.{}.{patch}-{run_number}",
-        stable.major, stable.minor
-    ))
-    .context("failed to construct development version")
 }
 
 /// Builds and stages release assets using stable, predictable names.
@@ -154,8 +142,7 @@ pub(crate) fn build(paths: &Paths, dev: bool, target: &str, output: &Path) -> Re
         _ => bail!("unsupported release target: {target}"),
     };
 
-    let signing_key = env::var_os("TAURI_SIGNING_PRIVATE_KEY")
-        .context("TAURI_SIGNING_PRIVATE_KEY must be set for release-build")?;
+    let signing_key = required_env("TAURI_SIGNING_PRIVATE_KEY")?;
     let version = release_version(paths, dev)?;
     let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
     let product_name = config["productName"]
@@ -178,10 +165,17 @@ pub(crate) fn build(paths: &Paths, dev: bool, target: &str, output: &Path) -> Re
         })
         .to_string()
     });
+    let bundles: &[&str] = match target {
+        "aarch64-apple-darwin" | "x86_64-apple-darwin" => &["dmg"],
+        "x86_64-unknown-linux-gnu" => &["appimage", "deb", "rpm"],
+        "x86_64-pc-windows-msvc" => &["nsis"],
+        _ => bail!("unsupported release target: {target}"),
+    };
     let mut command = Command::new("node");
     command
         .arg("ff-wizard-ui/node_modules/@tauri-apps/cli/tauri.js")
-        .args(["build", "--target", target]);
+        .args(["build", "--target", target, "--bundles"])
+        .args(bundles);
     if let Some(dev_config) = &dev_config {
         command.args(["--config", dev_config]);
     }
@@ -297,7 +291,8 @@ pub(crate) fn generate_latest_json(
         bail!("release tag {tag} does not match application version; expected {expected_tag}");
     }
 
-    let release = gh_api_json(&format!("repos/{repository}/releases/tags/{tag}"))?;
+    let release = find_github_release(repository, tag)?
+        .with_context(|| format!("GitHub release not found: {tag}"))?;
     if release["draft"].as_bool() != Some(true) {
         bail!("release {tag} must still be a draft");
     }

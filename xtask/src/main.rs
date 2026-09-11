@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use crate::utils::{Paths, paths, require_success, stable_version};
 
 mod dev;
+mod dev_tag;
 mod release;
 mod utils;
 
