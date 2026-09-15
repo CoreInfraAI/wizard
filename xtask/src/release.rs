@@ -189,9 +189,12 @@ pub(crate) fn build(
     remove_path(&bundle_dir)?;
     remove_path(output)?;
 
-    let dev_config = dev.then(|| {
+    // The workflow builds the frontend before exposing the signing key to this process.
+    // Disable Tauri's hook to avoid rebuilding it with the signing key in the environment.
+    let build_config = if dev {
         json!({
             "version": version.to_string(),
+            "build": { "beforeBuildCommand": "" },
             "plugins": {
                 "updater": {
                     "endpoints": [DEV_ENDPOINT],
@@ -199,8 +202,10 @@ pub(crate) fn build(
                 },
             },
         })
-        .to_string()
-    });
+    } else {
+        json!({ "build": { "beforeBuildCommand": "" } })
+    }
+    .to_string();
     let bundles: &[&str] = match target {
         "aarch64-apple-darwin" | "x86_64-apple-darwin" => &["app", "dmg"],
         "x86_64-unknown-linux-gnu" => &["appimage", "deb", "rpm"],
@@ -211,11 +216,8 @@ pub(crate) fn build(
     command
         .arg("ff-wizard-ui/node_modules/@tauri-apps/cli/tauri.js")
         .args(["build", "--target", target, "--bundles"])
-        .args(bundles);
-    if let Some(dev_config) = &dev_config {
-        command.args(["--config", dev_config]);
-    }
-    command
+        .args(bundles)
+        .args(["--config", &build_config])
         .env("TAURI_SIGNING_PRIVATE_KEY", signing_key)
         .current_dir(&paths.wizard);
     if platform == "darwin" {

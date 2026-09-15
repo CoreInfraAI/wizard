@@ -45,7 +45,6 @@ pub(crate) fn paths(release: bool) -> Result<Paths> {
     })
 }
 
-/// Creates a temporary directory for generated Tauri configuration files.
 /// Reads the stable base version from `tauri.conf.json` and rejects pre-release versions.
 pub(crate) fn stable_version(paths: &Paths) -> Result<Version> {
     let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
@@ -59,6 +58,7 @@ pub(crate) fn stable_version(paths: &Paths) -> Result<Version> {
     Ok(version)
 }
 
+/// Creates a temporary directory for local updater files.
 pub(crate) fn temporary_configs() -> Result<TempDir> {
     tempfile::Builder::new()
         .prefix("ff-wizard-tauri.")

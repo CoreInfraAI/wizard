@@ -91,6 +91,10 @@ jobs:
         working-directory: crates/wizard/ff-wizard-ui
         run: npm ci
 
+      - name: Build frontend
+        working-directory: crates/wizard/ff-wizard-ui
+        run: npm run build
+
       - name: Build and stage prerelease bundles
         shell: bash
         env:

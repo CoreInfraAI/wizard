@@ -86,6 +86,10 @@ jobs:
         working-directory: crates/wizard/ff-wizard-ui
         run: npm ci
 
+      - name: Build frontend
+        working-directory: crates/wizard/ff-wizard-ui
+        run: npm run build
+
       - name: Build and stage release bundles
         shell: bash
         env:
@@ -138,9 +142,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
-        run: |
-          release_json="$(
-            gh api --method PATCH \
-              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-              -F draft=false
-          )"
+        run: >-
+          gh api --method PATCH
+          "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          -F draft=false
