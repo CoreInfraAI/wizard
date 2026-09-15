@@ -24,17 +24,13 @@ jobs:
           - windows-latest
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev \
-            patchelf
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -51,7 +47,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: crates/wizard/ff-wizard-ui
+        working-directory: crates/wizard/wizard-ui
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -61,7 +57,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: crates/wizard/ff-wizard-ui/package-lock.json
+          cache-dependency-path: crates/wizard/wizard-ui/package-lock.json
 
       - name: Install dependencies
         run: npm ci

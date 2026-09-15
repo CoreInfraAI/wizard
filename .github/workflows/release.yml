@@ -45,19 +45,17 @@ jobs:
           - name: Linux x86_64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            xtask: ./target/debug/xtask
           - name: macOS aarch64
             os: macos-latest
             target: aarch64-apple-darwin
-          - name: macOS x86_64
-            os: macos-latest
-            target: x86_64-apple-darwin
+            xtask: ./target/debug/xtask
           - name: Windows x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            xtask: ./target/debug/xtask.exe
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -66,8 +64,9 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
-            patchelf \
-            xdg-utils
+            patchelf
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
@@ -75,19 +74,22 @@ jobs:
           target: ${{ matrix.target }}
           cache-key: release-${{ matrix.target }}
 
+      - name: Build release tool
+        run: cargo build --locked --package xtask
+
       - name: Install Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: crates/wizard/ff-wizard-ui/package-lock.json
+          cache-dependency-path: crates/wizard/wizard-ui/package-lock.json
 
       - name: Install frontend dependencies
-        working-directory: crates/wizard/ff-wizard-ui
+        working-directory: crates/wizard/wizard-ui
         run: npm ci
 
       - name: Build frontend
-        working-directory: crates/wizard/ff-wizard-ui
+        working-directory: crates/wizard/wizard-ui
         run: npm run build
 
       - name: Build and stage release bundles
@@ -96,7 +98,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: >-
-          cargo x release-build
+          "${{ matrix.xtask }}" release-build
           --target ${{ matrix.target }}
           --output release-assets
 

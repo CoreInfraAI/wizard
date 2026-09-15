@@ -1,6 +1,13 @@
-use std::{fs, io::Write as _, path::Path, process::Command};
+use std::{
+    fs,
+    io::Write as _,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context as _, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use minisign_verify::{PublicKey, Signature};
 use serde_json::{Value, json};
 
 use crate::dev_tag;
@@ -168,17 +175,26 @@ pub(crate) fn build(
 ) -> Result<()> {
     let platform = match target {
         "x86_64-unknown-linux-gnu" => "linux",
-        "aarch64-apple-darwin" | "x86_64-apple-darwin" => "darwin",
+        "aarch64-apple-darwin" => "darwin",
         "x86_64-pc-windows-msvc" => "windows",
         _ => bail!("unsupported release target: {target}"),
     };
 
-    let signing_key = required_env("TAURI_SIGNING_PRIVATE_KEY")?;
+    // Validate this before the expensive build, but never pass it to the build process.
+    drop(required_env("TAURI_SIGNING_PRIVATE_KEY")?);
+
     let version = release_version(paths, dev, version)?;
     let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
     let product_name = config["productName"]
         .as_str()
         .context("tauri.conf.json productName must be a string")?;
+    let updater_public_key = if dev {
+        DEV_PUBLIC_KEY
+    } else {
+        config["plugins"]["updater"]["pubkey"]
+            .as_str()
+            .context("tauri.conf.json updater pubkey must be a string")?
+    };
 
     let bundle_dir = paths
         .workspace
@@ -189,12 +205,16 @@ pub(crate) fn build(
     remove_path(&bundle_dir)?;
     remove_path(output)?;
 
-    // The workflow builds the frontend before exposing the signing key to this process.
-    // Disable Tauri's hook to avoid rebuilding it with the signing key in the environment.
+    // The workflow builds the frontend and xtask before exposing the signing key.
+    // Disable Tauri's frontend hook and remove the key from the Rust build process. The
+    // separate bundling process receives the key only to sign the finished artifacts.
     let build_config = if dev {
         json!({
             "version": version.to_string(),
-            "build": { "beforeBuildCommand": "" },
+            "build": {
+                "beforeBuildCommand": "",
+                "beforeBundleCommand": "",
+            },
             "plugins": {
                 "updater": {
                     "endpoints": [DEV_ENDPOINT],
@@ -203,28 +223,61 @@ pub(crate) fn build(
             },
         })
     } else {
-        json!({ "build": { "beforeBuildCommand": "" } })
+        json!({
+            "build": {
+                "beforeBuildCommand": "",
+                "beforeBundleCommand": "",
+            },
+        })
     }
     .to_string();
     let bundles: &[&str] = match target {
-        "aarch64-apple-darwin" | "x86_64-apple-darwin" => &["app", "dmg"],
+        "aarch64-apple-darwin" => &["app", "dmg"],
         "x86_64-unknown-linux-gnu" => &["appimage", "deb", "rpm"],
         "x86_64-pc-windows-msvc" => &["nsis"],
         _ => bail!("unsupported release target: {target}"),
     };
-    let mut command = Command::new("node");
-    command
-        .arg("ff-wizard-ui/node_modules/@tauri-apps/cli/tauri.js")
-        .args(["build", "--target", target, "--bundles"])
+    let tauri_cli = "wizard-ui/node_modules/@tauri-apps/cli/tauri.js";
+    let mut build_command = Command::new("node");
+    build_command
+        .arg(tauri_cli)
+        .args(["build", "--target", target, "--no-bundle"])
+        .args(["--config", &build_config])
+        .env_remove("TAURI_SIGNING_PRIVATE_KEY")
+        .env_remove("TAURI_SIGNING_PRIVATE_KEY_PASSWORD")
+        .env_remove("TAURI_SIGNING_PRIVATE_KEY_PATH")
+        .env_remove("TAURI_PRIVATE_KEY")
+        .env_remove("TAURI_PRIVATE_KEY_PASSWORD")
+        .env_remove("TAURI_PRIVATE_KEY_PATH")
+        .current_dir(&paths.wizard);
+    require_success(build_command.status()?, "tauri build")?;
+
+    let mut bundle_command = Command::new("node");
+    bundle_command
+        .arg(tauri_cli)
+        .args(["bundle", "--target", target, "--bundles"])
         .args(bundles)
         .args(["--config", &build_config])
-        .env("TAURI_SIGNING_PRIVATE_KEY", signing_key)
         .current_dir(&paths.wizard);
     if platform == "darwin" {
         // better looking .dmg
-        command.env("TAURI_BUNDLER_DMG_IGNORE_CI", "true");
+        bundle_command.env("TAURI_BUNDLER_DMG_IGNORE_CI", "true");
     }
-    require_success(command.status()?, "tauri build")?;
+    require_success(bundle_command.status()?, "tauri bundle")?;
+
+    let updater_artifact = match target {
+        "aarch64-apple-darwin" => bundle_dir
+            .join("macos")
+            .join(format!("{product_name}.app.tar.gz")),
+        "x86_64-unknown-linux-gnu" => bundle_dir
+            .join("appimage")
+            .join(format!("{product_name}_{version}_amd64.AppImage")),
+        "x86_64-pc-windows-msvc" => bundle_dir
+            .join("nsis")
+            .join(format!("{product_name}_{version}_x64-setup.exe")),
+        _ => bail!("unsupported release target: {target}"),
+    };
+    verify_updater_signature(&updater_artifact, updater_public_key)?;
 
     fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
     let release_name = format!("{product_name}-{version}");
@@ -244,20 +297,6 @@ pub(crate) fn build(
             copy(
                 format!("macos/{product_name}.app.tar.gz.sig"),
                 format!("{release_name}-darwin-aarch64-update.app.tar.gz.sig"),
-            )
-        }
-        "x86_64-apple-darwin" => {
-            copy(
-                format!("dmg/{product_name}_{version}_x64.dmg"),
-                format!("{release_name}-darwin-x64-install.dmg"),
-            )?;
-            copy(
-                format!("macos/{product_name}.app.tar.gz"),
-                format!("{release_name}-darwin-x64-update.app.tar.gz"),
-            )?;
-            copy(
-                format!("macos/{product_name}.app.tar.gz.sig"),
-                format!("{release_name}-darwin-x64-update.app.tar.gz.sig"),
             )
         }
         "x86_64-unknown-linux-gnu" => {
@@ -292,6 +331,46 @@ pub(crate) fn build(
         }
         _ => bail!("unsupported release target: {target}"),
     }
+}
+
+fn verify_updater_signature(artifact: &Path, public_key: &str) -> Result<()> {
+    if !artifact.is_file() {
+        bail!(
+            "expected updater artifact was not generated: {}",
+            artifact.display()
+        );
+    }
+
+    let signature_path = signature_path(artifact);
+    let signature = fs::read_to_string(&signature_path)
+        .with_context(|| format!("failed to read {}", signature_path.display()))?;
+    let public_key = decode_minisign(public_key, "updater public key")?;
+    let public_key = PublicKey::decode(&public_key).context("invalid updater public key")?;
+    let signature = decode_minisign(&signature, "updater signature")?;
+    let signature = Signature::decode(&signature).context("invalid updater signature")?;
+    let artifact_bytes =
+        fs::read(artifact).with_context(|| format!("failed to read {}", artifact.display()))?;
+    public_key
+        .verify(&artifact_bytes, &signature, false)
+        .with_context(|| {
+            format!(
+                "updater signature does not match the configured public key for {}",
+                artifact.display()
+            )
+        })
+}
+
+fn signature_path(artifact: &Path) -> PathBuf {
+    let mut path = artifact.as_os_str().to_os_string();
+    path.push(".sig");
+    path.into()
+}
+
+fn decode_minisign(value: &str, description: &str) -> Result<String> {
+    let decoded = STANDARD
+        .decode(value.trim())
+        .with_context(|| format!("{description} is not valid base64"))?;
+    String::from_utf8(decoded).with_context(|| format!("decoded {description} is not valid UTF-8"))
 }
 
 fn move_artifact(source: &Path, destination: &Path) -> Result<()> {
@@ -362,21 +441,19 @@ pub(crate) fn generate_latest_json(
         "darwin-aarch64": updater_entry(
             assets,
             repository,
+            tag,
             &format!("{release_name}-darwin-aarch64-update.app.tar.gz.sig"),
-        )?,
-        "darwin-x86_64": updater_entry(
-            assets,
-            repository,
-            &format!("{release_name}-darwin-x64-update.app.tar.gz.sig"),
         )?,
         "linux-x86_64": updater_entry(
             assets,
             repository,
+            tag,
             &format!("{release_name}-linux-amd64.AppImage.sig"),
         )?,
         "windows-x86_64": updater_entry(
             assets,
             repository,
+            tag,
             &format!("{release_name}-windows-x64.exe.sig"),
         )?,
     });
@@ -394,7 +471,12 @@ pub(crate) fn generate_latest_json(
     gh_release_upload(repository, tag, &output)
 }
 
-fn updater_entry(assets: &[Value], repository: &str, signature_name: &str) -> Result<Value> {
+fn updater_entry(
+    assets: &[Value],
+    repository: &str,
+    tag: &str,
+    signature_name: &str,
+) -> Result<Value> {
     let signature_asset = assets
         .iter()
         .find(|asset| asset["name"].as_str() == Some(signature_name))
@@ -402,13 +484,11 @@ fn updater_entry(assets: &[Value], repository: &str, signature_name: &str) -> Re
     let updater_name = signature_name
         .strip_suffix(".sig")
         .context("updater signature filename must end in .sig")?;
-    let updater_asset = assets
+    assets
         .iter()
         .find(|asset| asset["name"].as_str() == Some(updater_name))
         .with_context(|| format!("updater asset was not uploaded: {updater_name}"))?;
-    let url = updater_asset["browser_download_url"]
-        .as_str()
-        .with_context(|| format!("updater asset {updater_name} has no download URL"))?;
+    let url = release_asset_url(repository, tag, updater_name);
     let signature_id = signature_asset["id"]
         .as_u64()
         .with_context(|| format!("signature asset {signature_name} has no numeric ID"))?;
@@ -422,4 +502,26 @@ fn updater_entry(assets: &[Value], repository: &str, signature_name: &str) -> Re
         "signature": signature.trim(),
         "url": url,
     }))
+}
+
+fn release_asset_url(repository: &str, tag: &str, asset_name: &str) -> String {
+    format!("https://github.com/{repository}/releases/download/{tag}/{asset_name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEV_PUBLIC_KEY, decode_minisign, release_asset_url};
+
+    #[test]
+    fn updater_asset_url_uses_the_final_tag() {
+        assert_eq!(
+            release_asset_url("CoreInfraAI/wizard", "v1.2.3", "Wizard-1.2.3.exe"),
+            "https://github.com/CoreInfraAI/wizard/releases/download/v1.2.3/Wizard-1.2.3.exe"
+        );
+    }
+
+    #[test]
+    fn dev_public_key_contains_minisign_data() {
+        assert!(decode_minisign(DEV_PUBLIC_KEY, "dev public key").is_ok());
+    }
 }

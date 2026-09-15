@@ -9,9 +9,9 @@ use semver::Version;
 use serde_json::Value;
 use tempfile::TempDir;
 
-const APP_NAME: &str = "ff-wizard.app";
-const INSTALLED_APP: &str = "/Applications/ff-wizard.app";
-const INSTALLED_EXECUTABLE: &str = "/Applications/ff-wizard.app/Contents/MacOS/ff-wizard";
+const APP_NAME: &str = "Wizard.app";
+const INSTALLED_APP: &str = "/Applications/Wizard.app";
+const INSTALLED_EXECUTABLE: &str = "/Applications/Wizard.app/Contents/MacOS/wizard";
 
 pub(crate) struct Paths {
     pub(crate) workspace: PathBuf,
@@ -61,7 +61,7 @@ pub(crate) fn stable_version(paths: &Paths) -> Result<Version> {
 /// Creates a temporary directory for local updater files.
 pub(crate) fn temporary_configs() -> Result<TempDir> {
     tempfile::Builder::new()
-        .prefix("ff-wizard-tauri.")
+        .prefix("wizard-tauri.")
         .tempdir_in("/tmp")
         .context("failed to create temporary Tauri config directory")
 }

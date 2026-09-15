@@ -1,5 +1,5 @@
 [package]
-name = "ff-wizard"
+name = "wizard"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -8,9 +8,7 @@ readme = false
 publish = false
 
 [lib]
-# Keep the library name distinct from the binary name on Windows.
-name = "ff_wizard_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+name = "wizard_lib"
 
 [lints]
 workspace = true
@@ -21,4 +19,6 @@ tauri-build = { workspace = true, features = [] }
 [dependencies]
 serde_json = { workspace = true, features = ["std"] }
 tauri = { workspace = true, features = [] }
+tauri-plugin-single-instance.workspace = true
 tauri-plugin-updater.workspace = true
+tokio.workspace = true

@@ -89,7 +89,7 @@ pub(crate) fn update_server(paths: &Paths, release: bool) -> Result<()> {
     fs::create_dir(&serve_dir)?;
     remove_old_updater_archives(&paths.bundle_dir)?;
 
-    println!("Building ff-wizard {version}...");
+    println!("Building Wizard {version}...");
     build_app(paths, &config, true, release)?;
     let archive = find_update_archive(&paths.bundle_dir)?;
     write_latest_json(&serve_dir, &version, &archive)?;
@@ -178,7 +178,7 @@ fn build_app(paths: &Paths, config: &str, test_signing: bool, release: bool) -> 
 /// Atomically replaces the application installed in `/Applications` with the built bundle.
 fn install_app(paths: &Paths) -> Result<()> {
     let temporary_app = PathBuf::from(format!(
-        "/Applications/.ff-wizard.app.tmp.{}",
+        "/Applications/.Wizard.app.tmp.{}",
         std::process::id()
     ));
     remove_path(&temporary_app)?;
@@ -201,7 +201,7 @@ fn install_app(paths: &Paths) -> Result<()> {
     if result.is_err() {
         let _ = remove_path(&temporary_app);
     }
-    result.context("failed to install /Applications/ff-wizard.app")
+    result.context("failed to install /Applications/Wizard.app")
 }
 
 fn remove_old_updater_archives(bundle_dir: &Path) -> Result<()> {
@@ -259,7 +259,7 @@ fn write_latest_json(serve_dir: &Path, version: &Version, archive: &Path) -> Res
     )?;
     let latest = json!({
         "version": version.to_string(),
-        "notes": "Local ff-wizard updater test",
+        "notes": "Local Wizard updater test",
         "url": format!("http://127.0.0.1:49173/{artifact_name}"),
         "signature": fs::read_to_string(signature_path)?.trim(),
     });

@@ -1,41 +1,50 @@
-use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt as _};
+extern crate alloc;
 
-// TODO: errors?
-async fn install_available_update(app: tauri::AppHandle) {
-    let updater = match app.updater() {
-        Ok(updater) => updater,
-        Err(UpdaterError::EmptyEndpoints) => return,
-        Err(error) => {
-            eprintln!("failed to initialize updater: {error}");
-            return;
-        }
-    };
+use alloc::sync::Arc;
+use std::process::ExitCode;
 
-    let update = match updater.check().await {
-        Ok(Some(update)) => update,
-        Ok(None) => return,
-        Err(error) => {
-            eprintln!("failed to check for updates: {error}");
-            return;
-        }
-    };
+use tauri::Manager as _;
 
-    if let Err(error) = update.download_and_install(|_, _| {}, || {}).await {
-        eprintln!("failed to install update: {error}");
-        return;
+mod updater;
+
+const MAIN_WINDOW_NAME: &str = "main";
+
+#[must_use]
+pub fn run() -> ExitCode {
+    if let Err(error) = run_application() {
+        eprintln!("application failed: {error}");
+        return ExitCode::FAILURE;
     }
 
-    app.restart();
+    ExitCode::SUCCESS
 }
 
-pub fn run() {
+fn run_application() -> tauri::Result<()> {
     tauri::Builder::default()
+        // This plugin must be registered first to stop a second process before other plugins start.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            focus_window(app);
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(Arc::new(updater::StartupUpdateState::default()))
         .setup(|app| {
-            let app = app.handle().clone();
-            tauri::async_runtime::spawn(install_available_update(app));
+            updater::start(app.handle().clone());
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![updater::wait_for_startup_update])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+}
+
+fn focus_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_NAME) {
+        if let Err(error) = window.show() {
+            eprintln!("failed to show main window: {error}");
+        }
+        if let Err(error) = window.unminimize() {
+            eprintln!("failed to restore main window: {error}");
+        }
+        if let Err(error) = window.set_focus() {
+            eprintln!("failed to focus main window: {error}");
+        }
+    }
 }
