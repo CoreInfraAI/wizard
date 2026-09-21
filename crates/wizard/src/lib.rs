@@ -28,6 +28,7 @@ fn run_application() -> tauri::Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(updater::StartupUpdateState::default()))
         .setup(|app| {
+            focus_window(app.handle());
             updater::start(app.handle().clone());
             Ok(())
         })
