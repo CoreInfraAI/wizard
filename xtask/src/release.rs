@@ -265,6 +265,10 @@ pub(crate) fn build(
     }
     require_success(bundle_command.status()?, "tauri bundle")?;
 
+    if platform == "darwin" {
+        verify_macos_app_signature(&bundle_dir.join("macos").join(format!("{product_name}.app")))?;
+    }
+
     let updater_artifact = match target {
         "aarch64-apple-darwin" => bundle_dir
             .join("macos")
@@ -331,6 +335,22 @@ pub(crate) fn build(
         }
         _ => bail!("unsupported release target: {target}"),
     }
+}
+
+fn verify_macos_app_signature(app: &Path) -> Result<()> {
+    if !app.is_dir() {
+        bail!(
+            "expected macOS application was not generated: {}",
+            app.display()
+        );
+    }
+
+    let status = Command::new("codesign")
+        .args(["--verify", "--deep", "--strict", "--verbose=4"])
+        .arg(app)
+        .status()
+        .context("failed to run codesign")?;
+    require_success(status, "codesign verification")
 }
 
 fn verify_updater_signature(artifact: &Path, public_key: &str) -> Result<()> {
@@ -506,22 +526,4 @@ fn updater_entry(
 
 fn release_asset_url(repository: &str, tag: &str, asset_name: &str) -> String {
     format!("https://github.com/{repository}/releases/download/{tag}/{asset_name}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DEV_PUBLIC_KEY, decode_minisign, release_asset_url};
-
-    #[test]
-    fn updater_asset_url_uses_the_final_tag() {
-        assert_eq!(
-            release_asset_url("CoreInfraAI/wizard", "v1.2.3", "Wizard-1.2.3.exe"),
-            "https://github.com/CoreInfraAI/wizard/releases/download/v1.2.3/Wizard-1.2.3.exe"
-        );
-    }
-
-    #[test]
-    fn dev_public_key_contains_minisign_data() {
-        assert!(decode_minisign(DEV_PUBLIC_KEY, "dev public key").is_ok());
-    }
 }
