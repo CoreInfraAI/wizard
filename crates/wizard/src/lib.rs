@@ -3,7 +3,9 @@ extern crate alloc;
 use alloc::sync::Arc;
 use std::process::ExitCode;
 
+use log::LevelFilter;
 use tauri::Manager as _;
+use tauri_plugin_log::RotationStrategy;
 
 mod updater;
 
@@ -25,9 +27,21 @@ fn run_application() -> tauri::Result<()> {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             focus_window(app);
         }))
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(if cfg!(debug_assertions) {
+                    LevelFilter::Debug
+                } else {
+                    LevelFilter::Info
+                })
+                .max_file_size(1024 * 1024)
+                .rotation_strategy(RotationStrategy::KeepSome(5))
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(updater::StartupUpdateState::default()))
         .setup(|app| {
+            log::info!("starting Wizard {}", app.package_info().version);
             focus_window(app.handle());
             updater::start(app.handle().clone());
             Ok(())

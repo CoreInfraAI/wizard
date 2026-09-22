@@ -1,6 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { reportError } from "./log";
 
 let applicationVersionRequest: Promise<string> | undefined;
 
@@ -12,7 +13,7 @@ export function useStartupUpdate() {
       try {
         await invoke<void>("wait_for_startup_update");
       } catch (error: unknown) {
-        console.error("failed to wait for startup updater", error);
+        reportError("failed to wait for startup updater", error);
       }
 
       setIsStartupUpdateComplete(true);
@@ -32,7 +33,7 @@ export function useApplicationVersion() {
     void applicationVersionRequest
       .then(setApplicationVersion)
       .catch((error: unknown) => {
-        console.error("failed to get application version", error);
+        reportError("failed to get application version", error);
       });
   }, []);
 

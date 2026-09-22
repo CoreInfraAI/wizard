@@ -52,32 +52,39 @@ pub(crate) async fn wait_for_startup_update(app: tauri::AppHandle) {
 }
 
 async fn check_and_install_update(app: tauri::AppHandle) {
+    log::info!("checking for application updates");
+
     let updater = match app.updater_builder().timeout(UPDATE_CHECK_TIMEOUT).build() {
         Ok(updater) => updater,
         Err(UpdaterError::EmptyEndpoints) => {
-            eprintln!("failed to initialize updater: no update endpoints are configured");
+            log::error!("failed to initialize updater: no update endpoints are configured");
             return;
         }
         Err(error) => {
-            eprintln!("failed to initialize updater: {error}");
+            log::error!("failed to initialize updater: {error}");
             return;
         }
     };
 
     let mut update = match updater.check().await {
         Ok(Some(update)) => update,
-        Ok(None) => return,
+        Ok(None) => {
+            log::info!("application is up to date");
+            return;
+        }
         Err(error) => {
-            eprintln!("failed to check for updates: {error}");
+            log::error!("failed to check for updates: {error}");
             return;
         }
     };
 
+    log::info!("downloading application update {}", update.version);
     update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
     if let Err(error) = update.download_and_install(|_, _| {}, || {}).await {
-        eprintln!("failed to install update: {error}");
+        log::error!("failed to install update: {error}");
         return;
     }
 
+    log::info!("application update installed; restarting");
     app.restart();
 }
