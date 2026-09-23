@@ -9,7 +9,8 @@ use semver::Version;
 use serde_json::json;
 
 use crate::utils::{
-    Paths, files_recursively, remove_path, require_success, stable_version, temporary_configs,
+    Paths, clean_build_command, files_recursively, remove_path, require_success, stable_version,
+    temporary_configs,
 };
 
 const TEST_PRIVATE_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5TmlGT0xMc0FVYnN1aXZzWHZlWU9Ra3FzcFp3R1IwNGVDdk8rTTZsRTlTQUFBQkFBQUFBQUFBQUFBQUlBQUFBQUxqTG12cnlGellHNHRkNWo4ejdhRUt5YzdlUmZQZFg1dys2WE1QVHI5YWx6WnA5aTI2SlZrdWtwVDZ0emFCcTRnKy9DWFRZc2UvbGFHelVvaUY2dDNTNzJKanJZYVkrSjN4MTlQMHJXUUQxODg4ZTZWOS91Q0dCV1JDMlBVbHlIRmFuUnRBT3lVNzA9Cg==";
@@ -30,7 +31,7 @@ pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
     })
     .to_string();
 
-    let mut command = Command::new("cargo");
+    let mut command = clean_build_command("cargo");
     command.arg("tauri").arg("dev");
     if release {
         command.arg("--release");
@@ -159,7 +160,7 @@ fn next_update_version(paths: &Paths) -> Result<Version> {
 
 /// Builds the app bundle, optionally signing updater artifacts with the test key.
 fn build_app(paths: &Paths, config: &str, test_signing: bool, release: bool) -> Result<()> {
-    let mut command = Command::new("cargo");
+    let mut command = clean_build_command("cargo");
     command.arg("tauri").arg("build");
     if !release {
         command.arg("--debug");

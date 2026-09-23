@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 
 use crate::dev_tag;
 use crate::utils::{
-    Paths, gh_api_bytes, gh_api_json, gh_release_upload, remove_path, require_success,
-    required_env, stable_version,
+    Paths, clean_build_command, gh_api_bytes, gh_api_json, gh_release_upload, remove_path,
+    require_success, required_env, stable_version,
 };
 
 const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
@@ -238,7 +238,7 @@ pub(crate) fn build(
         _ => bail!("unsupported release target: {target}"),
     };
     let tauri_cli = "wizard-ui/node_modules/@tauri-apps/cli/tauri.js";
-    let mut build_command = Command::new("node");
+    let mut build_command = clean_build_command("node");
     build_command
         .arg(tauri_cli)
         .args(["build", "--target", target, "--no-bundle"])
@@ -252,7 +252,7 @@ pub(crate) fn build(
         .current_dir(&paths.wizard);
     require_success(build_command.status()?, "tauri build")?;
 
-    let mut bundle_command = Command::new("node");
+    let mut bundle_command = clean_build_command("node");
     bundle_command
         .arg(tauri_cli)
         .args(["bundle", "--target", target, "--bundles"])

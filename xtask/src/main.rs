@@ -3,7 +3,7 @@ use std::{path::PathBuf, process::Command};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::utils::{Paths, paths, require_success, stable_version};
+use crate::utils::{Paths, clean_build_command, paths, require_success, stable_version};
 
 mod dev;
 mod dev_tag;
@@ -155,19 +155,19 @@ fn run_ci(paths: &Paths) -> Result<()> {
         "frontend TypeScript check (run npm ci in wizard-ui first)",
     )?;
 
-    let status = Command::new("cargo")
+    let status = clean_build_command("cargo")
         .args(["fmt", "--check"])
         .current_dir(&paths.workspace)
         .status()?;
     require_success(status, "cargo fmt --check")?;
 
-    let status = Command::new("cargo")
+    let status = clean_build_command("cargo")
         .args(["check", "--workspace", "--all-targets"])
         .current_dir(&paths.workspace)
         .status()?;
     require_success(status, "cargo check")?;
 
-    let status = Command::new("cargo")
+    let status = clean_build_command("cargo")
         .args([
             "clippy",
             "--workspace",
@@ -180,7 +180,7 @@ fn run_ci(paths: &Paths) -> Result<()> {
         .status()?;
     require_success(status, "cargo clippy")?;
 
-    let status = Command::new("cargo")
+    let status = clean_build_command("cargo")
         .args(["test", "--workspace"])
         .current_dir(&paths.workspace)
         .status()?;

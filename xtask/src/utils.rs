@@ -45,6 +45,29 @@ pub(crate) fn paths(release: bool) -> Result<Paths> {
     })
 }
 
+/// Removes metadata inherited from `cargo run -p xtask`, not user build settings.
+/// Nested Cargo invocations must see the same environment as a direct invocation.
+pub(crate) fn clean_build_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    for key in [
+        "CARGO_MANIFEST_DIR",
+        "CARGO_MANIFEST_PATH",
+        "CARGO_MANIFEST_LINKS",
+        "CARGO_CRATE_NAME",
+        "CARGO_BIN_NAME",
+        "CARGO_PRIMARY_PACKAGE",
+    ] {
+        command.env_remove(key);
+    }
+    for (key, _) in env::vars_os() {
+        let name = key.to_string_lossy();
+        if name.starts_with("CARGO_PKG_") || name.starts_with("CARGO_BIN_EXE_") {
+            command.env_remove(key);
+        }
+    }
+    command
+}
+
 /// Reads the stable base version from `tauri.conf.json` and rejects pre-release versions.
 pub(crate) fn stable_version(paths: &Paths) -> Result<Version> {
     let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
