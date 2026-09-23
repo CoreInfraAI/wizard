@@ -15,14 +15,15 @@ pub(crate) enum AgentEvent {
 }
 
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri injects State by value"
-)]
-pub(crate) fn agent_event(event: AgentEvent, updates: tauri::State<'_, RevisionSignal>) {
-    match event {
-        AgentEvent::CodexCliInstall | AgentEvent::CodexCliUninstall => updates.notify(),
-    }
+pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || match event {
+        AgentEvent::CodexCliInstall => codex_cli::set_proxy(true),
+        AgentEvent::CodexCliUninstall => codex_cli::set_proxy(false),
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    app.state::<RevisionSignal>().notify();
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]

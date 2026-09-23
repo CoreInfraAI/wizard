@@ -10,6 +10,8 @@ use tauri_plugin_log::RotationStrategy;
 mod agents;
 mod platform;
 mod revision_signal;
+#[cfg(target_os = "macos")]
+mod toml;
 mod updater;
 
 const MAIN_WINDOW_NAME: &str = "main";
