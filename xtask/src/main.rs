@@ -43,7 +43,7 @@ enum Commands {
         #[arg(long)]
         release: bool,
     },
-    /// Run formatting, compilation, lint, and test checks for the workspace.
+    /// Check frontend types and run workspace formatting, compilation, lints, and tests.
     Ci,
     /// Find or create a GitHub draft release.
     CreateRelease {
@@ -146,6 +146,15 @@ fn verify_cli() {
 
 /// Runs the workspace checks used by continuous integration.
 fn run_ci(paths: &Paths) -> Result<()> {
+    let status = Command::new("node")
+        .args(["node_modules/typescript/bin/tsc", "--noEmit"])
+        .current_dir(paths.wizard.join("wizard-ui"))
+        .status()?;
+    require_success(
+        status,
+        "frontend TypeScript check (run npm ci in wizard-ui first)",
+    )?;
+
     let status = Command::new("cargo")
         .args(["fmt", "--check"])
         .current_dir(&paths.workspace)
