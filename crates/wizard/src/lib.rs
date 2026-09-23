@@ -9,6 +9,7 @@ use tauri_plugin_log::RotationStrategy;
 
 mod agents;
 mod platform;
+mod revision_signal;
 mod updater;
 
 const MAIN_WINDOW_NAME: &str = "main";
@@ -42,6 +43,7 @@ fn run_application() -> tauri::Result<()> {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(updater::StartupUpdateState::default()))
+        .manage(revision_signal::RevisionSignal::default())
         .setup(|app| {
             log::info!("starting Wizard {}", app.package_info().version);
             focus_window(app.handle());
@@ -51,6 +53,8 @@ fn run_application() -> tauri::Result<()> {
         .invoke_handler(tauri::generate_handler![
             updater::wait_for_startup_update,
             agents::get_agent_state,
+            agents::agent_event,
+            revision_signal::wait_for_update,
         ])
         .run(tauri::generate_context!())
 }

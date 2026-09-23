@@ -1,15 +1,43 @@
-//! Read-only agent discovery and its Tauri command.
+//! Agent discovery and Tauri commands.
 
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use tauri::Manager as _;
 
-use serde::Serialize;
+use crate::revision_signal::RevisionSignal;
 
 mod codex_cli;
 mod codex_desktop;
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub(crate) enum AgentEvent {
+    CodexCliInstall,
+    CodexCliUninstall,
+}
+
 #[tauri::command]
-pub(crate) async fn get_agent_state() -> AgentStates {
-    detect().await
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri injects State by value"
+)]
+pub(crate) fn agent_event(event: AgentEvent, updates: tauri::State<'_, RevisionSignal>) {
+    match event {
+        AgentEvent::CodexCliInstall | AgentEvent::CodexCliUninstall => updates.notify(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentStateSnapshot {
+    revision: String,
+    agents: AgentStates,
+}
+
+#[tauri::command]
+pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> AgentStateSnapshot {
+    let revision = app.state::<RevisionSignal>().current().to_string();
+    AgentStateSnapshot {
+        revision,
+        agents: detect().await,
+    }
 }
 
 async fn detect() -> AgentStates {
@@ -29,30 +57,20 @@ async fn detect() -> AgentStates {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentStates {
-    pub codex_cli: AgentDetection,
-    pub codex_desktop: AgentDetection,
+    pub codex_cli: AgentDetection<codex_cli::CodexCli>,
+    pub codex_desktop: AgentDetection<codex_desktop::CodexDesktop>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(tag = "status", content = "data", rename_all = "snake_case")]
-pub enum AgentDetection {
-    Found(Installation),
+pub enum AgentDetection<T> {
+    Found(T),
     NotFound,
     Error(String),
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
-pub struct Installation {
-    pub path: PathBuf,
-    pub version: Option<String>,
-}
-
 #[cfg(target_os = "macos")]
-impl AgentDetection {
-    fn found(path: PathBuf, version: Option<String>) -> Self {
-        Self::Found(Installation { path, version })
-    }
-
+impl<T> AgentDetection<T> {
     fn failed(path: &std::path::Path, error: &impl core::fmt::Display) -> Self {
         Self::Error(format!("{}: {error}", path.display()))
     }

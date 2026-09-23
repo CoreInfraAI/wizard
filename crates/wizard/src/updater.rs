@@ -38,7 +38,7 @@ impl StartupUpdateState {
 }
 
 pub(crate) fn start(app: tauri::AppHandle) {
-    let state = Arc::clone(app.state::<Arc<StartupUpdateState>>().inner());
+    let state = Arc::clone(&app.state::<Arc<StartupUpdateState>>());
     tauri::async_runtime::spawn(async move {
         check_and_install_update(app).await;
         state.complete();
@@ -47,7 +47,7 @@ pub(crate) fn start(app: tauri::AppHandle) {
 
 #[tauri::command]
 pub(crate) async fn wait_for_startup_update(app: tauri::AppHandle) {
-    let state = Arc::clone(app.state::<Arc<StartupUpdateState>>().inner());
+    let state = Arc::clone(&app.state::<Arc<StartupUpdateState>>());
     state.wait().await;
 }
 

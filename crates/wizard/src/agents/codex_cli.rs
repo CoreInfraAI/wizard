@@ -3,14 +3,24 @@ use super::AgentDetection;
 #[cfg(target_os = "macos")]
 use crate::platform::macos::command_output;
 #[cfg(target_os = "macos")]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-pub(super) fn detect() -> AgentDetection {
+use serde::Serialize;
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub(crate) struct CodexCli {
+    pub path: PathBuf,
+    pub version: String,
+    pub proxy_installed: bool,
+}
+
+pub(super) fn detect() -> AgentDetection<CodexCli> {
     detect_cli()
 }
 
 #[cfg(target_os = "macos")]
-fn detect_cli() -> AgentDetection {
+fn detect_cli() -> AgentDetection<CodexCli> {
     let found = match command_output(Path::new("/usr/bin/which"), &["codex"]) {
         Ok(output) => output,
         Err(error) => return AgentDetection::Error(error),
@@ -46,7 +56,11 @@ fn detect_cli() -> AgentDetection {
         );
     }
     match parse_version(&version_output.stdout) {
-        Ok(version) => AgentDetection::found(path, Some(version)),
+        Ok(version) => AgentDetection::Found(CodexCli {
+            path,
+            version,
+            proxy_installed: false,
+        }),
         Err(error) => AgentDetection::failed(&path, &error),
     }
 }
@@ -62,6 +76,6 @@ fn parse_version(bytes: &[u8]) -> Result<String, String> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn detect_cli() -> AgentDetection {
+fn detect_cli() -> AgentDetection<CodexCli> {
     AgentDetection::Error("not supported".to_owned())
 }
