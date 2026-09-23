@@ -7,6 +7,8 @@ use log::LevelFilter;
 use tauri::Manager as _;
 use tauri_plugin_log::RotationStrategy;
 
+mod agents;
+mod platform;
 mod updater;
 
 const MAIN_WINDOW_NAME: &str = "main";
@@ -46,7 +48,10 @@ fn run_application() -> tauri::Result<()> {
             updater::start(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![updater::wait_for_startup_update])
+        .invoke_handler(tauri::generate_handler![
+            updater::wait_for_startup_update,
+            agents::get_agent_state,
+        ])
         .run(tauri::generate_context!())
 }
 

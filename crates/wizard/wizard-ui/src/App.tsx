@@ -1,3 +1,4 @@
+import { AgentList } from "./AgentList";
 import { useApplicationVersion, useStartupUpdate } from "./update";
 
 function App() {
@@ -9,7 +10,10 @@ function App() {
   }
 
   return (
-    <main>version: {applicationVersion ? `v${applicationVersion}` : ""}</main>
+    <main>
+      <p>Wizard version: {applicationVersion ? `v${applicationVersion}` : ""}</p>
+      <AgentList />
+    </main>
   );
 }
 

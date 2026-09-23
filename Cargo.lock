@@ -4186,6 +4186,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "windows-sys 0.61.2",
 ]
@@ -5292,6 +5293,8 @@ name = "wizard"
 version = "0.1.0"
 dependencies = [
  "log",
+ "plist",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",
