@@ -16,12 +16,19 @@ pub(crate) enum AgentEvent {
 
 #[tauri::command]
 pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || match event {
+    log::info!("received agent event: {event:?}");
+    let result = tauri::async_runtime::spawn_blocking(move || match event {
         AgentEvent::CodexCliInstall => codex_cli::set_proxy(true),
         AgentEvent::CodexCliUninstall => codex_cli::set_proxy(false),
     })
     .await
-    .map_err(|error| error.to_string())??;
+    .map_err(|error| error.to_string())
+    .and_then(core::convert::identity);
+    if let Err(error) = result {
+        log::error!("agent event {event:?} failed: {error}");
+        return Err(error);
+    }
+    log::info!("agent event completed: {event:?}");
     app.state::<RevisionSignal>().notify();
     Ok(())
 }
@@ -35,10 +42,10 @@ pub(crate) struct AgentStateSnapshot {
 #[tauri::command]
 pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> AgentStateSnapshot {
     let revision = app.state::<RevisionSignal>().current().to_string();
-    AgentStateSnapshot {
-        revision,
-        agents: detect().await,
-    }
+    log::debug!("collecting agent state at revision {revision}");
+    let agents = detect().await;
+    log::debug!("agent state collected at revision {revision}");
+    AgentStateSnapshot { revision, agents }
 }
 
 async fn detect() -> AgentStates {

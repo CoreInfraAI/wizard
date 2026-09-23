@@ -43,7 +43,18 @@ const PROXY_SETTINGS: &[(&[&str], &str)] = &[
 ];
 
 pub(super) fn detect() -> AgentDetection<CodexCli> {
-    detect_cli()
+    let result = detect_cli();
+    match &result {
+        AgentDetection::Found(cli) => log::debug!(
+            "found Codex CLI: path={}, version={}, proxy_installed={}",
+            cli.path.display(),
+            cli.version,
+            cli.proxy_installed
+        ),
+        AgentDetection::NotFound => log::debug!("Codex CLI not found in PATH"),
+        AgentDetection::Error(error) => log::error!("Codex CLI detection failed: {error}"),
+    }
+    result
 }
 
 pub(super) fn set_proxy(installed: bool) -> Result<(), String> {
@@ -117,14 +128,14 @@ fn detect_cli() -> AgentDetection<CodexCli> {
 }
 
 #[cfg(target_os = "macos")]
-fn get_cli_version(path: &PathBuf) -> Result<String, AgentDetection<CodexCli>> {
-    let version_output = match command_output(&path, &["--version"]) {
+fn get_cli_version(path: &Path) -> Result<String, AgentDetection<CodexCli>> {
+    let version_output = match command_output(path, &["--version"]) {
         Ok(output) => output,
         Err(error) => return Err(AgentDetection::Error(error)),
     };
     if !version_output.status.success() {
         return Err(AgentDetection::failed(
-            &path,
+            path,
             &format!(
                 "--version exited with {}: {}",
                 version_output.status,
@@ -135,7 +146,7 @@ fn get_cli_version(path: &PathBuf) -> Result<String, AgentDetection<CodexCli>> {
     let bytes = &version_output.stdout;
     let text = match core::str::from_utf8(bytes) {
         Ok(text) => text,
-        Err(error) => return Err(AgentDetection::failed(&path, &error)),
+        Err(error) => return Err(AgentDetection::failed(path, &error)),
     };
     let version_result = text
         .trim()
@@ -145,7 +156,7 @@ fn get_cli_version(path: &PathBuf) -> Result<String, AgentDetection<CodexCli>> {
         .ok_or_else(|| format!("unexpected Codex version output: {}", text.trim()));
     let version = match version_result {
         Ok(version) => version,
-        Err(error) => return Err(AgentDetection::failed(&path, &error)),
+        Err(error) => return Err(AgentDetection::failed(path, &error)),
     };
     Ok(version)
 }

@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { reportError, info } from "./log";
+import { reportError, info, debug } from "./log";
 
 export type AgentEvent = "CodexCliInstall" | "CodexCliUninstall";
 
 export function sendAgentEvent(event: AgentEvent): Promise<void> {
+  info(`sending agent event: ${event}`);
   return invoke<void>("agent_event", { event });
 }
 
@@ -60,7 +61,7 @@ export function useAgentState(): DetectionState {
         while (!stopped) {
           const snapshot = await getSnapshot();
           if (stopped) return;
-          info("got AgentState")
+          debug(`received agent state at revision ${snapshot.revision}`);
           setState({ status: "ready", data: snapshot.agents });
           await invoke<string>("wait_for_update", { lastRevision: snapshot.revision });
         }

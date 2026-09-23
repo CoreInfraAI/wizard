@@ -15,7 +15,19 @@ pub(crate) struct CodexDesktop {
 }
 
 pub(super) fn detect() -> AgentDetection<CodexDesktop> {
-    detect_desktop()
+    let result = detect_desktop();
+    match &result {
+        AgentDetection::Found(desktop) => log::debug!(
+            "found desktop app: path={}, version={}",
+            desktop.path.display(),
+            desktop.version.as_deref().unwrap_or("unknown")
+        ),
+        AgentDetection::NotFound => {
+            log::debug!("desktop app not found in standard application directories");
+        }
+        AgentDetection::Error(error) => log::error!("Codex Desktop detection failed: {error}"),
+    }
+    result
 }
 
 #[cfg(target_os = "macos")]

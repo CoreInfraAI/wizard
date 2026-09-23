@@ -17,8 +17,10 @@ impl RevisionSignal {
     }
 
     pub(crate) fn notify(&self) {
-        self.revision
-            .send_modify(|revision| *revision = revision.wrapping_add(1));
+        self.revision.send_modify(|revision| {
+            *revision = revision.wrapping_add(1);
+            log::debug!("state revision advanced to {revision}");
+        });
     }
 
     pub(crate) async fn wait(&self, last_revision: u32) -> Result<u32, String> {

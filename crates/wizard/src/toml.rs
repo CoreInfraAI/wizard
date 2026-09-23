@@ -5,6 +5,7 @@ use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn read_text(path: &Path) -> Result<Option<String>, String> {
+    log::debug!("reading TOML config: {}", path.display());
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -146,6 +147,7 @@ pub(crate) fn update(
     edit: impl FnOnce(&mut DocumentMut) -> Result<(), String>,
 ) -> Result<(), String> {
     let _guard = WRITE_LOCK.lock().map_err(|error| error.to_string())?;
+    log::debug!("updating TOML config: {}", path.display());
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err("config is a symlink; refusing to replace it".to_owned());
@@ -159,6 +161,10 @@ pub(crate) fn update(
     edit(&mut doc)?;
     let updated = doc.to_string();
     if original.as_deref().unwrap_or_default() == updated {
+        log::info!(
+            "TOML config already matches requested changes: {}",
+            path.display()
+        );
         return Ok(());
     }
 
@@ -191,5 +197,6 @@ pub(crate) fn update(
     temporary
         .persist(path)
         .map_err(|error| format!("failed to save {}: {error}", path.display()))?;
+    log::info!("TOML config saved: {}", path.display());
     Ok(())
 }
