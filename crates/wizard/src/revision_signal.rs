@@ -1,3 +1,4 @@
+use anyhow::{Context as _, Result};
 use tokio::sync::watch;
 
 pub(crate) struct RevisionSignal {
@@ -23,17 +24,14 @@ impl RevisionSignal {
         });
     }
 
-    pub(crate) async fn wait(&self, last_revision: u32) -> Result<u32, String> {
+    pub(crate) async fn wait(&self, last_revision: u32) -> Result<u32> {
         let mut revision = self.revision.subscribe();
         loop {
             let current = *revision.borrow_and_update();
             if current != last_revision {
                 return Ok(current);
             }
-            revision
-                .changed()
-                .await
-                .map_err(|error| error.to_string())?;
+            revision.changed().await.context("revision signal closed")?;
         }
     }
 }
@@ -50,4 +48,5 @@ pub(crate) async fn wait_for_update(
         .wait(revision)
         .await
         .map(|revision| revision.to_string())
+        .map_err(|error| format!("{error:#}"))
 }

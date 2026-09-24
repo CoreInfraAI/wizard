@@ -17,6 +17,7 @@ workspace = true
 tauri-build = { workspace = true, features = [] }
 
 [dependencies]
+anyhow.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
@@ -25,7 +26,7 @@ tauri-plugin-log.workspace = true
 tauri-plugin-single-instance.workspace = true
 tauri-plugin-updater.workspace = true
 tokio.workspace = true
-toml_edit.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }
 tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

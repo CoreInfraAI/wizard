@@ -1,5 +1,6 @@
 //! Agent discovery and Tauri commands.
 
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 
@@ -22,11 +23,11 @@ pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Res
         AgentEvent::CodexCliUninstall => codex_cli::set_proxy(false),
     })
     .await
-    .map_err(|error| error.to_string())
+    .context("agent event task failed")
     .and_then(core::convert::identity);
     if let Err(error) = result {
-        log::error!("agent event {event:?} failed: {error}");
-        return Err(error);
+        log::error!("agent event {event:?} failed: {error:#}");
+        return Err(format!("{error:#}"));
     }
     log::info!("agent event completed: {event:?}");
     app.state::<RevisionSignal>().notify();
@@ -77,9 +78,9 @@ pub enum AgentDetection<T> {
     Error(String),
 }
 
-#[cfg(target_os = "macos")]
+#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
 impl<T> AgentDetection<T> {
     fn failed(path: &std::path::Path, error: &impl core::fmt::Display) -> Self {
-        Self::Error(format!("{}: {error}", path.display()))
+        Self::Error(format!("{}: {error:#}", path.display()))
     }
 }

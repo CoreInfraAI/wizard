@@ -1,11 +1,12 @@
 use core::time::Duration;
 use std::{path::Path, process::Output};
 
+use anyhow::{Context as _, Result};
 use serde::Deserialize;
 
 /// Runs a command on a blocking worker with bounded execution time.
 /// The caller interprets its exit status and output.
-pub(crate) fn command_output(program: &Path, args: &[&str]) -> Result<Output, String> {
+pub(crate) fn command_output(program: &Path, args: &[&str]) -> Result<Output> {
     log::debug!("running command: {}, args: {args:?}", program.display());
     tauri::async_runtime::block_on(async {
         let mut command = tokio::process::Command::new(program);
@@ -15,8 +16,8 @@ pub(crate) fn command_output(program: &Path, args: &[&str]) -> Result<Output, St
             .kill_on_drop(true);
         tokio::time::timeout(Duration::from_secs(5), command.output())
             .await
-            .map_err(|_| format!("{} timed out after 5 seconds", program.display()))?
-            .map_err(|error| format!("failed to run {}: {error}", program.display()))
+            .with_context(|| format!("{} timed out after 5 seconds", program.display()))?
+            .with_context(|| format!("failed to run {}", program.display()))
     })
 }
 
@@ -28,10 +29,10 @@ struct AppInfo {
 
 /// Reads an app bundle's version without launching the application.
 /// `plist` handles both XML and binary Info.plist files.
-pub(crate) fn read_app_version(app: &Path) -> Result<Option<String>, String> {
+pub(crate) fn read_app_version(app: &Path) -> Result<Option<String>> {
     let path = app.join("Contents/Info.plist");
     log::debug!("reading application metadata: {}", path.display());
-    let info: AppInfo = plist::from_file(&path)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let info: AppInfo =
+        plist::from_file(&path).with_context(|| format!("failed to read {}", path.display()))?;
     Ok(info.version.filter(|version| !version.trim().is_empty()))
 }

@@ -1,10 +1,9 @@
 use super::AgentDetection;
 #[cfg(target_os = "macos")]
 use crate::platform::macos::command_output;
-#[cfg(target_os = "macos")]
 use crate::toml;
+use anyhow::{Context as _, Result};
 use serde::Serialize;
-#[cfg(target_os = "macos")]
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -15,7 +14,7 @@ pub(crate) struct CodexCli {
     pub proxy_installed: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
 const PROXY_SETTINGS: &[(&[&str], &str)] = &[
     (&["model_provider"], "coreinfra"),
     (
@@ -57,7 +56,7 @@ pub(super) fn detect() -> AgentDetection<CodexCli> {
     result
 }
 
-pub(super) fn set_proxy(installed: bool) -> Result<(), String> {
+pub(super) fn set_proxy(installed: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let path = &config_path()?;
@@ -80,7 +79,7 @@ pub(super) fn set_proxy(installed: bool) -> Result<(), String> {
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         let _ = installed;
-        Err("not supported".to_owned())
+        anyhow::bail!("not supported")
     }
 }
 
@@ -88,7 +87,7 @@ pub(super) fn set_proxy(installed: bool) -> Result<(), String> {
 fn detect_cli() -> AgentDetection<CodexCli> {
     let found = match command_output(Path::new("/usr/bin/which"), &["codex"]) {
         Ok(output) => output,
-        Err(error) => return AgentDetection::Error(error),
+        Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
     if found.status.code() == Some(1) {
         return AgentDetection::NotFound;
@@ -108,12 +107,12 @@ fn detect_cli() -> AgentDetection<CodexCli> {
     };
     let version = match get_cli_version(&path) {
         Ok(value) => value,
-        Err(value) => return value,
+        Err(error) => return AgentDetection::failed(&path, &error),
     };
 
     let proxy_installed = match config_path().and_then(|path| proxy_installed(&path)) {
         Ok(installed) => installed,
-        Err(error) => return AgentDetection::Error(error),
+        Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
     AgentDetection::Found(CodexCli {
         path,
@@ -128,50 +127,35 @@ fn detect_cli() -> AgentDetection<CodexCli> {
 }
 
 #[cfg(target_os = "macos")]
-fn get_cli_version(path: &Path) -> Result<String, AgentDetection<CodexCli>> {
-    let version_output = match command_output(path, &["--version"]) {
-        Ok(output) => output,
-        Err(error) => return Err(AgentDetection::Error(error)),
-    };
-    if !version_output.status.success() {
-        return Err(AgentDetection::failed(
-            path,
-            &format!(
-                "--version exited with {}: {}",
-                version_output.status,
-                String::from_utf8_lossy(&version_output.stderr).trim()
-            ),
-        ));
-    }
-    let bytes = &version_output.stdout;
-    let text = match core::str::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(error) => return Err(AgentDetection::failed(path, &error)),
-    };
-    let version_result = text
-        .trim()
+fn get_cli_version(path: &Path) -> Result<String> {
+    let output = command_output(path, &["--version"])?;
+    anyhow::ensure!(
+        output.status.success(),
+        "--version exited with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let text =
+        core::str::from_utf8(&output.stdout).context("invalid UTF-8 in Codex version output")?;
+    text.trim()
         .strip_prefix("codex-cli ")
-        .filter(|version1| !version1.is_empty() && !version1.chars().any(char::is_whitespace))
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| format!("unexpected Codex version output: {}", text.trim()));
-    let version = match version_result {
-        Ok(version) => version,
-        Err(error) => return Err(AgentDetection::failed(path, &error)),
-    };
-    Ok(version)
+        .with_context(|| format!("unexpected Codex version output: {}", text.trim()))
 }
 
-#[cfg(target_os = "macos")]
-fn config_path() -> Result<PathBuf, String> {
+#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
+fn config_path() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("CODEX_HOME").filter(|home| !home.is_empty()) {
         return Ok(PathBuf::from(home).join("config.toml"));
     }
-    let home = std::env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
     Ok(PathBuf::from(home).join(".codex/config.toml"))
 }
 
-#[cfg(target_os = "macos")]
-fn proxy_installed(path: &Path) -> Result<bool, String> {
+#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
+fn proxy_installed(path: &Path) -> Result<bool> {
     let doc = toml::read(path)?;
     Ok(PROXY_SETTINGS
         .iter()
