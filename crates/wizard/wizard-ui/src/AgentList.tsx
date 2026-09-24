@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { type AgentDetection, sendAgentEvent, useAgentState } from "./agents_state";
+import { type AgentDetection, type AgentStates, sendAgentEvent } from "./agents_state";
 import { reportError } from "./log";
 
 function CodexCliProxy({ installed }: { installed: boolean }) {
@@ -60,24 +60,15 @@ function Installation({ name, detection, children }: {
   );
 }
 
-export function AgentList() {
-  const state = useAgentState();
-
-  if (state.status === "loading") {
-    return <p>Detecting agents…</p>;
-  }
-  if (state.status === "error") {
-    return <p>Failed to detect agents: {state.message}</p>;
-  }
-
+export function AgentList({ agents }: { agents: AgentStates }) {
   return (
     <>
-      <Installation name="Codex CLI" detection={state.data.codex_cli}>
-        {state.data.codex_cli.status === "found" && (
-          <CodexCliProxy installed={state.data.codex_cli.data.proxy_installed} />
+      <Installation name="Codex CLI" detection={agents.codex_cli}>
+        {agents.codex_cli.status === "found" && (
+          <CodexCliProxy installed={agents.codex_cli.data.proxy_installed} />
         )}
       </Installation>
-      <Installation name="Codex Desktop" detection={state.data.codex_desktop} />
+      <Installation name="Codex Desktop" detection={agents.codex_desktop} />
     </>
   );
 }

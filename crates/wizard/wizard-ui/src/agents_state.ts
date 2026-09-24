@@ -2,10 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { reportError, info, debug } from "./log";
 
-export type AgentEvent = "CodexCliInstall" | "CodexCliUninstall";
+export type AgentEvent =
+  | "CodexCliInstall"
+  | "CodexCliUninstall"
+  | { SetCoreinfraToken: string };
 
 export function sendAgentEvent(event: AgentEvent): Promise<void> {
-  info(`sending agent event: ${event}`);
+  const name = typeof event === "string" ? event : "SetCoreinfraToken";
+  info(`sending agent event: ${name}`);
   return invoke<void>("agent_event", { event });
 }
 
@@ -32,12 +36,13 @@ export type AgentStates = {
 
 type DetectionState =
   | { status: "loading" }
-  | { status: "ready"; data: AgentStates }
+  | { status: "ready"; data: AgentStateSnapshot }
   | { status: "error"; message: string };
 
 type AgentStateSnapshot = {
   revision: string;
   agents: AgentStates;
+  coreinfra_token_set: boolean;
 };
 
 // Deduplicate concurrent reads, but never cache a completed snapshot.
@@ -62,7 +67,7 @@ export function useAgentState(): DetectionState {
           const snapshot = await getSnapshot();
           if (stopped) return;
           debug(`received agent state at revision ${snapshot.revision}`);
-          setState({ status: "ready", data: snapshot.agents });
+          setState({ status: "ready", data: snapshot });
           await invoke<string>("wait_for_update", { lastRevision: snapshot.revision });
         }
       } catch (cause: unknown) {

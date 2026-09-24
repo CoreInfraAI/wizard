@@ -4,49 +4,75 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 
-use crate::revision_signal::RevisionSignal;
+use crate::{revision_signal::RevisionSignal, settings};
 
 mod codex_cli;
 mod codex_desktop;
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+// No Debug: event payloads may contain credentials.
+#[derive(Deserialize)]
 pub(crate) enum AgentEvent {
     CodexCliInstall,
     CodexCliUninstall,
+    SetCoreinfraToken(String),
 }
 
 #[tauri::command]
 pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Result<(), String> {
-    log::info!("received agent event: {event:?}");
-    let result = tauri::async_runtime::spawn_blocking(move || match event {
-        AgentEvent::CodexCliInstall => codex_cli::set_proxy(true),
-        AgentEvent::CodexCliUninstall => codex_cli::set_proxy(false),
-    })
-    .await
-    .context("agent event task failed")
-    .and_then(core::convert::identity);
-    if let Err(error) = result {
-        log::error!("agent event {event:?} failed: {error:#}");
+    let name = match &event {
+        AgentEvent::CodexCliInstall => "CodexCliInstall",
+        AgentEvent::CodexCliUninstall => "CodexCliUninstall",
+        AgentEvent::SetCoreinfraToken(_) => "SetCoreinfraToken",
+    };
+    log::info!("received agent event: {name}");
+    if let Err(error) = apply_event(event, &app).await {
+        log::error!("agent event {name} failed: {error:#}");
         return Err(format!("{error:#}"));
     }
-    log::info!("agent event completed: {event:?}");
+    log::info!("agent event completed: {name}");
     app.state::<RevisionSignal>().notify();
     Ok(())
+}
+
+async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
+    match event {
+        AgentEvent::SetCoreinfraToken(token) => {
+            let mut current = settings::get(app).await?;
+            current.coreinfra_api_key = if token.is_empty() { None } else { Some(token) };
+            settings::set(app, current).await
+        }
+        AgentEvent::CodexCliInstall | AgentEvent::CodexCliUninstall => {
+            let installed = matches!(event, AgentEvent::CodexCliInstall);
+            tauri::async_runtime::spawn_blocking(move || codex_cli::set_proxy(installed))
+                .await
+                .context("agent event task failed")?
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentStateSnapshot {
     revision: String,
     agents: AgentStates,
+    coreinfra_token_set: bool,
 }
 
 #[tauri::command]
-pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> AgentStateSnapshot {
+pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateSnapshot, String> {
     let revision = app.state::<RevisionSignal>().current().to_string();
     log::debug!("collecting agent state at revision {revision}");
+    let coreinfra_token_set = settings::get(&app)
+        .await
+        .map_err(|error| format!("{error:#}"))?
+        .coreinfra_api_key
+        .is_some_and(|token| !token.trim().is_empty());
     let agents = detect().await;
     log::debug!("agent state collected at revision {revision}");
-    AgentStateSnapshot { revision, agents }
+    Ok(AgentStateSnapshot {
+        revision,
+        agents,
+        coreinfra_token_set,
+    })
 }
 
 async fn detect() -> AgentStates {
