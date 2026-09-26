@@ -1,7 +1,7 @@
 use super::AgentDetection;
+use crate::config_files;
 #[cfg(target_os = "macos")]
 use crate::platform::macos::command_output;
-use crate::toml;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 use std::path::Path;
@@ -56,29 +56,42 @@ pub(super) fn detect() -> AgentDetection<CodexCli> {
     result
 }
 
-pub(super) fn set_proxy(installed: bool) -> Result<()> {
+pub(super) fn set_proxy(installed: bool, token: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let path = &config_path()?;
-        toml::update(path, |doc| {
+        config_files::toml::update(path, |doc| {
             if installed {
                 for (keys, value) in PROXY_SETTINGS {
-                    toml::set_string(doc, keys, value)?;
+                    config_files::toml::set_string(doc, keys, value)?;
                 }
-                toml::implicit_table(doc, &["model_providers"])?;
-                toml::inline_table(doc, &["model_providers", "coreinfra", "http_headers"])?;
+                config_files::toml::implicit_table(doc, &["model_providers"])?;
+                config_files::toml::inline_table(
+                    doc,
+                    &["model_providers", "coreinfra", "http_headers"],
+                )?;
             } else {
-                if toml::get_string(doc, &["model_provider"]) == Some("coreinfra") {
-                    toml::remove(doc, &["model_provider"])?;
+                if config_files::toml::get_string(doc, &["model_provider"]) == Some("coreinfra") {
+                    config_files::toml::remove(doc, &["model_provider"])?;
                 }
-                toml::remove(doc, &["model_providers", "coreinfra"])?;
+                config_files::toml::remove(doc, &["model_providers", "coreinfra"])?;
             }
             Ok(())
-        })
+        })?;
+        config_files::env::set(
+            &path.with_file_name(".env"),
+            "COREINFRA_API_KEY",
+            if installed && !token.is_empty() {
+                Some(token)
+            } else {
+                None
+            },
+        )
+        .context("Codex config updated, but updating Codex .env failed; please retry")
     }
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
-        let _ = installed;
+        let _ = (installed, token);
         anyhow::bail!("not supported")
     }
 }
@@ -156,8 +169,8 @@ fn config_path() -> Result<PathBuf> {
 
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
 fn proxy_installed(path: &Path) -> Result<bool> {
-    let doc = toml::read(path)?;
+    let doc = config_files::toml::read(path)?;
     Ok(PROXY_SETTINGS
         .iter()
-        .all(|(keys, value)| toml::get_string(&doc, keys) == Some(*value)))
+        .all(|(keys, value)| config_files::toml::get_string(&doc, keys) == Some(*value)))
 }

@@ -10,8 +10,8 @@ use tauri::Manager as _;
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub coreinfra_api_key: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub coreinfra_api_key: String,
 }
 
 pub(crate) async fn initialize(app: &tauri::AppHandle) -> Result<()> {
@@ -40,7 +40,11 @@ pub async fn get(app: &tauri::AppHandle) -> Result<Settings> {
     .context("settings read task failed")?
 }
 
-pub async fn set(app: &tauri::AppHandle, settings: Settings) -> Result<()> {
+/// on save error still updates state
+pub async fn update(
+    app: &tauri::AppHandle,
+    edit: impl FnOnce(&mut Settings) + Send + 'static,
+) -> Result<()> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app
@@ -49,8 +53,8 @@ pub async fn set(app: &tauri::AppHandle, settings: Settings) -> Result<()> {
         let mut current = state
             .lock()
             .map_err(|_| anyhow!("settings lock poisoned"))?;
-        save(&app, &settings)?;
-        *current = settings;
+        edit(&mut current);
+        save(&app, &current)?;
         Ok(())
     })
     .await
