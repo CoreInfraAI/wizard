@@ -12,6 +12,12 @@ mod codex_desktop;
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentStateSnapshot {
     revision: String,
+    #[serde(flatten)]
+    state: AgentState,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentState {
     agents: AgentStates,
     coreinfra_token_set: bool,
 }
@@ -41,17 +47,23 @@ impl<T> AgentDetection<T> {
 pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateSnapshot, String> {
     let revision = app.state::<RevisionSignal>().current().to_string();
     log::debug!("collecting agent state at revision {revision}");
-    let settings = settings::get(&app)
+    let settings = settings::get_state(&app)
         .await
         .map_err(|error| format!("{error:#}"))?;
-    let coreinfra_token_set = !settings.coreinfra_api_key.is_empty();
-    let agents = detect().await;
+    let state = collect_agent_state(&settings).await;
     log::debug!("agent state collected at revision {revision}");
-    Ok(AgentStateSnapshot {
-        revision,
+    Ok(AgentStateSnapshot { revision, state })
+}
+
+/// Collects state for GUI or CLI without requiring a running Tauri application.
+pub(crate) async fn collect_agent_state(settings: &settings::Settings) -> AgentState {
+    let agents = detect().await;
+    let coreinfra_token_set = !settings.coreinfra_api_key.is_empty();
+
+    AgentState {
         agents,
         coreinfra_token_set,
-    })
+    }
 }
 
 async fn detect() -> AgentStates {
@@ -98,14 +110,14 @@ pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Res
 async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
     match event {
         AgentEvent::SetCoreinfraToken(token) => {
-            settings::update(app, move |settings| {
+            settings::update_state(app, move |settings| {
                 settings.coreinfra_api_key = token;
             })
             .await
         }
         AgentEvent::CodexCliInstall | AgentEvent::CodexCliUninstall => {
             let installed = matches!(event, AgentEvent::CodexCliInstall);
-            let current = settings::get(app).await?;
+            let current = settings::get_state(app).await?;
             tauri::async_runtime::spawn_blocking(move || {
                 codex_cli::set_proxy(installed, &current.coreinfra_api_key)
             })

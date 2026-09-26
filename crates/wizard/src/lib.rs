@@ -39,7 +39,7 @@ pub fn run_application() -> Result<()> {
         .manage(revision_signal::RevisionSignal::default())
         .setup(|app| {
             log::info!("starting Wizard {}", app.package_info().version);
-            tauri::async_runtime::block_on(settings::initialize(app.handle()))?;
+            tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
             // focus after restart
             focus_window(app.handle());
             updater::start(app.handle().clone());

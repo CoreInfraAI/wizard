@@ -14,9 +14,8 @@ pub struct Settings {
     pub coreinfra_api_key: String,
 }
 
-pub(crate) async fn initialize(app: &tauri::AppHandle) -> Result<()> {
-    let handle = app.clone();
-    let settings = tauri::async_runtime::spawn_blocking(move || load(&handle))
+pub(crate) async fn initialize_state(app: &tauri::AppHandle) -> Result<()> {
+    let settings = tauri::async_runtime::spawn_blocking(load_from_file)
         .await
         .context("settings initialization task failed")??;
     if !app.manage(Mutex::new(settings)) {
@@ -25,7 +24,8 @@ pub(crate) async fn initialize(app: &tauri::AppHandle) -> Result<()> {
     Ok(())
 }
 
-pub async fn get(app: &tauri::AppHandle) -> Result<Settings> {
+/// TODO: update state when file changes
+pub async fn get_state(app: &tauri::AppHandle) -> Result<Settings> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app
@@ -41,7 +41,7 @@ pub async fn get(app: &tauri::AppHandle) -> Result<Settings> {
 }
 
 /// on save error still updates state
-pub async fn update(
+pub async fn update_state(
     app: &tauri::AppHandle,
     edit: impl FnOnce(&mut Settings) + Send + 'static,
 ) -> Result<()> {
@@ -54,22 +54,23 @@ pub async fn update(
             .lock()
             .map_err(|_| anyhow!("settings lock poisoned"))?;
         edit(&mut current);
-        save(&app, &current)?;
+        save_to_file(&current)?;
         Ok(())
     })
     .await
     .context("settings save task failed")?
 }
 
-fn path(app: &tauri::AppHandle) -> Result<PathBuf> {
-    app.path()
-        .app_config_dir()
-        .map(|dir| dir.join("config.toml"))
+fn settings_path() -> Result<PathBuf> {
+    // match `identifier` in crates/wizard/tauri.conf.json.
+    const IDENTIFIER: &str = "ai.coreinfra.wizard";
+    dirs::config_dir()
+        .map(|dir| dir.join(IDENTIFIER).join("config.toml"))
         .context("failed to resolve Wizard settings directory")
 }
 
-fn load(app: &tauri::AppHandle) -> Result<Settings> {
-    let text = match fs::read_to_string(path(app)?) {
+pub fn load_from_file() -> Result<Settings> {
+    let text = match fs::read_to_string(settings_path()?) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Settings::default());
@@ -80,8 +81,8 @@ fn load(app: &tauri::AppHandle) -> Result<Settings> {
     toml_edit::de::from_str(&text).map_err(|_| anyhow!("failed to deserialize Wizard settings"))
 }
 
-fn save(app: &tauri::AppHandle, settings: &Settings) -> Result<()> {
-    let path = path(app)?;
+pub fn save_to_file(settings: &Settings) -> Result<()> {
+    let path = settings_path()?;
     let serialized = toml_edit::ser::to_string_pretty(settings)
         .map_err(|_| anyhow!("failed to serialize Wizard settings"))?;
     match fs::symlink_metadata(&path) {
@@ -108,7 +109,13 @@ fn save(app: &tauri::AppHandle, settings: &Settings) -> Result<()> {
     file.as_file()
         .sync_all()
         .context("failed to sync Wizard settings")?;
-    file.persist(&path)
+    file.persist(path)
         .context("failed to save Wizard settings")?;
     Ok(())
+}
+
+pub fn update_file(edit: impl FnOnce(&mut Settings)) -> Result<()> {
+    let mut settings = load_from_file()?;
+    edit(&mut settings);
+    save_to_file(&settings)
 }

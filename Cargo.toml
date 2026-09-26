@@ -35,6 +35,7 @@ missing_panics_doc = "allow"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+dirs = "6"
 base64 = "0.22.1"
 clap = "4.5.60"
 log = "0.4.34"
