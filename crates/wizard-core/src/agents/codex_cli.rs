@@ -56,7 +56,7 @@ pub(super) fn detect() -> AgentDetection<CodexCli> {
     result
 }
 
-pub(super) fn set_proxy(installed: bool, token: &str) -> Result<()> {
+pub fn set_proxy(installed: bool, token: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let path = &config_path()?;

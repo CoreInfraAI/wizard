@@ -7,11 +7,8 @@ use tauri::Manager as _;
 use tauri_plugin_log::RotationStrategy;
 
 mod agents;
-#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
-mod config_files;
-mod platform;
 mod revision_signal;
-pub mod settings;
+mod settings;
 mod updater;
 
 const MAIN_WINDOW_NAME: &str = "main";

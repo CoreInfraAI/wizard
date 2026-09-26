@@ -30,7 +30,7 @@ pub(crate) fn paths(release: bool) -> Result<Paths> {
         .parent()
         .context("xtask must be inside the workspace")?
         .to_path_buf();
-    let wizard = workspace.join("crates/wizard");
+    let wizard = workspace.join("crates/wizard-gui");
     let profile = if release { "release" } else { "debug" };
     let bundle_dir = workspace.join("target").join(profile).join("bundle");
 

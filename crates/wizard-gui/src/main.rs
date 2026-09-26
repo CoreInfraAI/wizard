@@ -4,7 +4,7 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    if let Err(error) = wizard_lib::run_application() {
+    if let Err(error) = wizard_gui::run_application() {
         eprintln!("application failed: {error:#}");
         return ExitCode::FAILURE;
     }

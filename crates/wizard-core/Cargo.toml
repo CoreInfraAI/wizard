@@ -1,0 +1,24 @@
+[package]
+name = "wizard-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme = false
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+log.workspace = true
+serde.workspace = true
+tauri = { workspace = true, features = [] }
+tokio.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }
+tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist.workspace = true

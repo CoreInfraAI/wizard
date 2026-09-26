@@ -1,5 +1,6 @@
 [package]
-name = "wizard"
+name = "wizard-gui"
+default-run = "wizard"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -8,7 +9,11 @@ readme = false
 publish = false
 
 [lib]
-name = "wizard_lib"
+name = "wizard_gui"
+
+[[bin]]
+name = "wizard"
+path = "src/main.rs"
 
 [lints]
 workspace = true
@@ -18,7 +23,6 @@ tauri-build = { workspace = true, features = [] }
 
 [dependencies]
 anyhow.workspace = true
-dirs.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
@@ -27,8 +31,4 @@ tauri-plugin-log.workspace = true
 tauri-plugin-single-instance.workspace = true
 tauri-plugin-updater.workspace = true
 tokio.workspace = true
-toml_edit = { workspace = true, features = ["serde"] }
-tempfile.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-plist.workspace = true
+wizard-core = { path = "../wizard-core" }

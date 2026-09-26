@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use tokio::sync::watch;
 
-pub(crate) struct RevisionSignal {
+pub struct RevisionSignal {
     revision: watch::Sender<u32>,
 }
 
@@ -37,7 +37,7 @@ impl RevisionSignal {
 }
 
 #[tauri::command]
-pub(crate) async fn wait_for_update(
+pub async fn wait_for_update(
     last_revision: String,
     signal: tauri::State<'_, RevisionSignal>,
 ) -> Result<String, String> {

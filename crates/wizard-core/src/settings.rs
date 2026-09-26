@@ -1,10 +1,9 @@
 //! Backend-only settings storage. The API key is stored as plaintext, never logged.
 
-use std::{fs, io::Write as _, path::PathBuf, sync::Mutex};
+use std::{fs, io::Write as _, path::PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use tauri::Manager as _;
 
 // No Debug: settings contain a secret and must not be logged.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -14,55 +13,8 @@ pub struct Settings {
     pub coreinfra_api_key: String,
 }
 
-pub(crate) async fn initialize_state(app: &tauri::AppHandle) -> Result<()> {
-    let settings = tauri::async_runtime::spawn_blocking(load_from_file)
-        .await
-        .context("settings initialization task failed")??;
-    if !app.manage(Mutex::new(settings)) {
-        bail!("settings already initialized");
-    }
-    Ok(())
-}
-
-/// TODO: update state when file changes
-pub async fn get_state(app: &tauri::AppHandle) -> Result<Settings> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app
-            .try_state::<Mutex<Settings>>()
-            .context("settings not initialized")?;
-        let current = state
-            .lock()
-            .map_err(|_| anyhow!("settings lock poisoned"))?;
-        Ok(current.clone())
-    })
-    .await
-    .context("settings read task failed")?
-}
-
-/// on save error still updates state
-pub async fn update_state(
-    app: &tauri::AppHandle,
-    edit: impl FnOnce(&mut Settings) + Send + 'static,
-) -> Result<()> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app
-            .try_state::<Mutex<Settings>>()
-            .context("settings not initialized")?;
-        let mut current = state
-            .lock()
-            .map_err(|_| anyhow!("settings lock poisoned"))?;
-        edit(&mut current);
-        save_to_file(&current)?;
-        Ok(())
-    })
-    .await
-    .context("settings save task failed")?
-}
-
 fn settings_path() -> Result<PathBuf> {
-    // match `identifier` in crates/wizard/tauri.conf.json.
+    // match `identifier` in crates/wizard-gui/tauri.conf.json.
     const IDENTIFIER: &str = "ai.coreinfra.wizard";
     dirs::config_dir()
         .map(|dir| dir.join(IDENTIFIER).join("config.toml"))
