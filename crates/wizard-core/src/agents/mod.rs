@@ -34,7 +34,7 @@ impl<T> AgentDetection<T> {
     }
 }
 
-/// Collects state for GUI or CLI without requiring a running Tauri application.
+/// Collects state for GUI or CLI. Must be called within a Tokio runtime with I/O and time enabled.
 pub async fn collect_agent_state(settings: &settings::Settings) -> AgentState {
     let agents = detect().await;
     let coreinfra_token_set = !settings.coreinfra_api_key.is_empty();
@@ -47,8 +47,8 @@ pub async fn collect_agent_state(settings: &settings::Settings) -> AgentState {
 
 async fn detect() -> AgentStates {
     // Start all detectors before awaiting their results so they can run concurrently.
-    let codex_cli = tauri::async_runtime::spawn_blocking(codex_cli::detect);
-    let codex_desktop = tauri::async_runtime::spawn_blocking(codex_desktop::detect);
+    let codex_cli = tokio::task::spawn_blocking(codex_cli::detect);
+    let codex_desktop = tokio::task::spawn_blocking(codex_desktop::detect);
 
     AgentStates {
         codex_cli: codex_cli

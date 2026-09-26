@@ -61,10 +61,10 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
             .await
         }
         AgentEvent::CodexCliInstall | AgentEvent::CodexCliUninstall => {
-            let installed = matches!(event, AgentEvent::CodexCliInstall);
+            let install = matches!(event, AgentEvent::CodexCliInstall);
             let current = settings::get_state(app).await?;
             tauri::async_runtime::spawn_blocking(move || {
-                codex_cli::set_proxy(installed, &current.coreinfra_api_key)
+                codex_cli::set_proxy(install, &current.coreinfra_api_key)
             })
             .await
             .context("agent event task failed")?

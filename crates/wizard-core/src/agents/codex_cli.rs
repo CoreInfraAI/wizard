@@ -4,6 +4,7 @@ use crate::config_files;
 use crate::platform::macos::command_output;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
+#[cfg(target_os = "macos")]
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -56,12 +57,12 @@ pub(super) fn detect() -> AgentDetection<CodexCli> {
     result
 }
 
-pub fn set_proxy(installed: bool, token: &str) -> Result<()> {
+pub fn set_proxy(install: bool, token: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let path = &config_path()?;
         config_files::toml::update(path, |doc| {
-            if installed {
+            if install {
                 for (keys, value) in PROXY_SETTINGS {
                     config_files::toml::set_string(doc, keys, value)?;
                 }
@@ -81,7 +82,7 @@ pub fn set_proxy(installed: bool, token: &str) -> Result<()> {
         config_files::env::set(
             &path.with_file_name(".env"),
             "COREINFRA_API_KEY",
-            if installed && !token.is_empty() {
+            if install && !token.is_empty() {
                 Some(token)
             } else {
                 None
@@ -91,7 +92,7 @@ pub fn set_proxy(installed: bool, token: &str) -> Result<()> {
     }
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
-        let _ = (installed, token);
+        let _ = (install, token);
         anyhow::bail!("not supported")
     }
 }
@@ -123,7 +124,7 @@ fn detect_cli() -> AgentDetection<CodexCli> {
         Err(error) => return AgentDetection::failed(&path, &error),
     };
 
-    let proxy_installed = match config_path().and_then(|path| proxy_installed(&path)) {
+    let proxy_installed = match proxy_installed() {
         Ok(installed) => installed,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
@@ -168,8 +169,8 @@ fn config_path() -> Result<PathBuf> {
 }
 
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
-fn proxy_installed(path: &Path) -> Result<bool> {
-    let doc = config_files::toml::read(path)?;
+fn proxy_installed() -> Result<bool> {
+    let doc = config_files::toml::read(&config_path()?)?;
     Ok(PROXY_SETTINGS
         .iter()
         .all(|(keys, value)| config_files::toml::get_string(&doc, keys) == Some(*value)))

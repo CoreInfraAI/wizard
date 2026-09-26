@@ -1,2 +1,3 @@
 [alias]
 x = "run --quiet --package xtask --"
+cli = "run --quiet --package wizard-cli --"

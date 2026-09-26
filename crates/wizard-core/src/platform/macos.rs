@@ -4,11 +4,13 @@ use std::{path::Path, process::Output};
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
 
-/// Runs a command on a blocking worker with bounded execution time.
-/// The caller interprets its exit status and output.
+/// Runs a command from a Tokio blocking worker with bounded execution time.
+/// Must be called inside `spawn_blocking`
 pub(crate) fn command_output(program: &Path, args: &[&str]) -> Result<Output> {
+    let runtime =
+        tokio::runtime::Handle::try_current().context("command_output requires a Tokio runtime")?;
     log::debug!("running command: {}, args: {args:?}", program.display());
-    tauri::async_runtime::block_on(async {
+    runtime.block_on(async {
         let mut command = tokio::process::Command::new(program);
         command
             .args(args)
