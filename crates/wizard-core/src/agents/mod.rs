@@ -27,7 +27,6 @@ pub enum AgentDetection<T> {
     Error(String),
 }
 
-#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
 impl<T> AgentDetection<T> {
     fn failed(path: &std::path::Path, error: &impl core::fmt::Display) -> Self {
         Self::Error(format!("{}: {error:#}", path.display()))

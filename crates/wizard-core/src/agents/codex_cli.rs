@@ -1,12 +1,9 @@
 use super::AgentDetection;
 use crate::config_files;
-#[cfg(target_os = "macos")]
-use crate::platform::macos::command_output;
+use crate::platform::command_output;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
-#[cfg(target_os = "macos")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct CodexCli {
@@ -15,7 +12,6 @@ pub(crate) struct CodexCli {
     pub proxy_installed: bool,
 }
 
-#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
 const PROXY_SETTINGS: &[(&[&str], &str)] = &[
     (&["model_provider"], "coreinfra"),
     (
@@ -53,73 +49,49 @@ pub(super) fn detect() -> AgentDetection<CodexCli> {
 }
 
 pub fn set_proxy(install: bool, token: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let path = &config_path()?;
-        config_files::toml::update(path, |doc| {
-            if install {
-                for (keys, value) in PROXY_SETTINGS {
-                    config_files::toml::set_value(doc, keys, *value)?;
-                }
-                config_files::toml::implicit_table(doc, &["model_providers"])?;
-                config_files::toml::set_value(doc, &["features", "api_key_model_discovery"], true)?;
-                config_files::toml::remove(
-                    doc,
-                    &[
-                        "model_providers",
-                        "coreinfra",
-                        "http_headers",
-                        "X-CoreInfra-CrossProtocol",
-                    ],
-                )?;
-            } else {
-                if config_files::toml::get_string(doc, &["model_provider"]) == Some("coreinfra") {
-                    config_files::toml::remove(doc, &["model_provider"])?;
-                }
-                config_files::toml::remove(doc, &["model_providers", "coreinfra"])?;
-                config_files::toml::remove(doc, &["features", "api_key_model_discovery"])?;
+    let path = &config_path()?;
+    config_files::toml::update(path, |doc| {
+        if install {
+            for (keys, value) in PROXY_SETTINGS {
+                config_files::toml::set_value(doc, keys, *value)?;
             }
-            Ok(())
-        })?;
-        config_files::env::set(
-            &path.with_file_name(".env"),
-            "COREINFRA_API_KEY",
-            if install && !token.is_empty() {
-                Some(token)
-            } else {
-                None
-            },
-        )
-        .context("Codex config updated, but updating Codex .env failed; please retry")
-    }
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    {
-        let _ = (install, token);
-        anyhow::bail!("not supported")
-    }
+            config_files::toml::implicit_table(doc, &["model_providers"])?;
+            config_files::toml::set_value(doc, &["features", "api_key_model_discovery"], true)?;
+            config_files::toml::remove(
+                doc,
+                &[
+                    "model_providers",
+                    "coreinfra",
+                    "http_headers",
+                    "X-CoreInfra-CrossProtocol",
+                ],
+            )?;
+        } else {
+            if config_files::toml::get_string(doc, &["model_provider"]) == Some("coreinfra") {
+                config_files::toml::remove(doc, &["model_provider"])?;
+            }
+            config_files::toml::remove(doc, &["model_providers", "coreinfra"])?;
+            config_files::toml::remove(doc, &["features", "api_key_model_discovery"])?;
+        }
+        Ok(())
+    })?;
+    config_files::env::set(
+        &path.with_file_name(".env"),
+        "COREINFRA_API_KEY",
+        if install && !token.is_empty() {
+            Some(token)
+        } else {
+            None
+        },
+    )
+    .context("Codex config updated, but updating Codex .env failed; please retry")
 }
 
-#[cfg(target_os = "macos")]
 fn detect_cli() -> AgentDetection<CodexCli> {
-    let found = match command_output(Path::new("/usr/bin/which"), &["codex"]) {
-        Ok(output) => output,
+    let path = match find_cli() {
+        Ok(Some(path)) => path,
+        Ok(None) => return AgentDetection::NotFound,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
-    };
-    if found.status.code() == Some(1) {
-        return AgentDetection::NotFound;
-    }
-    if !found.status.success() {
-        return AgentDetection::Error(format!(
-            "which codex exited with {}: {}",
-            found.status,
-            String::from_utf8_lossy(&found.stderr).trim()
-        ));
-    }
-    let path = match core::str::from_utf8(&found.stdout) {
-        Ok(value) if !value.trim_end_matches(['\r', '\n']).is_empty() => {
-            PathBuf::from(value.trim_end_matches(['\r', '\n']))
-        }
-        _ => return AgentDetection::Error("which codex returned an invalid path".to_owned()),
     };
     let version = match get_cli_version(&path) {
         Ok(value) => value,
@@ -137,12 +109,48 @@ fn detect_cli() -> AgentDetection<CodexCli> {
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn detect_cli() -> AgentDetection<CodexCli> {
-    AgentDetection::Error("not supported".to_owned())
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn find_cli() -> Result<Option<PathBuf>> {
+    let found = command_output(Path::new("/usr/bin/which"), &["codex"])?;
+    if found.status.code() == Some(1) {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        found.status.success(),
+        "which codex exited with {}: {}",
+        found.status,
+        String::from_utf8_lossy(&found.stderr).trim()
+    );
+    let path = core::str::from_utf8(&found.stdout)
+        .context("which codex returned an invalid path")?
+        .trim_end_matches(['\r', '\n']);
+    anyhow::ensure!(!path.is_empty(), "which codex returned an invalid path");
+    Ok(Some(PathBuf::from(path)))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "windows")]
+fn find_cli() -> Result<Option<PathBuf>> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Ok(None);
+    };
+    for directory in std::env::split_paths(&path) {
+        // Do not implicitly search the working directory.
+        if directory.as_os_str().is_empty() {
+            continue;
+        }
+        for name in ["codex.exe", "codex.cmd"] {
+            let candidate = directory.join(name);
+            match std::fs::metadata(&candidate) {
+                Ok(metadata) if metadata.is_file() => return Ok(Some(candidate)),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("failed to inspect Codex in PATH"),
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn get_cli_version(path: &Path) -> Result<String> {
     let output = command_output(path, &["--version"])?;
     anyhow::ensure!(
@@ -161,16 +169,17 @@ fn get_cli_version(path: &Path) -> Result<String> {
         .with_context(|| format!("unexpected Codex version output: {}", text.trim()))
 }
 
-#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
 fn config_path() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("CODEX_HOME").filter(|home| !home.is_empty()) {
         return Ok(PathBuf::from(home).join("config.toml"));
     }
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".codex/config.toml"))
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
+    #[cfg(target_os = "windows")]
+    let home = dirs::home_dir().context("failed to resolve home directory")?;
+    Ok(home.join(".codex/config.toml"))
 }
 
-#[cfg_attr(any(target_os = "linux", target_os = "windows"), expect(dead_code))]
 fn proxy_installed() -> Result<bool> {
     let doc = config_files::toml::read(&config_path()?)?;
     Ok(PROXY_SETTINGS
