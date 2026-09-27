@@ -32,13 +32,8 @@ const PROXY_SETTINGS: &[(&[&str], &str)] = &[
         "COREINFRA_API_KEY",
     ),
     (
-        &[
-            "model_providers",
-            "coreinfra",
-            "http_headers",
-            "X-CoreInfra-CrossProtocol",
-        ],
-        "1",
+        &["model_providers", "coreinfra", "model_catalog_url"],
+        "https://hub.coreinfra.ai/codex/api/v1/models",
     ),
 ];
 
@@ -64,18 +59,25 @@ pub fn set_proxy(install: bool, token: &str) -> Result<()> {
         config_files::toml::update(path, |doc| {
             if install {
                 for (keys, value) in PROXY_SETTINGS {
-                    config_files::toml::set_string(doc, keys, value)?;
+                    config_files::toml::set_value(doc, keys, *value)?;
                 }
                 config_files::toml::implicit_table(doc, &["model_providers"])?;
-                config_files::toml::inline_table(
+                config_files::toml::set_value(doc, &["features", "api_key_model_discovery"], true)?;
+                config_files::toml::remove(
                     doc,
-                    &["model_providers", "coreinfra", "http_headers"],
+                    &[
+                        "model_providers",
+                        "coreinfra",
+                        "http_headers",
+                        "X-CoreInfra-CrossProtocol",
+                    ],
                 )?;
             } else {
                 if config_files::toml::get_string(doc, &["model_provider"]) == Some("coreinfra") {
                     config_files::toml::remove(doc, &["model_provider"])?;
                 }
                 config_files::toml::remove(doc, &["model_providers", "coreinfra"])?;
+                config_files::toml::remove(doc, &["features", "api_key_model_discovery"])?;
             }
             Ok(())
         })?;
@@ -173,5 +175,8 @@ fn proxy_installed() -> Result<bool> {
     let doc = config_files::toml::read(&config_path()?)?;
     Ok(PROXY_SETTINGS
         .iter()
-        .all(|(keys, value)| config_files::toml::get_string(&doc, keys) == Some(*value)))
+        .all(|(keys, value)| config_files::toml::get_string(&doc, keys) == Some(*value))
+        && config_files::toml::get_value(&doc, &["features", "api_key_model_discovery"])
+            .and_then(toml_edit::Value::as_bool)
+            == Some(true))
 }

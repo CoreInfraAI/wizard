@@ -32,8 +32,20 @@ pub(crate) fn get_string<'a>(doc: &'a DocumentMut, keys: &[&str]) -> Option<&'a 
     item.as_str()
 }
 
-/// Updates a string value, preserving its comments and unrelated table entries.
-pub(crate) fn set_string(doc: &mut DocumentMut, keys: &[&str], text: &str) -> Result<()> {
+pub(crate) fn get_value<'a>(doc: &'a DocumentMut, keys: &[&str]) -> Option<&'a Value> {
+    let mut item = doc.as_item();
+    for key in keys {
+        item = item.as_table_like()?.get(key)?;
+    }
+    item.as_value()
+}
+
+/// Updates a value, preserving its comments and unrelated table entries.
+pub(crate) fn set_value(
+    doc: &mut DocumentMut,
+    keys: &[&str],
+    value: impl Into<Value>,
+) -> Result<()> {
     let (key, parents) = keys.split_last().context("empty TOML key path")?;
     let mut table: &mut dyn TableLike = doc.as_table_mut();
     for parent in parents {
@@ -47,7 +59,7 @@ pub(crate) fn set_string(doc: &mut DocumentMut, keys: &[&str], text: &str) -> Re
             .and_then(Item::as_table_like_mut)
             .with_context(|| format!("TOML field {parent} must be a table"))?;
     }
-    let mut replacement = Value::from(text);
+    let mut replacement = value.into();
     if let Some(previous) = table.get(key).and_then(Item::as_value) {
         *replacement.decor_mut() = previous.decor().clone();
     }
@@ -73,41 +85,6 @@ pub(crate) fn implicit_table(doc: &mut DocumentMut, keys: &[&str]) -> Result<()>
         {
             table.set_implicit(true);
         }
-    }
-    Ok(())
-}
-
-/// Formats a table inline. Existing commented sections retain their layout.
-pub(crate) fn inline_table(doc: &mut DocumentMut, keys: &[&str]) -> Result<()> {
-    let item = get_mut(doc, keys)?;
-    if let Some(table) = item.as_table() {
-        // Conversion formats away comments; retain the original table in that case.
-        if table.to_string().contains('#')
-            || table
-                .decor()
-                .prefix()
-                .and_then(|s| s.as_str())
-                .is_some_and(|s| s.contains('#'))
-            || table
-                .decor()
-                .suffix()
-                .and_then(|s| s.as_str())
-                .is_some_and(|s| s.contains('#'))
-        {
-            return Ok(());
-        }
-        let mut inline = table.clone().into_inline_table();
-        inline.fmt();
-        *item = Item::Value(Value::InlineTable(inline));
-        if let Some((key, parents)) = keys.split_last()
-            && let Some(mut key) = get_mut(doc, parents)?
-                .as_table_like_mut()
-                .and_then(|table| table.key_mut(key))
-        {
-            key.leaf_decor_mut().set_suffix(" ");
-        }
-    } else if !item.is_inline_table() {
-        bail!("expected a TOML table");
     }
     Ok(())
 }
