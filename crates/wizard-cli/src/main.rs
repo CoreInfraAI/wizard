@@ -78,7 +78,7 @@ fn run(cli: Cli) -> Result<()> {
                 CodexCommand::Install => (true, settings::load_from_file()?.coreinfra_api_key),
                 CodexCommand::Uninstall => (false, String::new()),
             };
-            agents::codex_cli::set_proxy(install, &token)?;
+            agents::codex::set_proxy(install, &token)?;
         }
     }
     Ok(())

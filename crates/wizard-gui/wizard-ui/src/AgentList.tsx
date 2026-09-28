@@ -2,7 +2,7 @@ import { type ReactNode, useState } from "react";
 import { type AgentDetection, type AgentStates, sendAgentEvent } from "./agents_state";
 import { reportError } from "./log";
 
-function CodexCliProxy({ installed }: { installed: boolean }) {
+function CodexProxy({ installed }: { installed: boolean }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -11,9 +11,9 @@ function CodexCliProxy({ installed }: { installed: boolean }) {
     setPending(true);
     setError(undefined);
     try {
-      await sendAgentEvent(installed ? "CodexCliUninstall" : "CodexCliInstall");
+      await sendAgentEvent(installed ? "CodexUninstall" : "CodexInstall");
     } catch (cause: unknown) {
-      reportError("failed to send Codex CLI proxy event", cause);
+      reportError("failed to send Codex proxy event", cause);
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setPending(false);
@@ -63,12 +63,12 @@ function Installation({ name, detection, children }: {
 export function AgentList({ agents }: { agents: AgentStates }) {
   return (
     <>
-      <Installation name="Codex CLI" detection={agents.codex_cli}>
-        {agents.codex_cli.status === "found" && (
-          <CodexCliProxy installed={agents.codex_cli.data.proxy_installed} />
+      <Installation name="Codex" detection={agents.codex}>
+        {agents.codex.status === "found" && (
+          <CodexProxy installed={agents.codex.data.proxy_installed} />
         )}
       </Installation>
-      <Installation name="Codex Desktop" detection={agents.codex_desktop} />
+      <Installation name="ChatGPT" detection={agents.chatgpt} />
     </>
   );
 }

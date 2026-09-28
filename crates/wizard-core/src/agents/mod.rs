@@ -4,8 +4,8 @@ use serde::Serialize;
 
 use crate::settings;
 
-pub mod codex_cli;
-pub mod codex_desktop;
+pub mod chatgpt;
+pub mod codex;
 
 #[derive(Debug, Serialize)]
 pub struct AgentState {
@@ -15,8 +15,8 @@ pub struct AgentState {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentStates {
-    pub codex_cli: AgentDetection<codex_cli::CodexCli>,
-    pub codex_desktop: AgentDetection<codex_desktop::CodexDesktop>,
+    pub codex: AgentDetection<codex::Codex>,
+    pub chatgpt: AgentDetection<chatgpt::ChatGpt>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -46,14 +46,14 @@ pub async fn collect_agent_state(settings: &settings::Settings) -> AgentState {
 
 async fn detect() -> AgentStates {
     // Start all detectors before awaiting their results so they can run concurrently.
-    let codex_cli = tokio::task::spawn_blocking(codex_cli::detect);
-    let codex_desktop = tokio::task::spawn_blocking(codex_desktop::detect);
+    let codex = tokio::task::spawn_blocking(codex::detect);
+    let chatgpt = tokio::task::spawn_blocking(chatgpt::detect);
 
     AgentStates {
-        codex_cli: codex_cli
+        codex: codex
             .await
             .unwrap_or_else(|error| AgentDetection::Error(error.to_string())),
-        codex_desktop: codex_desktop
+        chatgpt: chatgpt
             .await
             .unwrap_or_else(|error| AgentDetection::Error(error.to_string())),
     }

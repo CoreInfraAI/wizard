@@ -3,8 +3,8 @@ import { useEffect, useState } from "react";
 import { reportError, info, debug } from "./log";
 
 export type AgentEvent =
-  | "CodexCliInstall"
-  | "CodexCliUninstall"
+  | "CodexInstall"
+  | "CodexUninstall"
   | { SetCoreinfraToken: string };
 
 export function sendAgentEvent(event: AgentEvent): Promise<void> {
@@ -18,20 +18,20 @@ export type AgentDetection<T> =
   | { status: "not_found" }
   | { status: "error"; data: string };
 
-export type CodexCli = {
+export type Codex = {
   path: string;
   version: string;
   proxy_installed: boolean;
 };
 
-export type CodexDesktop = {
+export type ChatGpt = {
   path: string;
   version: string | null;
 };
 
 export type AgentStates = {
-  codex_cli: AgentDetection<CodexCli>;
-  codex_desktop: AgentDetection<CodexDesktop>;
+  codex: AgentDetection<Codex>;
+  chatgpt: AgentDetection<ChatGpt>;
 };
 
 type DetectionState =

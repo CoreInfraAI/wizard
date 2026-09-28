@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
-pub(crate) struct CodexCli {
+pub(crate) struct Codex {
     pub path: PathBuf,
     pub version: String,
     pub proxy_installed: bool,
@@ -33,17 +33,17 @@ const PROXY_SETTINGS: &[(&[&str], &str)] = &[
     ),
 ];
 
-pub(super) fn detect() -> AgentDetection<CodexCli> {
-    let result = detect_cli();
+pub(super) fn detect() -> AgentDetection<Codex> {
+    let result = detect_codex();
     match &result {
-        AgentDetection::Found(cli) => log::debug!(
-            "found Codex CLI: path={}, version={}, proxy_installed={}",
-            cli.path.display(),
-            cli.version,
-            cli.proxy_installed
+        AgentDetection::Found(codex) => log::debug!(
+            "found Codex: path={}, version={}, proxy_installed={}",
+            codex.path.display(),
+            codex.version,
+            codex.proxy_installed
         ),
-        AgentDetection::NotFound => log::debug!("Codex CLI not found in PATH"),
-        AgentDetection::Error(error) => log::error!("Codex CLI detection failed: {error}"),
+        AgentDetection::NotFound => log::debug!("Codex not found in PATH"),
+        AgentDetection::Error(error) => log::error!("Codex detection failed: {error}"),
     }
     result
 }
@@ -87,13 +87,13 @@ pub fn set_proxy(install: bool, token: &str) -> Result<()> {
     .context("Codex config updated, but updating Codex .env failed; please retry")
 }
 
-fn detect_cli() -> AgentDetection<CodexCli> {
-    let path = match find_cli() {
+fn detect_codex() -> AgentDetection<Codex> {
+    let path = match find_codex() {
         Ok(Some(path)) => path,
         Ok(None) => return AgentDetection::NotFound,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    let version = match get_cli_version(&path) {
+    let version = match get_codex_version(&path) {
         Ok(value) => value,
         Err(error) => return AgentDetection::failed(&path, &error),
     };
@@ -102,7 +102,7 @@ fn detect_cli() -> AgentDetection<CodexCli> {
         Ok(installed) => installed,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(CodexCli {
+    AgentDetection::Found(Codex {
         path,
         version,
         proxy_installed,
@@ -110,7 +110,7 @@ fn detect_cli() -> AgentDetection<CodexCli> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn find_cli() -> Result<Option<PathBuf>> {
+fn find_codex() -> Result<Option<PathBuf>> {
     let found = command_output(Path::new("/usr/bin/which"), &["codex"])?;
     if found.status.code() == Some(1) {
         return Ok(None);
@@ -129,7 +129,7 @@ fn find_cli() -> Result<Option<PathBuf>> {
 }
 
 #[cfg(target_os = "windows")]
-fn find_cli() -> Result<Option<PathBuf>> {
+fn find_codex() -> Result<Option<PathBuf>> {
     let Some(path) = std::env::var_os("PATH") else {
         return Ok(None);
     };
@@ -151,7 +151,7 @@ fn find_cli() -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-fn get_cli_version(path: &Path) -> Result<String> {
+fn get_codex_version(path: &Path) -> Result<String> {
     let output = command_output(path, &["--version"])?;
     anyhow::ensure!(
         output.status.success(),

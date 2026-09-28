@@ -3,7 +3,7 @@
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
-use wizard_core::agents::{AgentState, codex_cli, collect_agent_state};
+use wizard_core::agents::{AgentState, codex, collect_agent_state};
 
 use crate::{revision_signal::RevisionSignal, settings};
 
@@ -29,16 +29,16 @@ pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateS
 // No Debug: event payloads may contain credentials.
 #[derive(Deserialize)]
 pub(crate) enum AgentEvent {
-    CodexCliInstall,
-    CodexCliUninstall,
+    CodexInstall,
+    CodexUninstall,
     SetCoreinfraToken(String),
 }
 
 #[tauri::command]
 pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Result<(), String> {
     let name = match &event {
-        AgentEvent::CodexCliInstall => "CodexCliInstall",
-        AgentEvent::CodexCliUninstall => "CodexCliUninstall",
+        AgentEvent::CodexInstall => "CodexInstall",
+        AgentEvent::CodexUninstall => "CodexUninstall",
         AgentEvent::SetCoreinfraToken(_) => "SetCoreinfraToken",
     };
     log::info!("received agent event: {name}");
@@ -60,11 +60,11 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
             })
             .await
         }
-        AgentEvent::CodexCliInstall | AgentEvent::CodexCliUninstall => {
-            let install = matches!(event, AgentEvent::CodexCliInstall);
+        AgentEvent::CodexInstall | AgentEvent::CodexUninstall => {
+            let install = matches!(event, AgentEvent::CodexInstall);
             let current = settings::get_state(app).await?;
             tauri::async_runtime::spawn_blocking(move || {
-                codex_cli::set_proxy(install, &current.coreinfra_api_key)
+                codex::set_proxy(install, &current.coreinfra_api_key)
             })
             .await
             .context("agent event task failed")?
