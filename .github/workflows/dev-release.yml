@@ -43,6 +43,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # RELEASE_TARGETS: update when adding a release target.
       matrix:
         include:
           - name: Linux x86_64

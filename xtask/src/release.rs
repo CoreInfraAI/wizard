@@ -1,3 +1,4 @@
+use core::fmt::Write as _;
 use std::{
     fs,
     io::Write as _,
@@ -51,7 +52,7 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
         let product_name = config["productName"]
             .as_str()
             .context("tauri.conf.json productName must be a string")?;
-        let body = if dev {
+        let mut body = if dev {
             format!(
                 "Development build from commit `{commit}` on the `dev` branch.\n\n\
                  This prerelease may be unstable and is intended for testing only."
@@ -61,6 +62,22 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
              See the generated release notes below for the complete list of changes."
                 .to_owned()
         };
+        let release_name = format!("{product_name}-{version}");
+        body.push_str("\n\n| Платформа | Архитектура | Скачать |\n| --- | --- | --- |\n");
+        // RELEASE_TARGETS: update when adding a release target.
+        for (platform, architecture, label, suffix) in [
+            (
+                "macOS",
+                "Apple Silicon",
+                "DMG",
+                "darwin-aarch64-install.dmg",
+            ),
+            ("Windows", "x64", "EXE", "windows-x64.exe"),
+            ("Ubuntu / Debian", "x64", "DEB", "linux-amd64.deb"),
+        ] {
+            let url = release_asset_url(&repository, &tag, &format!("{release_name}-{suffix}"));
+            writeln!(body, "| {platform} | {architecture} | [{label}]({url}) |")?;
+        }
         create_github_release(
             &repository,
             &tag,
@@ -170,6 +187,7 @@ pub(crate) fn build(
     target: &str,
     output: &Path,
 ) -> Result<()> {
+    // RELEASE_TARGETS: update when adding a release target.
     let platform = match target {
         "x86_64-unknown-linux-gnu" => "linux",
         "aarch64-apple-darwin" => "darwin",
@@ -228,9 +246,10 @@ pub(crate) fn build(
         })
     }
     .to_string();
+    // RELEASE_TARGETS: update when adding a release target.
     let bundles: &[&str] = match target {
         "aarch64-apple-darwin" => &["app", "dmg"],
-        "x86_64-unknown-linux-gnu" => &["appimage", "deb", "rpm"],
+        "x86_64-unknown-linux-gnu" => &["deb"],
         "x86_64-pc-windows-msvc" => &["nsis"],
         _ => bail!("unsupported release target: {target}"),
     };
@@ -266,13 +285,14 @@ pub(crate) fn build(
         verify_macos_app_signature(&bundle_dir.join("macos").join(format!("{product_name}.app")))?;
     }
 
+    // RELEASE_TARGETS: update when adding a release target.
     let updater_artifact = match target {
         "aarch64-apple-darwin" => bundle_dir
             .join("macos")
             .join(format!("{product_name}.app.tar.gz")),
         "x86_64-unknown-linux-gnu" => bundle_dir
-            .join("appimage")
-            .join(format!("{product_name}_{version}_amd64.AppImage")),
+            .join("deb")
+            .join(format!("{product_name}_{version}_amd64.deb")),
         "x86_64-pc-windows-msvc" => bundle_dir
             .join("nsis")
             .join(format!("{product_name}_{version}_x64-setup.exe")),
@@ -285,6 +305,7 @@ pub(crate) fn build(
     let copy =
         |source, destination| move_artifact(&bundle_dir.join(source), &output.join(destination));
 
+    // RELEASE_TARGETS: update when adding a release target.
     match target {
         "aarch64-apple-darwin" => {
             copy(
@@ -301,22 +322,14 @@ pub(crate) fn build(
             )
         }
         "x86_64-unknown-linux-gnu" => {
-            let app_image = format!("{product_name}_{version}_amd64.AppImage");
+            let installer = format!("{product_name}_{version}_amd64.deb");
             copy(
-                format!("appimage/{app_image}"),
-                format!("{release_name}-linux-amd64.AppImage"),
-            )?;
-            copy(
-                format!("appimage/{app_image}.sig"),
-                format!("{release_name}-linux-amd64.AppImage.sig"),
-            )?;
-            copy(
-                format!("deb/{product_name}_{version}_amd64.deb"),
+                format!("deb/{installer}"),
                 format!("{release_name}-linux-amd64.deb"),
             )?;
             copy(
-                format!("rpm/{product_name}-{version}-1.x86_64.rpm"),
-                format!("{release_name}-linux-x86_64.rpm"),
+                format!("deb/{installer}.sig"),
+                format!("{release_name}-linux-amd64.deb.sig"),
             )
         }
         "x86_64-pc-windows-msvc" => {
@@ -454,6 +467,7 @@ pub(crate) fn generate_latest_json(
         .as_str()
         .context("tauri.conf.json productName must be a string")?;
     let release_name = format!("{product_name}-{version}");
+    // RELEASE_TARGETS: update when adding a release target.
     let platforms = json!({
         "darwin-aarch64": updater_entry(
             assets,
@@ -461,11 +475,11 @@ pub(crate) fn generate_latest_json(
             tag,
             &format!("{release_name}-darwin-aarch64-update.app.tar.gz.sig"),
         )?,
-        "linux-x86_64": updater_entry(
+        "linux-x86_64-deb": updater_entry(
             assets,
             repository,
             tag,
-            &format!("{release_name}-linux-amd64.AppImage.sig"),
+            &format!("{release_name}-linux-amd64.deb.sig"),
         )?,
         "windows-x86_64": updater_entry(
             assets,

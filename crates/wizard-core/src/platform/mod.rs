@@ -67,6 +67,11 @@ pub(crate) fn command_output(program: &Path, args: &[&str]) -> Result<Output> {
     log::debug!("running command: {}, args: {args:?}", program.display());
     runtime.block_on(async {
         let mut command = tokio::process::Command::new(program);
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         command
             .args(args)
             .stdin(std::process::Stdio::null())
