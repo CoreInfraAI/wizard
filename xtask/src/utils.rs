@@ -7,7 +7,6 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use semver::Version;
 use serde_json::Value;
-use tempfile::TempDir;
 
 const APP_NAME: &str = "Wizard.app";
 const INSTALLED_APP: &str = "/Applications/Wizard.app";
@@ -18,7 +17,6 @@ pub(crate) struct Paths {
     pub(crate) wizard: PathBuf,
     pub(crate) tauri_config: PathBuf,
     pub(crate) bundled_app: PathBuf,
-    pub(crate) bundle_dir: PathBuf,
     pub(crate) installed_app: PathBuf,
     pub(crate) installed_executable: PathBuf,
 }
@@ -41,7 +39,6 @@ pub(crate) fn paths(release: bool) -> Result<Paths> {
         installed_executable: PathBuf::from(INSTALLED_EXECUTABLE),
         workspace,
         wizard,
-        bundle_dir,
     })
 }
 
@@ -81,14 +78,6 @@ pub(crate) fn stable_version(paths: &Paths) -> Result<Version> {
     Ok(version)
 }
 
-/// Creates a temporary directory for local updater files.
-pub(crate) fn temporary_configs() -> Result<TempDir> {
-    tempfile::Builder::new()
-        .prefix("wizard-tauri.")
-        .tempdir_in("/tmp")
-        .context("failed to create temporary Tauri config directory")
-}
-
 pub(crate) fn remove_path(path: &Path) -> Result<()> {
     if path.is_dir() {
         fs::remove_dir_all(path)?;
@@ -96,22 +85,6 @@ pub(crate) fn remove_path(path: &Path) -> Result<()> {
         fs::remove_file(path)?;
     }
     Ok(())
-}
-
-pub(crate) fn files_recursively(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    let mut directories = vec![root.to_path_buf()];
-    while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(directory)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                directories.push(path);
-            } else {
-                files.push(path);
-            }
-        }
-    }
-    Ok(files)
 }
 
 pub(crate) fn require_success(status: ExitStatus, action: &str) -> Result<()> {

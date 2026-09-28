@@ -10,6 +10,9 @@ mod dev_tag;
 mod release;
 mod utils;
 
+const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
+const DEV_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY5QkI4Q0FEN0QxNTZDNkIKUldScmJCVjlyWXk3K2Q1VERmZ01oMzdVVDZPdG41VExtdkI5N3pHbXZYc3dxSEtPT0dHYTRaeksK";
+
 #[derive(Parser)]
 /// The task runner
 struct Cli {
@@ -19,14 +22,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run with `cargo tauri dev` and the dev updater channel.
+    /// Run with the Tauri CLI and the dev updater channel.
     Run {
         /// Use the standard Cargo release profile.
         #[arg(long)]
         release: bool,
     },
     /// Launch the installed application, installing it first if missing.
-    App {
+    DevApp {
         /// Rebuild and replace the installed application.
         #[arg(long)]
         reinstall: bool,
@@ -36,12 +39,6 @@ enum Commands {
         /// Run in the terminal and show application output.
         #[arg(long)]
         console: bool,
-    },
-    /// Build the next signed dev update and serve it locally.
-    UpdateServer {
-        /// Use the standard Cargo release profile.
-        #[arg(long)]
-        release: bool,
     },
     /// Check frontend types and run workspace formatting, compilation, lints, and tests.
     Ci,
@@ -89,9 +86,7 @@ enum Commands {
 fn main() -> Result<()> {
     let command = Cli::parse().command;
     let release = match &command {
-        Commands::Run { release }
-        | Commands::App { release, .. }
-        | Commands::UpdateServer { release } => *release,
+        Commands::Run { release } | Commands::DevApp { release, .. } => *release,
         Commands::Ci
         | Commands::CreateRelease { .. }
         | Commands::ReleaseBuild { .. }
@@ -102,12 +97,11 @@ fn main() -> Result<()> {
 
     match command {
         Commands::Run { release } => dev::run(&paths, release),
-        Commands::App {
+        Commands::DevApp {
             reinstall,
             release,
             console,
-        } => dev::app(&paths, reinstall, console, release),
-        Commands::UpdateServer { release } => dev::update_server(&paths, release),
+        } => dev::dev_app(&paths, reinstall, console, release),
         Commands::Ci => run_ci(&paths),
         Commands::CreateRelease { dev } => release::create(&paths, dev),
         Commands::ReleaseBuild {

@@ -10,14 +10,11 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use minisign_verify::{PublicKey, Signature};
 use serde_json::{Value, json};
 
-use crate::dev_tag;
+use crate::{dev_tag, DEV_ENDPOINT, DEV_PUBLIC_KEY};
 use crate::utils::{
     Paths, clean_build_command, gh_api_bytes, gh_api_json, gh_release_upload, remove_path,
     require_success, required_env, stable_version,
 };
-
-const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
-const DEV_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY5QkI4Q0FEN0QxNTZDNkIKUldScmJCVjlyWXk3K2Q1VERmZ01oMzdVVDZPdG41VExtdkI5N3pHbXZYc3dxSEtPT0dHYTRaeksK";
 
 /// Finds or creates the draft release used by the release workflow.
 pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
