@@ -17,7 +17,7 @@ use crate::utils::{
 };
 
 const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
-const DEV_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyMEE1QkNBNDdCREYyQUEKUldTcThyMUh5bHNLTWtyVU5LYWtZcmI4VE1QRTZvbHF6K1daUHByNDZsd2VIUHBjWWV5cFVrazgK";
+const DEV_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY5QkI4Q0FEN0QxNTZDNkIKUldScmJCVjlyWXk3K2Q1VERmZ01oMzdVVDZPdG41VExtdkI5N3pHbXZYc3dxSEtPT0dHYTRaeksK";
 
 /// Finds or creates the draft release used by the release workflow.
 pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
