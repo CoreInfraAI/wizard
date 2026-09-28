@@ -63,12 +63,20 @@ function Installation({ name, detection, children }: {
 export function AgentList({ agents }: { agents: AgentStates }) {
   return (
     <>
-      <Installation name="Codex" detection={agents.codex}>
-        {agents.codex.status === "found" && (
-          <CodexProxy installed={agents.codex.data.proxy_installed} />
-        )}
-      </Installation>
-      <Installation name="ChatGPT" detection={agents.chatgpt} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+        <Installation name="Codex" detection={agents.codex}>
+          {agents.codex.status === "found" && (
+            <CodexProxy installed={agents.codex.data.proxy_installed} />
+          )}
+        </Installation>
+        <Installation name="ChatGPT" detection={agents.chatgpt} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+        <Installation name="Claude Code" detection={agents.claude} />
+        <Installation name="Claude Desktop" detection={agents.claude_desktop} />
+      </div>
+      <Installation name="OpenCode" detection={agents.opencode} />
+      <Installation name="Pi" detection={agents.pi} />
     </>
   );
 }

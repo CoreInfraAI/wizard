@@ -1,6 +1,6 @@
 use super::AgentDetection;
 use crate::config_files;
-use crate::platform::command_output;
+use crate::platform::{command_output, find_executable};
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -34,18 +34,61 @@ const PROXY_SETTINGS: &[(&[&str], &str)] = &[
 ];
 
 pub(super) fn detect() -> AgentDetection<Codex> {
-    let result = detect_codex();
-    match &result {
-        AgentDetection::Found(codex) => log::debug!(
-            "found Codex: path={}, version={}, proxy_installed={}",
-            codex.path.display(),
-            codex.version,
-            codex.proxy_installed
-        ),
-        AgentDetection::NotFound => log::debug!("Codex not found in PATH"),
-        AgentDetection::Error(error) => log::error!("Codex detection failed: {error}"),
+    let path = match find_executable("codex") {
+        Ok(Some(path)) => path,
+        Ok(None) => return AgentDetection::NotFound,
+        Err(error) => return AgentDetection::Error(format!("{error:#}")),
+    };
+    let version = match get_codex_version(&path) {
+        Ok(value) => value,
+        Err(error) => return AgentDetection::failed(&path, &error),
+    };
+
+    let proxy_installed = match proxy_installed() {
+        Ok(installed) => installed,
+        Err(error) => return AgentDetection::Error(format!("{error:#}")),
+    };
+    AgentDetection::Found(Codex {
+        path,
+        version,
+        proxy_installed,
+    })
+}
+
+fn get_codex_version(path: &Path) -> Result<String> {
+    let output = command_output(path, &["--version"])?;
+    anyhow::ensure!(
+        output.status.success(),
+        "--version exited with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let text =
+        core::str::from_utf8(&output.stdout).context("invalid UTF-8 in Codex version output")?;
+    text.trim()
+        .strip_prefix("codex-cli ")
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned)
+        .with_context(|| format!("unexpected Codex version output: {}", text.trim()))
+}
+
+fn config_path() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("CODEX_HOME").filter(|home| !home.is_empty()) {
+        return Ok(PathBuf::from(home).join("config.toml"));
     }
-    result
+    let home = dirs::home_dir().context("failed to resolve home directory")?;
+    Ok(home.join(".codex/config.toml"))
+}
+
+fn proxy_installed() -> Result<bool> {
+    let doc = config_files::toml::read(&config_path()?)?;
+    Ok(PROXY_SETTINGS
+        .iter()
+        .all(|(keys, value)| config_files::toml::get_string(&doc, keys) == Some(*value))
+        && config_files::toml::get_value(&doc, &["features", "api_key_model_discovery"])
+            .and_then(toml_edit::Value::as_bool)
+            == Some(true))
 }
 
 pub fn set_proxy(install: bool, token: &str) -> Result<()> {
@@ -85,107 +128,4 @@ pub fn set_proxy(install: bool, token: &str) -> Result<()> {
         },
     )
     .context("Codex config updated, but updating Codex .env failed; please retry")
-}
-
-fn detect_codex() -> AgentDetection<Codex> {
-    let path = match find_codex() {
-        Ok(Some(path)) => path,
-        Ok(None) => return AgentDetection::NotFound,
-        Err(error) => return AgentDetection::Error(format!("{error:#}")),
-    };
-    let version = match get_codex_version(&path) {
-        Ok(value) => value,
-        Err(error) => return AgentDetection::failed(&path, &error),
-    };
-
-    let proxy_installed = match proxy_installed() {
-        Ok(installed) => installed,
-        Err(error) => return AgentDetection::Error(format!("{error:#}")),
-    };
-    AgentDetection::Found(Codex {
-        path,
-        version,
-        proxy_installed,
-    })
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn find_codex() -> Result<Option<PathBuf>> {
-    let found = command_output(Path::new("/usr/bin/which"), &["codex"])?;
-    if found.status.code() == Some(1) {
-        return Ok(None);
-    }
-    anyhow::ensure!(
-        found.status.success(),
-        "which codex exited with {}: {}",
-        found.status,
-        String::from_utf8_lossy(&found.stderr).trim()
-    );
-    let path = core::str::from_utf8(&found.stdout)
-        .context("which codex returned an invalid path")?
-        .trim_end_matches(['\r', '\n']);
-    anyhow::ensure!(!path.is_empty(), "which codex returned an invalid path");
-    Ok(Some(PathBuf::from(path)))
-}
-
-#[cfg(target_os = "windows")]
-fn find_codex() -> Result<Option<PathBuf>> {
-    let Some(path) = std::env::var_os("PATH") else {
-        return Ok(None);
-    };
-    for directory in std::env::split_paths(&path) {
-        // Do not implicitly search the working directory.
-        if directory.as_os_str().is_empty() {
-            continue;
-        }
-        for name in ["codex.exe", "codex.cmd"] {
-            let candidate = directory.join(name);
-            match std::fs::metadata(&candidate) {
-                Ok(metadata) if metadata.is_file() => return Ok(Some(candidate)),
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).context("failed to inspect Codex in PATH"),
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn get_codex_version(path: &Path) -> Result<String> {
-    let output = command_output(path, &["--version"])?;
-    anyhow::ensure!(
-        output.status.success(),
-        "--version exited with {}: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    let text =
-        core::str::from_utf8(&output.stdout).context("invalid UTF-8 in Codex version output")?;
-    text.trim()
-        .strip_prefix("codex-cli ")
-        .map(str::trim)
-        .filter(|version| !version.is_empty())
-        .map(str::to_owned)
-        .with_context(|| format!("unexpected Codex version output: {}", text.trim()))
-}
-
-fn config_path() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("CODEX_HOME").filter(|home| !home.is_empty()) {
-        return Ok(PathBuf::from(home).join("config.toml"));
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
-    #[cfg(target_os = "windows")]
-    let home = dirs::home_dir().context("failed to resolve home directory")?;
-    Ok(home.join(".codex/config.toml"))
-}
-
-fn proxy_installed() -> Result<bool> {
-    let doc = config_files::toml::read(&config_path()?)?;
-    Ok(PROXY_SETTINGS
-        .iter()
-        .all(|(keys, value)| config_files::toml::get_string(&doc, keys) == Some(*value))
-        && config_files::toml::get_value(&doc, &["features", "api_key_model_discovery"])
-            .and_then(toml_edit::Value::as_bool)
-            == Some(true))
 }

@@ -29,9 +29,33 @@ export type ChatGpt = {
   version: string | null;
 };
 
+export type Claude = {
+  path: string;
+  version: string;
+};
+
+export type ClaudeDesktop = {
+  path: string;
+  version: string | null;
+};
+
+export type OpenCode = {
+  path: string;
+  version: string;
+};
+
+export type Pi = {
+  path: string;
+  version: string;
+};
+
 export type AgentStates = {
   codex: AgentDetection<Codex>;
   chatgpt: AgentDetection<ChatGpt>;
+  claude: AgentDetection<Claude>;
+  claude_desktop: AgentDetection<ClaudeDesktop>;
+  opencode: AgentDetection<OpenCode>;
+  pi: AgentDetection<Pi>;
 };
 
 type DetectionState =
