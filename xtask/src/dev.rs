@@ -1,9 +1,9 @@
 use std::{fs, process::Command};
 
+use crate::utils::{Paths, clean_build_command, remove_path, require_success};
+use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY};
 use anyhow::{Context as _, Result, bail};
 use serde_json::json;
-use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY};
-use crate::utils::{Paths, clean_build_command, remove_path, require_success};
 
 /// Runs the application through Tauri with the dev updater channel configured.
 pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {

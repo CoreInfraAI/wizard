@@ -10,11 +10,11 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use minisign_verify::{PublicKey, Signature};
 use serde_json::{Value, json};
 
-use crate::{dev_tag, DEV_ENDPOINT, DEV_PUBLIC_KEY};
 use crate::utils::{
     Paths, clean_build_command, gh_api_bytes, gh_api_json, gh_release_upload, remove_path,
     require_success, required_env, stable_version,
 };
+use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY, dev_tag};
 
 /// Finds or creates the draft release used by the release workflow.
 pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
