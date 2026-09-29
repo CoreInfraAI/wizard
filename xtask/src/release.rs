@@ -66,12 +66,7 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
         body.push_str("\n\n| Платформа | Архитектура | Скачать |\n| --- | --- | --- |\n");
         // RELEASE_TARGETS: update when adding a release target.
         for (platform, architecture, label, suffix) in [
-            (
-                "macOS",
-                "Apple Silicon",
-                "DMG",
-                "darwin-aarch64-install.dmg",
-            ),
+            ("macOS", "Apple Silicon", "DMG", "darwin-aarch64.dmg"),
             ("Windows", "x64", "EXE", "windows-x64.exe"),
             ("Ubuntu / Debian", "x64", "DEB", "linux-amd64.deb"),
         ] {
@@ -310,7 +305,7 @@ pub(crate) fn build(
         "aarch64-apple-darwin" => {
             copy(
                 format!("dmg/{product_name}_{version}_aarch64.dmg"),
-                format!("{release_name}-darwin-aarch64-install.dmg"),
+                format!("{release_name}-darwin-aarch64.dmg"),
             )?;
             copy(
                 format!("macos/{product_name}.app.tar.gz"),
