@@ -1,40 +1,21 @@
-#[cfg(target_os = "macos")]
-use std::env;
-use std::path::PathBuf;
-
 use serde::Serialize;
 
-use super::AgentDetection;
-#[cfg(target_os = "macos")]
-use crate::platform;
+use super::{
+    AgentDetection,
+    detection::{self, Agent, AgentInfo},
+};
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct ChatGpt {
-    pub path: PathBuf,
-    pub version: Option<String>,
+    #[serde(flatten)]
+    pub info: AgentInfo,
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn detect() -> AgentDetection<ChatGpt> {
-    let mut candidates = vec![PathBuf::from("/Applications/ChatGPT.app")];
-    if let Some(home) = env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join("Applications/ChatGPT.app"));
-    }
-    for path in candidates {
-        match path.try_exists() {
-            Ok(false) => continue,
-            Err(error) => return AgentDetection::failed(&path, &error),
-            Ok(true) => {}
-        }
-        return match platform::macos::read_app_version(&path) {
-            Ok(version) => AgentDetection::Found(ChatGpt { path, version }),
-            Err(error) => AgentDetection::failed(&path, &error),
-        };
-    }
-    AgentDetection::NotFound
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(super) fn detect() -> AgentDetection<ChatGpt> {
-    AgentDetection::Error("not supported".to_owned())
+    let info = match detection::detect(Agent::ChatGpt) {
+        AgentDetection::Found(info) => info,
+        AgentDetection::NotFound => return AgentDetection::NotFound,
+        AgentDetection::Error(error) => return AgentDetection::Error(error),
+    };
+    AgentDetection::Found(ChatGpt { info })
 }
