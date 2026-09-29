@@ -1,15 +1,34 @@
-use super::AgentDetection;
 use crate::config_files;
-use crate::platform::{command_output, find_executable};
 use anyhow::{Context as _, Result};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use super::{
+    AgentDetection,
+    detection::{self, Agent, AgentInfo},
+};
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Codex {
-    pub path: PathBuf,
-    pub version: String,
+    #[serde(flatten)]
+    pub info: AgentInfo,
     pub proxy_installed: bool,
+}
+
+pub(super) fn detect() -> AgentDetection<Codex> {
+    let info = match detection::detect(Agent::Codex) {
+        AgentDetection::Found(info) => info,
+        AgentDetection::NotFound => return AgentDetection::NotFound,
+        AgentDetection::Error(error) => return AgentDetection::Error(error),
+    };
+    let proxy_installed = match proxy_installed() {
+        Ok(proxy_installed) => proxy_installed,
+        Err(error) => return AgentDetection::Error(format!("{error:#}")),
+    };
+    AgentDetection::Found(Codex {
+        info,
+        proxy_installed,
+    })
 }
 
 const PROXY_SETTINGS: &[(&[&str], &str)] = &[
@@ -32,46 +51,6 @@ const PROXY_SETTINGS: &[(&[&str], &str)] = &[
         "https://hub.coreinfra.ai/codex/api/v1/models",
     ),
 ];
-
-pub(super) fn detect() -> AgentDetection<Codex> {
-    let path = match find_executable("codex") {
-        Ok(Some(path)) => path,
-        Ok(None) => return AgentDetection::NotFound,
-        Err(error) => return AgentDetection::Error(format!("{error:#}")),
-    };
-    let version = match get_codex_version(&path) {
-        Ok(value) => value,
-        Err(error) => return AgentDetection::failed(&path, &error),
-    };
-
-    let proxy_installed = match proxy_installed() {
-        Ok(installed) => installed,
-        Err(error) => return AgentDetection::Error(format!("{error:#}")),
-    };
-    AgentDetection::Found(Codex {
-        path,
-        version,
-        proxy_installed,
-    })
-}
-
-fn get_codex_version(path: &Path) -> Result<String> {
-    let output = command_output(path, &["--version"])?;
-    anyhow::ensure!(
-        output.status.success(),
-        "--version exited with {}: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    let text =
-        core::str::from_utf8(&output.stdout).context("invalid UTF-8 in Codex version output")?;
-    text.trim()
-        .strip_prefix("codex-cli ")
-        .map(str::trim)
-        .filter(|version| !version.is_empty())
-        .map(str::to_owned)
-        .with_context(|| format!("unexpected Codex version output: {}", text.trim()))
-}
 
 fn config_path() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("CODEX_HOME").filter(|home| !home.is_empty()) {
