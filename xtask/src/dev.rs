@@ -74,7 +74,7 @@ fn build_app(paths: &Paths, config: &str, release: bool) -> Result<()> {
 fn install_app(paths: &Paths) -> Result<()> {
     let temporary = tempfile::tempdir_in("/Applications")
         .context("failed to create temporary application directory")?;
-    let temporary_app = temporary.path().join("Wizard.app");
+    let temporary_app = temporary.path().join("Coreinfra Wizard.app");
 
     let status = Command::new("ditto")
         .arg(&paths.bundled_app)
@@ -90,5 +90,5 @@ fn install_app(paths: &Paths) -> Result<()> {
         fs::rename(&temporary_app, &paths.installed_app)?;
         Ok::<_, anyhow::Error>(())
     })();
-    result.context("failed to install /Applications/Wizard.app")
+    result.context("failed to install /Applications/Coreinfra Wizard.app")
 }

@@ -6,7 +6,7 @@ use wizard_core::{agents, settings};
 #[derive(Parser)]
 #[command(
     version,
-    about = "Wizard backend CLI. Close the GUI before changing settings."
+    about = "Coreinfra Wizard backend CLI. Close the GUI before changing settings."
 )]
 struct Cli {
     #[command(subcommand)]

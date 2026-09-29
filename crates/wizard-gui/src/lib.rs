@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use anyhow::{Context as _, Result};
 use log::LevelFilter;
 use tauri::Manager as _;
-use tauri_plugin_log::RotationStrategy;
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
 mod agents;
 mod revision_signal;
@@ -22,6 +22,12 @@ pub fn run_application() -> Result<()> {
         }))
         .plugin(
             tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("Wizard".into()),
+                    }),
+                ])
                 .level(if cfg!(debug_assertions) {
                     LevelFilter::Debug
                 } else {
@@ -35,7 +41,7 @@ pub fn run_application() -> Result<()> {
         .manage(Arc::new(updater::StartupUpdateState::default()))
         .manage(revision_signal::RevisionSignal::default())
         .setup(|app| {
-            log::info!("starting Wizard {}", app.package_info().version);
+            log::info!("starting Coreinfra Wizard {}", app.package_info().version);
             tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
             // focus after restart
             focus_window(app.handle());
@@ -49,7 +55,7 @@ pub fn run_application() -> Result<()> {
             revision_signal::wait_for_update,
         ])
         .run(tauri::generate_context!())
-        .context("failed to run Wizard")
+        .context("failed to run Coreinfra Wizard")
 }
 
 fn focus_window(app: &tauri::AppHandle) {

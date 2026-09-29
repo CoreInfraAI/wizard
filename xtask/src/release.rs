@@ -62,7 +62,7 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
              See the generated release notes below for the complete list of changes."
                 .to_owned()
         };
-        let release_name = format!("{product_name}-{version}");
+        let release_name = format!("{}-{version}", product_name.replace(' ', "-"));
         body.push_str("\n\n| Платформа | Архитектура | Скачать |\n| --- | --- | --- |\n");
         // RELEASE_TARGETS: update when adding a release target.
         for (platform, architecture, label, suffix) in [
@@ -296,7 +296,7 @@ pub(crate) fn build(
     verify_updater_signature(&updater_artifact, updater_public_key)?;
 
     fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
-    let release_name = format!("{product_name}-{version}");
+    let release_name = format!("{}-{version}", product_name.replace(' ', "-"));
     let copy =
         |source, destination| move_artifact(&bundle_dir.join(source), &output.join(destination));
 
@@ -461,7 +461,7 @@ pub(crate) fn generate_latest_json(
     let product_name = config["productName"]
         .as_str()
         .context("tauri.conf.json productName must be a string")?;
-    let release_name = format!("{product_name}-{version}");
+    let release_name = format!("{}-{version}", product_name.replace(' ', "-"));
     // RELEASE_TARGETS: update when adding a release target.
     let platforms = json!({
         "darwin-aarch64": updater_entry(

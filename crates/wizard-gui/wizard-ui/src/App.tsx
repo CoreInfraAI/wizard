@@ -22,12 +22,12 @@ function App() {
   const applicationVersion = useApplicationVersion();
 
   if (!isStartupUpdateComplete) {
-    return <main>Starting Wizard…</main>;
+    return <main>Starting Coreinfra Wizard…</main>;
   }
 
   return (
     <main>
-      <p>Wizard version: {applicationVersion ? `v${applicationVersion}` : ""}</p>
+      <p>Coreinfra Wizard version: {applicationVersion ? `v${applicationVersion}` : ""}</p>
       <AgentPanel />
     </main>
   );
