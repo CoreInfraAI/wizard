@@ -8,6 +8,7 @@ pub mod chatgpt;
 pub mod claude;
 pub mod claude_desktop;
 pub mod codex;
+mod detection;
 pub mod opencode;
 pub mod pi;
 

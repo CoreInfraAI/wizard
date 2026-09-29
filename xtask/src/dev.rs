@@ -11,8 +11,8 @@ pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
         "bundle": { "createUpdaterArtifacts": false },
         "plugins": {
             "updater": {
-                "endpoints": [DEV_ENDPOINT],
-                "pubkey": DEV_PUBLIC_KEY,
+                // "endpoints": [DEV_ENDPOINT],
+                // "pubkey": DEV_PUBLIC_KEY,
                 "dangerousInsecureTransportProtocol": false,
             },
         },
