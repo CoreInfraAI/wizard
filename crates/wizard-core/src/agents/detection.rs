@@ -78,8 +78,7 @@ pub(super) fn detect(agent: Agent) -> AgentDetection<AgentInfo> {
 
 fn cli_version(agent: Agent, path: &Path) -> Result<String> {
     let mut env_path = None;
-    if matches!(agent, Agent::Pi)
-        && let Some(node) = find_executable("node", vec![])?
+    if let Some(node) = find_executable("node", vec![])?
     {
         let directory = node
             .parent()
