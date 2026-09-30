@@ -3,12 +3,11 @@ import { useEffect, useState } from "react";
 import { reportError, info, debug } from "./log";
 
 export type AgentEvent =
-  | "CodexInstall"
-  | "CodexUninstall"
+  | { CodexSetProxy: CodexProxyMode }
   | { SetCoreinfraToken: string };
 
 export function sendAgentEvent(event: AgentEvent): Promise<void> {
-  const name = typeof event === "string" ? event : "SetCoreinfraToken";
+  const name = "CodexSetProxy" in event ? "CodexSetProxy" : "SetCoreinfraToken";
   info(`sending agent event: ${name}`);
   return invoke<void>("agent_event", { event });
 }
@@ -18,10 +17,12 @@ export type AgentDetection<T> =
   | { status: "not_found" }
   | { status: "error"; data: string };
 
+export type CodexProxyMode = "disabled" | "proxy_hub" | "proxy_api";
+
 export type Codex = {
   path: string;
   version: string;
-  proxy_installed: boolean;
+  proxy_mode: CodexProxyMode;
 };
 
 export type ChatGpt = {

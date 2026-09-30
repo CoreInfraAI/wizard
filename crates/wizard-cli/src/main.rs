@@ -37,10 +37,21 @@ enum SettingsCommand {
 
 #[derive(Subcommand)]
 enum CodexCommand {
-    /// Install the proxy using the token saved in Wizard settings.
-    Install,
-    /// Remove the proxy and its key from Codex configuration.
-    Uninstall,
+    /// Configure or disable the Codex proxy.
+    Proxy {
+        #[command(subcommand)]
+        command: CodexProxyCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum CodexProxyCommand {
+    /// Use `CoreInfra` Hub with the token saved in Wizard settings.
+    Hub,
+    /// Use `CoreInfra` API with `ChatGPT` authentication and the saved token.
+    Api,
+    /// Remove the `CoreInfra` proxy configuration.
+    Unset,
 }
 
 fn main() -> ExitCode {
@@ -73,12 +84,20 @@ fn run(cli: Cli) -> Result<()> {
                 settings.coreinfra_api_key = token;
             })?;
         }
-        Command::Codex { command } => {
-            let (install, token) = match command {
-                CodexCommand::Install => (true, settings::load_from_file()?.coreinfra_api_key),
-                CodexCommand::Uninstall => (false, String::new()),
+        Command::Codex {
+            command: CodexCommand::Proxy { command },
+        } => {
+            let mode = match command {
+                CodexProxyCommand::Hub => agents::codex::ProxyMode::ProxyHub,
+                CodexProxyCommand::Api => agents::codex::ProxyMode::ProxyApi,
+                CodexProxyCommand::Unset => agents::codex::ProxyMode::Disabled,
             };
-            agents::codex::set_proxy(install, &token)?;
+            let token = if mode == agents::codex::ProxyMode::Disabled {
+                String::new()
+            } else {
+                settings::load_from_file()?.coreinfra_api_key
+            };
+            agents::codex::set_proxy(mode, &token)?;
         }
     }
     Ok(())

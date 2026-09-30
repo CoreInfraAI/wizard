@@ -1,17 +1,23 @@
 import { type ReactNode, useState } from "react";
-import { type AgentDetection, type AgentStates, sendAgentEvent } from "./agents_state";
+import { type AgentDetection, type AgentStates, type CodexProxyMode, sendAgentEvent } from "./agents_state";
 import { reportError } from "./log";
 
-function CodexProxy({ installed }: { installed: boolean }) {
+const codexProxyOptions = [
+  { mode: "disabled", label: "Выключен" },
+  { mode: "proxy_hub", label: "CoreInfra Hub" },
+  { mode: "proxy_api", label: "CoreInfra API · ChatGPT" },
+] as const;
+
+function CodexProxy({ mode }: { mode: CodexProxyMode }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
 
-  async function send() {
+  async function send(proxyMode: CodexProxyMode) {
     if (pending) return;
     setPending(true);
     setError(undefined);
     try {
-      await sendAgentEvent(installed ? "CodexUninstall" : "CodexInstall");
+      await sendAgentEvent({ CodexSetProxy: proxyMode });
     } catch (cause: unknown) {
       reportError("failed to send Codex proxy event", cause);
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -22,11 +28,19 @@ function CodexProxy({ installed }: { installed: boolean }) {
 
   return (
     <>
-      <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-        <span>proxy: {installed ? "установлен" : "нет"}</span>
-        <button type="button" disabled={pending} onClick={() => void send()}>
-          {installed ? "удалить" : "установить"}
-        </button>
+      <p>Прокси</p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+        {codexProxyOptions.map((option) => (
+          <button
+            key={option.mode}
+            type="button"
+            disabled={pending}
+            style={{ fontWeight: mode === option.mode ? "bold" : "normal" }}
+            onClick={() => void send(option.mode)}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
       {error && <p>Не удалось отправить событие: {error}</p>}
     </>
@@ -66,7 +80,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
         <Installation name="Codex" detection={agents.codex}>
           {agents.codex.status === "found" && (
-            <CodexProxy installed={agents.codex.data.proxy_installed} />
+            <CodexProxy mode={agents.codex.data.proxy_mode} />
           )}
         </Installation>
         <Installation name="ChatGPT" detection={agents.chatgpt} />

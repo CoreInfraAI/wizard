@@ -32,6 +32,7 @@ pub(crate) fn get_string<'a>(doc: &'a DocumentMut, keys: &[&str]) -> Option<&'a 
     item.as_str()
 }
 
+#[expect(dead_code)]
 pub(crate) fn get_value<'a>(doc: &'a DocumentMut, keys: &[&str]) -> Option<&'a Value> {
     let mut item = doc.as_item();
     for key in keys {

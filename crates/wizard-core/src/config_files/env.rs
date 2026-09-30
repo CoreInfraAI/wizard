@@ -2,11 +2,24 @@ use std::{fs, io::Write as _, path::Path};
 
 use anyhow::{Context as _, Result, bail, ensure};
 
-/// Replaces one variable, preserving unrelated dotenv records verbatim.
+/// Replaces variables in the supplied order, preserving unrelated records verbatim.
+/// Entries are `(key, value, escape_dollars)`; disable dollar escaping only for trusted templates.
 /// Callers must serialize writes. Never include parser errors or values in diagnostics.
-pub(crate) fn set(path: &Path, key: &str, value: Option<&str>) -> Result<()> {
+pub(crate) fn set_many(path: &Path, entries: &[(&str, Option<&str>, bool)]) -> Result<()> {
     let original = read(path)?;
-    let updated = replace(original.as_deref().unwrap_or_default(), key, value)?;
+    let mut updated = original.clone().unwrap_or_default();
+    let newline = if updated.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    // Remove first so references are written after the variables they depend on.
+    for (key, _, _) in entries {
+        updated = replace(&updated, key, None, true, newline)?;
+    }
+    for (key, value, escape_dollars) in entries {
+        updated = replace(&updated, key, *value, *escape_dollars, newline)?;
+    }
     if original.as_deref().unwrap_or_default() == updated {
         return Ok(());
     }
@@ -51,20 +64,27 @@ fn read(path: &Path) -> Result<Option<String>> {
         .context("failed to read env file")
 }
 
-fn replace(text: &str, key: &str, value: Option<&str>) -> Result<String> {
+fn replace(
+    text: &str,
+    key: &str,
+    value: Option<&str>,
+    escape_dollars: bool,
+    newline: &str,
+) -> Result<String> {
     ensure!(valid_key(key), "invalid env variable name");
-    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let replacement = value
         .map(|value| {
             ensure!(
                 !value.contains(['\0', '\r']),
                 "env value must not contain NUL or carriage return"
             );
-            let escaped = value
+            let mut escaped = value
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"")
-                .replace('$', "\\$")
                 .replace('\n', "\\n");
+            if escape_dollars {
+                escaped = escaped.replace('$', "\\$");
+            }
             Ok(format!("{key}=\"{escaped}\"{newline}"))
         })
         .transpose()?;

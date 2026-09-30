@@ -29,16 +29,14 @@ pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateS
 // No Debug: event payloads may contain credentials.
 #[derive(Deserialize)]
 pub(crate) enum AgentEvent {
-    CodexInstall,
-    CodexUninstall,
+    CodexSetProxy(codex::ProxyMode),
     SetCoreinfraToken(String),
 }
 
 #[tauri::command]
 pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Result<(), String> {
     let name = match &event {
-        AgentEvent::CodexInstall => "CodexInstall",
-        AgentEvent::CodexUninstall => "CodexUninstall",
+        AgentEvent::CodexSetProxy(_) => "CodexSetProxy",
         AgentEvent::SetCoreinfraToken(_) => "SetCoreinfraToken",
     };
     log::info!("received agent event: {name}");
@@ -53,21 +51,17 @@ pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Res
 }
 
 async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
-    match event {
+    let mode = match event {
         AgentEvent::SetCoreinfraToken(token) => {
-            settings::update_state(app, move |settings| {
+            return settings::update_state(app, move |settings| {
                 settings.coreinfra_api_key = token;
             })
-            .await
+            .await;
         }
-        AgentEvent::CodexInstall | AgentEvent::CodexUninstall => {
-            let install = matches!(event, AgentEvent::CodexInstall);
-            let current = settings::get_state(app).await?;
-            tauri::async_runtime::spawn_blocking(move || {
-                codex::set_proxy(install, &current.coreinfra_api_key)
-            })
-            .await
-            .context("agent event task failed")?
-        }
-    }
+        AgentEvent::CodexSetProxy(mode) => mode,
+    };
+    let current = settings::get_state(app).await?;
+    tauri::async_runtime::spawn_blocking(move || codex::set_proxy(mode, &current.coreinfra_api_key))
+        .await
+        .context("agent event task failed")?
 }
