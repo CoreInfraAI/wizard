@@ -1,25 +1,27 @@
 import { type ReactNode, useState } from "react";
-import { type AgentDetection, type AgentStates, type CodexProxyMode, sendAgentEvent } from "./agents_state";
+import { type AgentDetection, type AgentStates, type ProxyMode, sendAgentEvent } from "./agents_state";
 import { reportError } from "./log";
 
-const codexProxyOptions = [
+const proxyOptions = [
   { mode: "disabled", label: "Выключен" },
   { mode: "proxy_hub", label: "CoreInfra Hub" },
-  { mode: "proxy_api", label: "CoreInfra API · ChatGPT" },
+  { mode: "proxy_api", label: "CoreInfra API" },
 ] as const;
 
-function CodexProxy({ mode }: { mode: CodexProxyMode }) {
+function AgentProxy({ agent, mode }: { agent: "codex" | "claude"; mode: ProxyMode }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
 
-  async function send(proxyMode: CodexProxyMode) {
+  async function send(proxyMode: ProxyMode) {
     if (pending) return;
     setPending(true);
     setError(undefined);
     try {
-      await sendAgentEvent({ CodexSetProxy: proxyMode });
+      await sendAgentEvent(agent === "codex"
+        ? { CodexSetProxy: proxyMode }
+        : { ClaudeSetProxy: proxyMode });
     } catch (cause: unknown) {
-      reportError("failed to send Codex proxy event", cause);
+      reportError(`failed to send ${agent} proxy event`, cause);
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setPending(false);
@@ -30,7 +32,7 @@ function CodexProxy({ mode }: { mode: CodexProxyMode }) {
     <>
       <p>Прокси</p>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-        {codexProxyOptions.map((option) => (
+        {proxyOptions.map((option) => (
           <button
             key={option.mode}
             type="button"
@@ -38,10 +40,41 @@ function CodexProxy({ mode }: { mode: CodexProxyMode }) {
             style={{ fontWeight: mode === option.mode ? "bold" : "normal" }}
             onClick={() => void send(option.mode)}
           >
-            {option.label}
+            {option.label}{agent === "codex" && option.mode === "proxy_api" ? " · ChatGPT" : ""}
           </button>
         ))}
       </div>
+      {error && <p>Не удалось отправить событие: {error}</p>}
+    </>
+  );
+}
+
+function HubProxy({ agent, installed }: { agent: "Pi" | "OpenCode"; installed: boolean }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+
+  async function send() {
+    if (pending) return;
+    setPending(true);
+    setError(undefined);
+    try {
+      await sendAgentEvent(agent === "Pi"
+        ? { SetPiHub: !installed }
+        : { SetOpenCodeHub: !installed });
+    } catch (cause: unknown) {
+      reportError(`failed to send ${agent} Hub event`, cause);
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <p>Прокси: {installed ? "установлен" : "нет"}</p>
+      <button type="button" disabled={pending} onClick={() => void send()}>
+        {installed ? "Удалить" : "Установить"}
+      </button>
       {error && <p>Не удалось отправить событие: {error}</p>}
     </>
   );
@@ -80,17 +113,29 @@ export function AgentList({ agents }: { agents: AgentStates }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
         <Installation name="Codex" detection={agents.codex}>
           {agents.codex.status === "found" && (
-            <CodexProxy mode={agents.codex.data.proxy_mode} />
+            <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} />
           )}
         </Installation>
         <Installation name="ChatGPT" detection={agents.chatgpt} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-        <Installation name="Claude Code" detection={agents.claude} />
+        <Installation name="Claude Code" detection={agents.claude}>
+          {agents.claude.status === "found" && (
+            <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} />
+          )}
+        </Installation>
         <Installation name="Claude Desktop" detection={agents.claude_desktop} />
       </div>
-      <Installation name="OpenCode" detection={agents.opencode} />
-      <Installation name="Pi" detection={agents.pi} />
+      <Installation name="OpenCode" detection={agents.opencode}>
+        {agents.opencode.status === "found" && (
+          <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} />
+        )}
+      </Installation>
+      <Installation name="Pi" detection={agents.pi}>
+        {agents.pi.status === "found" && (
+          <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} />
+        )}
+      </Installation>
     </>
   );
 }

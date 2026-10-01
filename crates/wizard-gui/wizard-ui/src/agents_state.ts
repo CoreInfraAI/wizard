@@ -3,11 +3,17 @@ import { useEffect, useState } from "react";
 import { reportError, info, debug } from "./log";
 
 export type AgentEvent =
-  | { CodexSetProxy: CodexProxyMode }
+  | { CodexSetProxy: ProxyMode }
+  | { ClaudeSetProxy: ProxyMode }
+  | { SetPiHub: boolean }
+  | { SetOpenCodeHub: boolean }
   | { SetCoreinfraToken: string };
 
 export function sendAgentEvent(event: AgentEvent): Promise<void> {
-  const name = "CodexSetProxy" in event ? "CodexSetProxy" : "SetCoreinfraToken";
+  const name = "CodexSetProxy" in event ? "CodexSetProxy"
+    : "ClaudeSetProxy" in event ? "ClaudeSetProxy"
+    : "SetPiHub" in event ? "SetPiHub"
+    : "SetOpenCodeHub" in event ? "SetOpenCodeHub" : "SetCoreinfraToken";
   info(`sending agent event: ${name}`);
   return invoke<void>("agent_event", { event });
 }
@@ -17,12 +23,12 @@ export type AgentDetection<T> =
   | { status: "not_found" }
   | { status: "error"; data: string };
 
-export type CodexProxyMode = "disabled" | "proxy_hub" | "proxy_api";
+export type ProxyMode = "disabled" | "proxy_hub" | "proxy_api";
 
 export type Codex = {
   path: string;
   version: string;
-  proxy_mode: CodexProxyMode;
+  proxy_mode: ProxyMode;
 };
 
 export type ChatGpt = {
@@ -33,6 +39,7 @@ export type ChatGpt = {
 export type Claude = {
   path: string;
   version: string;
+  proxy_mode: ProxyMode;
 };
 
 export type ClaudeDesktop = {
@@ -43,11 +50,13 @@ export type ClaudeDesktop = {
 export type OpenCode = {
   path: string;
   version: string;
+  proxy_installed: boolean;
 };
 
 export type Pi = {
   path: string;
   version: string;
+  proxy_installed: boolean;
 };
 
 export type AgentStates = {

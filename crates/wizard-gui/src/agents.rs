@@ -1,11 +1,11 @@
 //! Tauri commands for agent discovery and configuration.
 
+use crate::{revision_signal::RevisionSignal, settings};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
-use wizard_core::agents::{AgentState, codex, collect_agent_state};
-
-use crate::{revision_signal::RevisionSignal, settings};
+use wizard_core::agents::{AgentState, claude, codex, collect_agent_state, opencode, pi};
+use wizard_core::validate_token;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentStateSnapshot {
@@ -30,6 +30,9 @@ pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateS
 #[derive(Deserialize)]
 pub(crate) enum AgentEvent {
     CodexSetProxy(codex::ProxyMode),
+    ClaudeSetProxy(claude::ProxyMode),
+    SetPiHub(bool),
+    SetOpenCodeHub(bool),
     SetCoreinfraToken(String),
 }
 
@@ -37,6 +40,9 @@ pub(crate) enum AgentEvent {
 pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Result<(), String> {
     let name = match &event {
         AgentEvent::CodexSetProxy(_) => "CodexSetProxy",
+        AgentEvent::ClaudeSetProxy(_) => "ClaudeSetProxy",
+        AgentEvent::SetPiHub(_) => "SetPiHub",
+        AgentEvent::SetOpenCodeHub(_) => "SetOpenCodeHub",
         AgentEvent::SetCoreinfraToken(_) => "SetCoreinfraToken",
     };
     log::info!("received agent event: {name}");
@@ -51,17 +57,49 @@ pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Res
 }
 
 async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
-    let mode = match event {
+    match event {
         AgentEvent::SetCoreinfraToken(token) => {
-            return settings::update_state(app, move |settings| {
+            validate_token(&token)?;
+            settings::update_state(app, move |settings| {
                 settings.coreinfra_api_key = token;
             })
-            .await;
+            .await
         }
-        AgentEvent::CodexSetProxy(mode) => mode,
-    };
-    let current = settings::get_state(app).await?;
-    tauri::async_runtime::spawn_blocking(move || codex::set_proxy(mode, &current.coreinfra_api_key))
-        .await
-        .context("agent event task failed")?
+        AgentEvent::CodexSetProxy(mode) => {
+            let current = settings::get_state(app).await?;
+            tauri::async_runtime::spawn_blocking(move || {
+                codex::set_proxy(mode, &current.coreinfra_api_key)
+            })
+            .await
+            .context("agent event task failed")
+            .flatten()
+        }
+        AgentEvent::ClaudeSetProxy(mode) => {
+            let current = settings::get_state(app).await?;
+            tauri::async_runtime::spawn_blocking(move || {
+                claude::set_proxy(mode, &current.coreinfra_api_key)
+            })
+            .await
+            .context("agent event task failed")
+            .flatten()
+        }
+        AgentEvent::SetOpenCodeHub(install) => {
+            let current = settings::get_state(app).await?;
+            tauri::async_runtime::spawn_blocking(move || {
+                opencode::set_hub(install, &current.coreinfra_api_key)
+            })
+            .await
+            .context("agent event task failed")
+            .flatten()
+        }
+        AgentEvent::SetPiHub(install) => {
+            let current = settings::get_state(app).await?;
+            tauri::async_runtime::spawn_blocking(move || {
+                pi::set_hub(install, &current.coreinfra_api_key)
+            })
+            .await
+            .context("agent event task failed")
+            .flatten()
+        }
+    }
 }

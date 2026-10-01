@@ -1,6 +1,10 @@
 //! Discovery of CLI and desktop agents.
 
-use std::path::{Path, PathBuf};
+use core::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use anyhow::{Context as _, Result};
 use serde::Serialize;
@@ -8,7 +12,7 @@ use serde::Serialize;
 use super::AgentDetection;
 #[cfg(target_os = "macos")]
 use crate::platform::env_var_not_empty;
-use crate::platform::{command_output, find_executable};
+use crate::platform::{append_command_path, command_output, find_executable};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Agent {
@@ -77,15 +81,18 @@ pub(super) fn detect(agent: Agent) -> AgentDetection<AgentInfo> {
 }
 
 fn cli_version(agent: Agent, path: &Path) -> Result<String> {
-    let mut env_path = None;
+    let mut command = tokio::process::Command::new(path);
+    command
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(node) = find_executable("node", vec![])? {
         let directory = node
             .parent()
-            .context("Node executable has no parent directory")?
-            .to_path_buf();
-        env_path = Some(directory);
+            .context("Node executable has no parent directory")?;
+        append_command_path(&mut command, &[directory])?;
     }
-    let output = command_output(path, &["--version"], env_path)?;
+    let output = command_output(command, Duration::from_secs(5))?;
     anyhow::ensure!(
         output.status.success(),
         "--version exited with {}: {}",

@@ -19,6 +19,30 @@ pub(crate) fn env_var_not_empty(name: &str) -> Option<OsString> {
     value
 }
 
+/// Appends directories to the command's PATH, using inherited PATH if not overridden.
+/// Empty entries are skipped. Does not change the parent process environment.
+pub(crate) fn append_command_path(
+    command: &mut tokio::process::Command,
+    paths: &[&Path],
+) -> Result<()> {
+    let path = match command.as_std().get_envs().find(|(key, _)| {
+        *key == "PATH"
+            || (cfg!(target_os = "windows") && key.as_encoded_bytes().eq_ignore_ascii_case(b"PATH"))
+    }) {
+        Some((_, value)) => value.map(OsString::from),
+        None => env_var_not_empty("PATH"),
+    }
+    .unwrap_or_default();
+    let path = std::env::join_paths(
+        std::env::split_paths(&path)
+            .chain(paths.iter().map(|path| path.to_path_buf()))
+            .filter(|path| !path.is_empty()),
+    )
+    .context("failed to construct command PATH")?;
+    command.env("PATH", path);
+    Ok(())
+}
+
 /// Searches common directories, extra directories, the per-user Nix profile, then PATH.
 /// Expands a leading `~` path component. On Windows, also expands leading `%VAR%/`
 /// and checks `.exe` before `.cmd` in each directory.
@@ -130,40 +154,41 @@ pub(crate) fn find_executable(name: &str, extra_paths: Vec<PathBuf>) -> Result<O
     Ok(None)
 }
 
-/// Runs a command with an optional directory appended to the child's PATH and bounded execution time.
+/// Runs a prepared command with bounded execution time and no stdin.
+/// Callers explicitly configure stdout/stderr (piped to capture, null to discard).
 /// Must be called inside `spawn_blocking`.
 pub(crate) fn command_output(
-    program: &Path,
-    args: &[&str],
-    env_path: Option<PathBuf>,
+    mut command: tokio::process::Command,
+    timeout: Duration,
 ) -> Result<Output> {
     let runtime =
         tokio::runtime::Handle::try_current().context("command_output requires a Tokio runtime")?;
-    log::debug!("running command: {}, args: {args:?}", program.display());
+    let program_name = command
+        .as_std()
+        .get_program()
+        .to_string_lossy()
+        .into_owned();
+    log::debug!("running command: {program_name}");
     runtime.block_on(async {
-        let mut command = tokio::process::Command::new(program);
-        if let Some(env_path) = env_path {
-            let path = env_var_not_empty("PATH").unwrap_or_default();
-            let new_path = std::env::join_paths(
-                std::env::split_paths(&path)
-                    .filter(|path| !path.is_empty())
-                    .chain(core::iter::once(env_path)),
-            )
-            .context("failed to construct CLI PATH")?;
-            command.env("PATH", new_path);
-        }
         #[cfg(target_os = "windows")]
         {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
         command
-            .args(args)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
-        tokio::time::timeout(Duration::from_secs(5), command.output())
+        let child = command
+            .spawn()
+            .with_context(|| format!("failed to run {program_name}"))?;
+        tokio::time::timeout(timeout, child.wait_with_output())
             .await
-            .with_context(|| format!("{} timed out after 5 seconds", program.display()))?
-            .with_context(|| format!("failed to run {}", program.display()))
+            .with_context(|| {
+                format!(
+                    "{program_name} timed out after {} seconds; the operation may be partially completed",
+                    timeout.as_secs()
+                )
+            })?
+            .context("failed to wait for command output")
     })
 }

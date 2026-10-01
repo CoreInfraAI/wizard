@@ -1,4 +1,4 @@
-use crate::config_files;
+use crate::{config_files, platform::env_var_not_empty};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,7 +43,7 @@ pub(super) fn detect() -> AgentDetection<Codex> {
 }
 
 fn config_path() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("CODEX_HOME").filter(|home| !home.is_empty()) {
+    if let Some(home) = env_var_not_empty("CODEX_HOME") {
         return Ok(PathBuf::from(home).join("config.toml"));
     }
     let home = dirs::home_dir().context("failed to resolve home directory")?;
@@ -191,7 +191,7 @@ fn write_proxy_env(
     mode: ProxyMode,
     token: &str,
 ) -> Result<()> {
-    let api_key = if mode == ProxyMode::Disabled || token.is_empty() {
+    let api_key = if mode == ProxyMode::Disabled {
         None
     } else {
         Some(token)
