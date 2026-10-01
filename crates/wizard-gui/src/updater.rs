@@ -5,7 +5,7 @@ use tauri::Manager as _;
 use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt as _};
 use tokio::sync::watch;
 
-const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(30);
 
 pub(crate) struct StartupUpdateState {

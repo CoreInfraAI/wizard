@@ -42,6 +42,13 @@ pub fn run_application() -> Result<()> {
         .manage(revision_signal::RevisionSignal::default())
         .setup(|app| {
             log::info!("starting Coreinfra Wizard {}", app.package_info().version);
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW_NAME) {
+                window.set_title(&format!(
+                    "{} v{}",
+                    window.title()?,
+                    app.package_info().version
+                ))?;
+            }
             tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
             // focus after restart
             focus_window(app.handle());
