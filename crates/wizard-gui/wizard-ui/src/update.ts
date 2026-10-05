@@ -5,24 +5,60 @@ import { reportError } from "./log";
 
 let applicationVersionRequest: Promise<string> | undefined;
 
-export function useStartupUpdate() {
-  const [isStartupUpdateComplete, setIsStartupUpdateComplete] = useState(false);
+export type UpdateState =
+  | { status: "checking" }
+  | { status: "available"; version: string }
+  | { status: "installing" }
+  | { status: "up_to_date" }
+  | { status: "failed"; message: string };
+
+export type UpdateObservation = {
+  state: UpdateState | undefined;
+  error: string | undefined;
+};
+
+type UpdateSnapshot = UpdateState & { revision: number };
+
+export function requestUpdate(): Promise<void> {
+  return invoke<void>("request_update");
+}
+
+export function useUpdateState(): UpdateObservation {
+  const [state, setState] = useState<UpdateState>();
+  const [error, setError] = useState<string>();
 
   useEffect(() => {
-    async function runStartupUpdate() {
-      try {
-        await invoke<void>("wait_for_startup_update");
-      } catch (error: unknown) {
-        reportError("failed to wait for startup updater", error);
-      }
+    let stopped = false;
 
-      setIsStartupUpdateComplete(true);
+    async function observe() {
+      let lastRevision: number | null = null;
+      while (!stopped) {
+        try {
+          const next: UpdateSnapshot = await invoke<UpdateSnapshot>("get_update_state", { lastRevision });
+          if (stopped) return;
+          setState(next);
+          setError(undefined);
+          lastRevision = next.revision;
+        } catch (cause: unknown) {
+          if (stopped) return;
+          const message = "Не удалось получить состояние обновления";
+          reportError(message, cause);
+          setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
+          // Read the current snapshot on retry, even if its revision has not changed.
+          lastRevision = null;
+          await new Promise((resolve) => setTimeout(resolve, 1000)); // 1 sec
+        }
+      }
     }
 
-    void runStartupUpdate();
+    void observe();
+    return () => {
+      // An outstanding IPC wait completes on the next state change.
+      stopped = true;
+    };
   }, []);
 
-  return isStartupUpdateComplete;
+  return { state, error };
 }
 
 export function useApplicationVersion() {

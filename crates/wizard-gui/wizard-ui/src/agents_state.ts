@@ -74,7 +74,7 @@ type DetectionState =
   | { status: "error"; message: string };
 
 type AgentStateSnapshot = {
-  revision: string;
+  revision: number;
   agents: AgentStates;
   coreinfra_token_set: boolean;
 };
@@ -102,7 +102,7 @@ export function useAgentState(): DetectionState {
           if (stopped) return;
           debug(`received agent state at revision ${snapshot.revision}`);
           setState({ status: "ready", data: snapshot });
-          await invoke<string>("wait_for_update", { lastRevision: snapshot.revision });
+          await invoke<number>("wait_for_update", { lastRevision: snapshot.revision });
         }
       } catch (cause: unknown) {
         if (stopped) return;

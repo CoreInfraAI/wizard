@@ -1,90 +1,149 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
+use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
+use anyhow::{Context as _, Result};
+use serde::Serialize;
 use tauri::Manager as _;
-use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt as _};
-use tokio::sync::watch;
+use tauri_plugin_updater::{Update, UpdaterExt as _};
 
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(1);
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
-const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(30);
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(2);
 
-pub(crate) struct StartupUpdateState {
-    completion: watch::Sender<bool>,
+#[derive(Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum UpdateState {
+    Checking,
+    Installing,
+    UpToDate,
+    Available { version: String },
+    Failed { message: String },
 }
 
-impl Default for StartupUpdateState {
-    fn default() -> Self {
-        let (completion, _) = watch::channel(false);
-        Self { completion }
-    }
-}
-
-impl StartupUpdateState {
-    fn complete(&self) {
-        self.completion.send_replace(true);
-    }
-
-    async fn wait(&self) {
-        let mut completion = self.completion.subscribe();
-        loop {
-            if *completion.borrow_and_update() {
-                return;
-            }
-            if completion.changed().await.is_err() {
-                return;
-            }
-        }
+impl UpdateState {
+    fn is_in_progress(&self) -> bool {
+        matches!(self, Self::Checking | Self::Installing)
     }
 }
 
 pub(crate) fn start(app: tauri::AppHandle) {
-    let state = Arc::clone(&app.state::<Arc<StartupUpdateState>>());
+    start_update(app.clone());
+
+    let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
     tauri::async_runtime::spawn(async move {
-        check_and_install_update(app).await;
-        state.complete();
+        loop {
+            tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
+            check_in_background(&app, &state).await;
+        }
     });
 }
 
 #[tauri::command]
-pub(crate) async fn wait_for_startup_update(app: tauri::AppHandle) {
-    let state = Arc::clone(&app.state::<Arc<StartupUpdateState>>());
-    state.wait().await;
+pub(crate) async fn get_update_state(
+    last_revision: Option<u32>,
+    state: tauri::State<'_, Arc<RevisionSignal<UpdateState>>>,
+) -> Result<RevisionSnapshot<UpdateState>, String> {
+    // state.update(|current| {
+    //     (!current.is_in_progress()).then(|| UpdateState::Failed { message: "test update error".to_owned() })
+    //     // (!current.is_in_progress()).then(|| UpdateState::Available { version: "0.0.0".to_owned() })
+    // });
+    state
+        .wait(last_revision)
+        .await
+        .map_err(|error| format!("{error:#}"))
 }
 
-async fn check_and_install_update(app: tauri::AppHandle) {
+#[tauri::command]
+pub(crate) fn request_update(app: tauri::AppHandle) {
+    let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
+    // Claim the next update atomically to prevent concurrent installations.
+    let Some(_) = state.update(|current| {
+        if current.is_in_progress() {
+            return None;
+        }
+        Some(UpdateState::Checking)
+    }) else {
+        return;
+    };
+    start_update(app);
+}
+
+fn start_update(app: tauri::AppHandle) {
+    let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = check_and_install_update(&app, &state).await {
+            log::error!("application update failed: {error:#}");
+            state.notify(UpdateState::Failed {
+                message: format!("{error:#}"),
+            });
+        }
+    });
+}
+
+async fn check_and_install_update(
+    app: &tauri::AppHandle,
+    state: &RevisionSignal<UpdateState>,
+) -> Result<()> {
     log::info!("checking for application updates");
 
-    let updater = match app.updater_builder().timeout(UPDATE_CHECK_TIMEOUT).build() {
-        Ok(updater) => updater,
-        Err(UpdaterError::EmptyEndpoints) => {
-            log::error!("failed to initialize updater: no update endpoints are configured");
-            return;
-        }
-        Err(error) => {
-            log::error!("failed to initialize updater: {error}");
-            return;
-        }
+    let Some(mut update) = find_update(app).await? else {
+        log::info!("application is up to date");
+        state.notify(UpdateState::UpToDate);
+        return Ok(());
     };
-
-    let mut update = match updater.check().await {
-        Ok(Some(update)) => update,
-        Ok(None) => {
-            log::info!("application is up to date");
-            return;
-        }
-        Err(error) => {
-            log::error!("failed to check for updates: {error}");
-            return;
-        }
-    };
+    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
     log::info!("downloading application update {}", update.version);
-    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
-    if let Err(error) = update.download_and_install(|_, _| {}, || {}).await {
-        log::error!("failed to install update: {error}");
-        return;
-    }
+    state.notify(UpdateState::Installing);
+
+    let bytes = update
+        .download(|_, _| {}, || {})
+        .await
+        .context("Не удалось скачать обновление")?;
+
+    tauri::async_runtime::spawn_blocking(move || update.install(bytes))
+        .await
+        .context("Не удалось выполнить задачу установки обновления")?
+        .context("Не удалось установить обновление")?;
 
     log::info!("application update installed; restarting");
     app.restart();
+}
+
+async fn check_in_background(app: &tauri::AppHandle, state: &RevisionSignal<UpdateState>) {
+    log::info!("checking for application updates in background");
+    let next = match find_update(app).await {
+        Ok(Some(update)) => {
+            log::info!("application update {} is available", update.version);
+            UpdateState::Available {
+                version: update.version,
+            }
+        }
+        Ok(None) => UpdateState::UpToDate,
+        Err(error) => {
+            log::error!("background update check failed: {error:#}");
+            return;
+        }
+    };
+    // Do not overwrite an installation request accepted during the network check.
+    state.update(|current| {
+        if current.is_in_progress() || current == &next {
+            return None;
+        }
+        Some(next)
+    });
+}
+
+async fn find_update(app: &tauri::AppHandle) -> Result<Option<Update>> {
+    let updater = app
+        .updater_builder()
+        .timeout(UPDATE_CHECK_TIMEOUT)
+        .build()
+        .context("Не удалось подготовить проверку обновлений")?;
+
+    updater
+        .check()
+        .await
+        .context("Не удалось проверить обновления")
 }

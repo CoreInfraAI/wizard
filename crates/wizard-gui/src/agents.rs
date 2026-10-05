@@ -7,16 +7,34 @@ use tauri::Manager as _;
 use wizard_core::agents::{AgentState, claude, codex, collect_agent_state, opencode, pi};
 use wizard_core::validate_token;
 
+#[derive(Clone)]
+pub(crate) struct AgentRevisionState;
+
+#[tauri::command]
+pub(crate) async fn wait_for_update(
+    last_revision: u32,
+    signal: tauri::State<'_, RevisionSignal<AgentRevisionState>>,
+) -> Result<u32, String> {
+    signal
+        .wait(Some(last_revision))
+        .await
+        .map(|snapshot| snapshot.revision)
+        .map_err(|error| format!("{error:#}"))
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentStateSnapshot {
-    revision: String,
+    revision: u32,
     #[serde(flatten)]
     state: AgentState,
 }
 
 #[tauri::command]
 pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateSnapshot, String> {
-    let revision = app.state::<RevisionSignal>().current().to_string();
+    let revision = app
+        .state::<RevisionSignal<AgentRevisionState>>()
+        .current()
+        .revision;
     log::debug!("collecting agent state at revision {revision}");
     let settings = settings::get_state(&app)
         .await
@@ -47,7 +65,8 @@ pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Res
     };
     log::info!("received agent event: {name}");
     let result = apply_event(event, &app).await;
-    app.state::<RevisionSignal>().notify();
+    app.state::<RevisionSignal<AgentRevisionState>>()
+        .notify(AgentRevisionState);
     if let Err(error) = result {
         log::error!("agent event {name} failed: {error:#}");
         return Err(format!("{error:#}"));

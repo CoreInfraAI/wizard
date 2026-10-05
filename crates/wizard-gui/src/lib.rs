@@ -38,8 +38,12 @@ pub fn run_application() -> Result<()> {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(Arc::new(updater::StartupUpdateState::default()))
-        .manage(revision_signal::RevisionSignal::default())
+        .manage(Arc::new(revision_signal::RevisionSignal::new(
+            updater::UpdateState::Checking,
+        )))
+        .manage(revision_signal::RevisionSignal::new(
+            agents::AgentRevisionState,
+        ))
         .setup(|app| {
             log::info!("starting Coreinfra Wizard {}", app.package_info().version);
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_NAME) {
@@ -56,10 +60,11 @@ pub fn run_application() -> Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            updater::wait_for_startup_update,
+            updater::get_update_state,
+            updater::request_update,
             agents::get_agent_state,
             agents::agent_event,
-            revision_signal::wait_for_update,
+            agents::wait_for_update,
         ])
         .run(tauri::generate_context!())
         .context("failed to run Coreinfra Wizard")
