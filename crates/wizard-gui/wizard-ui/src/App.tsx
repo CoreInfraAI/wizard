@@ -23,7 +23,7 @@ function AgentPanel({ updateTile }: { updateTile: ReactNode }) {
         <CoreInfraToken token={state.data.coreinfra_token} />
         {updateTile}
       </div>
-      <AgentList agents={state.data.agents} />
+      <AgentList agents={state.data.agents} token={state.data.coreinfra_token} />
     </>
   );
 }

@@ -15,7 +15,11 @@ const proxyOptions = [
   { mode: "proxy_api", label: "CoreInfra API" },
 ] as const;
 
-function AgentProxy({ agent, mode }: { agent: "codex" | "claude"; mode: ProxyMode }) {
+function AgentProxy({ agent, mode, token }: {
+  agent: "codex" | "claude";
+  mode: ProxyMode;
+  token: string;
+}) {
   const [selected, setSelected] = useState(mode);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -62,7 +66,7 @@ function AgentProxy({ agent, mode }: { agent: "codex" | "claude"; mode: ProxyMod
           </RadioField>
         ))}
       </RadioGroup>
-      <Button outline type="button" disabled={pending} onClick={() => void send()}>
+      <Button outline type="button" disabled={pending || (selected !== "disabled" && token === "")} onClick={() => void send()}>
         Применить
       </Button>
       {error && <ErrorText>{error}</ErrorText>}
@@ -70,7 +74,11 @@ function AgentProxy({ agent, mode }: { agent: "codex" | "claude"; mode: ProxyMod
   );
 }
 
-function HubProxy({ agent, installed }: { agent: "Pi" | "OpenCode"; installed: boolean }) {
+function HubProxy({ agent, installed, token }: {
+  agent: "Pi" | "OpenCode";
+  installed: boolean;
+  token: string;
+}) {
   const [selected, setSelected] = useState(installed);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -114,7 +122,7 @@ function HubProxy({ agent, installed }: { agent: "Pi" | "OpenCode"; installed: b
           <Label>CoreInfra Hub</Label>
         </RadioField>
       </RadioGroup>
-      <Button outline type="button" disabled={pending} onClick={() => void send()}>
+      <Button outline type="button" disabled={pending || (selected && token === "")} onClick={() => void send()}>
         Применить
       </Button>
       {error && <ErrorText>{error}</ErrorText>}
@@ -160,13 +168,13 @@ function Installation({ name, detection, children }: {
   );
 }
 
-export function AgentList({ agents }: { agents: AgentStates }) {
+export function AgentList({ agents, token }: { agents: AgentStates; token: string }) {
   return (
     <>
       <div className="grid grid-cols-2 gap-6">
         <Installation name="Codex" detection={agents.codex}>
           {agents.codex.status === "found" && (
-            <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} />
+            <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} token={token} />
           )}
         </Installation>
         <Installation name="ChatGPT" detection={agents.chatgpt} />
@@ -174,7 +182,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
       <div className="grid grid-cols-2 gap-6">
         <Installation name="Claude Code" detection={agents.claude}>
           {agents.claude.status === "found" && (
-            <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} />
+            <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} token={token} />
           )}
         </Installation>
         <Installation name="Claude Desktop" detection={agents.claude_desktop} />
@@ -182,12 +190,12 @@ export function AgentList({ agents }: { agents: AgentStates }) {
       <div className="grid grid-cols-2 gap-6">
         <Installation name="OpenCode" detection={agents.opencode}>
           {agents.opencode.status === "found" && (
-            <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} />
+            <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} token={token} />
           )}
         </Installation>
         <Installation name="Pi" detection={agents.pi}>
           {agents.pi.status === "found" && (
-            <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} />
+            <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} token={token} />
           )}
         </Installation>
       </div>
