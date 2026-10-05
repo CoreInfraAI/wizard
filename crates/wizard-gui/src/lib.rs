@@ -14,6 +14,19 @@ mod updater;
 const MAIN_WINDOW_NAME: &str = "main";
 
 pub fn run_application() -> Result<()> {
+    let log_level = match std::env::var("WIZARD_LOG") {
+        Ok(value) => value
+            .parse::<LevelFilter>()
+            .context("invalid WIZARD_LOG: expected off, error, warn, info, debug or trace")?,
+        Err(std::env::VarError::NotPresent) => {
+            // info by default
+            LevelFilter::Info
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("WIZARD_LOG must contain valid Unicode");
+        }
+    };
+
     tauri::Builder::default()
         // This plugin must be registered first to stop a second process before other plugins start.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -28,11 +41,7 @@ pub fn run_application() -> Result<()> {
                         file_name: Some("Wizard".into()),
                     }),
                 ])
-                .level(if cfg!(debug_assertions) {
-                    LevelFilter::Debug
-                } else {
-                    LevelFilter::Info
-                })
+                .level(log_level)
                 .max_file_size(1024 * 1024)
                 .rotation_strategy(RotationStrategy::KeepSome(5))
                 .build(),
