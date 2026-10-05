@@ -5310,6 +5310,7 @@ dependencies = [
  "dirs",
  "log",
  "plist",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

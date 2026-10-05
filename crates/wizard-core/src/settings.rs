@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub coreinfra_api_key: String,
+    #[serde(rename = "coreinfra_api_key", skip_serializing_if = "String::is_empty")]
+    pub coreinfra_token: String,
 }
 
 fn settings_path() -> Result<PathBuf> {

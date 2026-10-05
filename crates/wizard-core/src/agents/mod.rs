@@ -12,10 +12,10 @@ mod detection;
 pub mod opencode;
 pub mod pi;
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct AgentState {
     agents: AgentStates,
-    coreinfra_token_set: bool,
+    coreinfra_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,11 +45,10 @@ impl<T> AgentDetection<T> {
 /// Collects state for GUI or CLI. Must be called within a Tokio runtime with I/O and time enabled.
 pub async fn collect_agent_state(settings: &settings::Settings) -> AgentState {
     let agents = detect().await;
-    let coreinfra_token_set = !settings.coreinfra_api_key.is_empty();
 
     AgentState {
         agents,
-        coreinfra_token_set,
+        coreinfra_token: settings.coreinfra_token.clone(),
     }
 }
 

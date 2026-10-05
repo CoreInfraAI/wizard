@@ -85,7 +85,7 @@ fn run(cli: Cli) -> Result<()> {
             let token = token.trim().to_owned();
             validate_token(&token)?;
             settings::update_file(|settings| {
-                settings.coreinfra_api_key = token;
+                settings.coreinfra_token = token;
             })?;
         }
         Command::Codex { command } => {
@@ -97,7 +97,7 @@ fn run(cli: Cli) -> Result<()> {
             let token = if mode == agents::codex::ProxyMode::Disabled {
                 String::new()
             } else {
-                settings::load_from_file()?.coreinfra_api_key
+                settings::load_from_file()?.coreinfra_token
             };
             agents::codex::set_proxy(mode, &token)?;
         }
@@ -110,7 +110,7 @@ fn run(cli: Cli) -> Result<()> {
             let token = if mode == agents::claude::ProxyMode::Disabled {
                 String::new()
             } else {
-                settings::load_from_file()?.coreinfra_api_key
+                settings::load_from_file()?.coreinfra_token
             };
             agents::claude::set_proxy(mode, &token)?;
         }
@@ -129,7 +129,7 @@ fn run_hub_command(
 ) -> Result<()> {
     let install = matches!(command, HubCommand::Hub);
     let token = if install {
-        settings::load_from_file()?.coreinfra_api_key
+        settings::load_from_file()?.coreinfra_token
     } else {
         String::new()
     };

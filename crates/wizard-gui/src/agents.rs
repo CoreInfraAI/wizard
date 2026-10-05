@@ -22,7 +22,7 @@ pub(crate) async fn wait_for_update(
         .map_err(|error| format!("{error:#}"))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub(crate) struct AgentStateSnapshot {
     revision: u32,
     #[serde(flatten)]
@@ -80,14 +80,14 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
         AgentEvent::SetCoreInfraToken(token) => {
             validate_token(&token)?;
             settings::update_state(app, move |settings| {
-                settings.coreinfra_api_key = token;
+                settings.coreinfra_token = token;
             })
             .await
         }
         AgentEvent::CodexSetProxy(mode) => {
             let current = settings::get_state(app).await?;
             tauri::async_runtime::spawn_blocking(move || {
-                codex::set_proxy(mode, &current.coreinfra_api_key)
+                codex::set_proxy(mode, &current.coreinfra_token)
             })
             .await
             .context("agent event task failed")
@@ -96,7 +96,7 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
         AgentEvent::ClaudeSetProxy(mode) => {
             let current = settings::get_state(app).await?;
             tauri::async_runtime::spawn_blocking(move || {
-                claude::set_proxy(mode, &current.coreinfra_api_key)
+                claude::set_proxy(mode, &current.coreinfra_token)
             })
             .await
             .context("agent event task failed")
@@ -105,7 +105,7 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
         AgentEvent::SetOpenCodeHub(install) => {
             let current = settings::get_state(app).await?;
             tauri::async_runtime::spawn_blocking(move || {
-                opencode::set_hub(install, &current.coreinfra_api_key)
+                opencode::set_hub(install, &current.coreinfra_token)
             })
             .await
             .context("agent event task failed")
@@ -114,7 +114,7 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
         AgentEvent::SetPiHub(install) => {
             let current = settings::get_state(app).await?;
             tauri::async_runtime::spawn_blocking(move || {
-                pi::set_hub(install, &current.coreinfra_api_key)
+                pi::set_hub(install, &current.coreinfra_token)
             })
             .await
             .context("agent event task failed")

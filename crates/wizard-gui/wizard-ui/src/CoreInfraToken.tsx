@@ -8,8 +8,9 @@ import { Heading } from "./components/catalyst/heading";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
 
-export function CoreInfraToken({ saved }: { saved: boolean }) {
-  const [token, setToken] = useState("");
+export function CoreInfraToken({ token: savedToken }: { token: string }) {
+  const saved = savedToken !== "";
+  const [token, setToken] = useState(savedToken);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>("test backend error");
 
@@ -19,9 +20,7 @@ export function CoreInfraToken({ saved }: { saved: boolean }) {
     setError(undefined);
     try {
       await sendAgentEvent({ SetCoreInfraToken: value });
-      if (value !== "") {
-        setToken((current) => current === submitted ? "" : current);
-      }
+      setToken((current) => current === submitted ? value : current);
     } catch (cause: unknown) {
       const message = "Не удалось изменить токен";
       reportError(message, cause);
@@ -40,7 +39,7 @@ export function CoreInfraToken({ saved }: { saved: boolean }) {
       <div className="flex max-w-xl flex-col gap-3 sm:flex-row sm:items-center">
         <Input
           className="min-w-0 flex-1"
-          type="password"
+          type="text"
           autoComplete="off"
           spellCheck={false}
           value={token}
@@ -53,7 +52,7 @@ export function CoreInfraToken({ saved }: { saved: boolean }) {
           <Button
             outline
             type="button"
-            disabled={pending || token.trim() === ""}
+            disabled={pending || token.trim() === savedToken}
             onClick={() => void updateToken(token.trim())}
           >
             Сохранить

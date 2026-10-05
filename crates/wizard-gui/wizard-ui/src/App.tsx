@@ -20,7 +20,7 @@ function AgentPanel({ updateTile }: { updateTile: ReactNode }) {
         ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-6"
         : "grid grid-cols-1"}
       >
-        <CoreInfraToken saved={state.data.coreinfra_token_set} />
+        <CoreInfraToken token={state.data.coreinfra_token} />
         {updateTile}
       </div>
       <AgentList agents={state.data.agents} />

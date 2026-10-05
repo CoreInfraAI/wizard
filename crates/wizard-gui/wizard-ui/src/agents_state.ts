@@ -75,8 +75,8 @@ type DetectionState =
 
 type AgentStateSnapshot = {
   revision: number;
+  coreinfra_token: string;
   agents: AgentStates;
-  coreinfra_token_set: boolean;
 };
 
 // Deduplicate concurrent reads, but never cache a completed snapshot.
