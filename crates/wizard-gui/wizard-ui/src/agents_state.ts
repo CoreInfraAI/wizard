@@ -7,13 +7,13 @@ export type AgentEvent =
   | { ClaudeSetProxy: ProxyMode }
   | { SetPiHub: boolean }
   | { SetOpenCodeHub: boolean }
-  | { SetCoreinfraToken: string };
+  | { SetCoreInfraToken: string };
 
 export function sendAgentEvent(event: AgentEvent): Promise<void> {
   const name = "CodexSetProxy" in event ? "CodexSetProxy"
     : "ClaudeSetProxy" in event ? "ClaudeSetProxy"
     : "SetPiHub" in event ? "SetPiHub"
-    : "SetOpenCodeHub" in event ? "SetOpenCodeHub" : "SetCoreinfraToken";
+    : "SetOpenCodeHub" in event ? "SetOpenCodeHub" : "SetCoreInfraToken";
   info(`sending agent event: ${name}`);
   return invoke<void>("agent_event", { event });
 }

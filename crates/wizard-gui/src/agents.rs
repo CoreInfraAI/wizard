@@ -51,7 +51,7 @@ pub(crate) enum AgentEvent {
     ClaudeSetProxy(claude::ProxyMode),
     SetPiHub(bool),
     SetOpenCodeHub(bool),
-    SetCoreinfraToken(String),
+    SetCoreInfraToken(String),
 }
 
 #[tauri::command]
@@ -61,7 +61,7 @@ pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Res
         AgentEvent::ClaudeSetProxy(_) => "ClaudeSetProxy",
         AgentEvent::SetPiHub(_) => "SetPiHub",
         AgentEvent::SetOpenCodeHub(_) => "SetOpenCodeHub",
-        AgentEvent::SetCoreinfraToken(_) => "SetCoreinfraToken",
+        AgentEvent::SetCoreInfraToken(_) => "SetCoreInfraToken",
     };
     log::info!("received agent event: {name}");
     let result = apply_event(event, &app).await;
@@ -77,7 +77,7 @@ pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Res
 
 async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
     match event {
-        AgentEvent::SetCoreinfraToken(token) => {
+        AgentEvent::SetCoreInfraToken(token) => {
             validate_token(&token)?;
             settings::update_state(app, move |settings| {
                 settings.coreinfra_api_key = token;

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { AgentList } from "./AgentList";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
-import { CoreinfraToken } from "./CoreinfraToken";
+import { CoreInfraToken } from "./CoreInfraToken";
 import { useAgentState } from "./agents_state";
 import { requestUpdate, useUpdateState } from "./update";
 import { UpdateScreen } from "./UpdateScreen";
@@ -20,7 +20,7 @@ function AgentPanel({ updateTile }: { updateTile: ReactNode }) {
         ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-6"
         : "grid grid-cols-1"}
       >
-        <CoreinfraToken saved={state.data.coreinfra_token_set} />
+        <CoreInfraToken saved={state.data.coreinfra_token_set} />
         {updateTile}
       </div>
       <AgentList agents={state.data.agents} />

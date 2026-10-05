@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Coreinfra Wizard",
+  "productName": "CoreInfra Wizard",
   "version": "0.2.3",
   "identifier": "ai.coreinfra.wizard",
   "build": {
@@ -18,7 +18,7 @@
   "app": {
     "windows": [
       {
-        "title": "Coreinfra Wizard",
+        "title": "CoreInfra Wizard",
         "width": 1000,
         "height": 700
       }

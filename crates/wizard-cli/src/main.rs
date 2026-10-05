@@ -6,7 +6,7 @@ use wizard_core::{agents, settings, validate_token};
 #[derive(Parser)]
 #[command(
     version,
-    about = "Coreinfra Wizard backend CLI. Close the GUI before changing settings."
+    about = "CoreInfra Wizard backend CLI. Close the GUI before changing settings."
 )]
 struct Cli {
     #[command(subcommand)]

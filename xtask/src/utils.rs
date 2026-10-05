@@ -8,9 +8,9 @@ use anyhow::{Context as _, Result, bail};
 use semver::Version;
 use serde_json::Value;
 
-const APP_NAME: &str = "Coreinfra Wizard.app";
-const INSTALLED_APP: &str = "/Applications/Coreinfra Wizard.app";
-const INSTALLED_EXECUTABLE: &str = "/Applications/Coreinfra Wizard.app/Contents/MacOS/wizard";
+const APP_NAME: &str = "CoreInfra Wizard.app";
+const INSTALLED_APP: &str = "/Applications/CoreInfra Wizard.app";
+const INSTALLED_EXECUTABLE: &str = "/Applications/CoreInfra Wizard.app/Contents/MacOS/wizard";
 
 pub(crate) struct Paths {
     pub(crate) workspace: PathBuf,

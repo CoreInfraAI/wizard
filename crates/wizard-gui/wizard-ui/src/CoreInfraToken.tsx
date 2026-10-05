@@ -8,7 +8,7 @@ import { Heading } from "./components/catalyst/heading";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
 
-export function CoreinfraToken({ saved }: { saved: boolean }) {
+export function CoreInfraToken({ saved }: { saved: boolean }) {
   const [token, setToken] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>("test backend error");
@@ -18,7 +18,7 @@ export function CoreinfraToken({ saved }: { saved: boolean }) {
     setPending(true);
     setError(undefined);
     try {
-      await sendAgentEvent({ SetCoreinfraToken: value });
+      await sendAgentEvent({ SetCoreInfraToken: value });
       if (value !== "") {
         setToken((current) => current === submitted ? "" : current);
       }

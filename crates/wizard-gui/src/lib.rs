@@ -45,7 +45,7 @@ pub fn run_application() -> Result<()> {
             agents::AgentRevisionState,
         ))
         .setup(|app| {
-            log::info!("starting Coreinfra Wizard {}", app.package_info().version);
+            log::info!("starting CoreInfra Wizard {}", app.package_info().version);
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_NAME) {
                 window.set_title(&format!(
                     "{} v{}",
@@ -67,7 +67,7 @@ pub fn run_application() -> Result<()> {
             agents::wait_for_update,
         ])
         .run(tauri::generate_context!())
-        .context("failed to run Coreinfra Wizard")
+        .context("failed to run CoreInfra Wizard")
 }
 
 fn focus_window(app: &tauri::AppHandle) {
