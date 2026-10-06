@@ -3,11 +3,15 @@ use std::sync::Mutex;
 use anyhow::{Context as _, Result, anyhow, bail};
 use tauri::Manager as _;
 use wizard_core::settings::{self, Settings};
+use wizard_core::validate_token;
 
 pub(crate) async fn initialize_state(app: &tauri::AppHandle) -> Result<()> {
     let settings = tauri::async_runtime::spawn_blocking(settings::load_from_file)
         .await
         .context("settings initialization task failed")??;
+
+    validate_token(&settings.coreinfra_token)?;
+
     if !app.manage(Mutex::new(settings)) {
         bail!("settings already initialized");
     }

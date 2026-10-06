@@ -14,7 +14,7 @@ use super::{
     detection::{self, Agent, AgentInfo},
 };
 use crate::{
-    config_files,
+    config_files::{self, changes::FileChange},
     platform::{append_command_path, command_output, env_var_not_empty, find_executable},
 };
 
@@ -66,19 +66,21 @@ fn auth_path() -> Result<PathBuf> {
         .context("failed to resolve OpenCode auth path")
 }
 
-fn read_configs(dir: &Path) -> Result<Vec<(PathBuf, Value)>> {
+fn read_configs(dir: &Path) -> Result<(Vec<FileChange>, bool)> {
     // OpenCode merges all three global files. Only plain JSON is supported here.
     let mut configs = Vec::new();
+    let mut installed = false;
     for name in ["config.json", "opencode.json", "opencode.jsonc"] {
-        let path = dir.join(name);
-        let value = config_files::json::read(&path)
+        let change = FileChange::read(dir.join(name))?;
+        let value = config_files::json::parse(change.after.as_ref())
             .with_context(|| format!("failed to read OpenCode {name}; Wizard currently supports JSON without comments or trailing commas"))?;
         if let Some(plugins) = value.get("plugin") {
             ensure!(plugins.is_array(), "OpenCode plugin must be an array");
         }
-        configs.push((path, value));
+        installed |= has_hub_plugin(&value);
+        configs.push(change);
     }
-    Ok(configs)
+    Ok((configs, installed))
 }
 
 fn is_hub_plugin(entry: &Value) -> bool {
@@ -105,9 +107,8 @@ fn proxy_installed() -> Result<bool> {
         .lock()
         .map_err(|_| anyhow::anyhow!("OpenCode Hub lock poisoned"))?;
     let dir = config_dir()?;
-    Ok(read_configs(&dir)?
-        .iter()
-        .any(|(_, config)| has_hub_plugin(config)))
+    let (_, installed) = read_configs(&dir)?;
+    Ok(installed)
 }
 
 /// Call from a Tokio blocking worker. Changes global configuration only; close `OpenCode` first.
@@ -116,42 +117,48 @@ pub fn set_hub(install: bool, token: &str) -> Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("OpenCode Hub lock poisoned"))?;
     let dir = config_dir()?;
-    let auth_path = auth_path()?;
-    let configs = read_configs(&dir)?;
-    let original_auth = config_files::json::read(&auth_path)?;
+    let (mut configs, _) = read_configs(&dir)?;
+    let mut auth = FileChange::read(auth_path()?)?;
+    config_files::json::update(&mut auth.after, |auth| {
+        let credentials = auth
+            .as_object_mut()
+            .context("OpenCode auth must be an object")?;
+        if install {
+            credentials.insert("coreinfra".into(), json!({"type": "api", "key": token}));
+        } else {
+            credentials.remove("coreinfra");
+        }
+        Ok(())
+    })?;
     if install {
         run_install_command(&dir)?;
+        let (_, installed) = read_configs(&dir)?;
         ensure!(
-            read_configs(&dir)?
-                .iter()
-                .any(|(_, config)| has_hub_plugin(config)),
+            installed,
             "OpenCode plugin command completed but no CoreInfra declaration was found"
         );
+        // The installer owns config edits. Their unchanged snapshots are skipped
+        // by apply_all, so its output is never replaced by pre-install contents.
     } else {
-        remove_plugin(&configs)?;
+        remove_plugin(&mut configs)?;
     }
 
-    let mut auth = original_auth.clone();
-    let credentials = auth
-        .as_object_mut()
-        .context("OpenCode auth must be an object")?;
-    if install {
-        credentials.insert("coreinfra".into(), json!({"type": "api", "key": token}));
+    configs.push(auth);
+    FileChange::apply_all(&configs).context(if install {
+        "OpenCode plugin installation completed, but saving authentication failed; close OpenCode and retry"
     } else {
-        credentials.remove("coreinfra");
-    }
-    config_files::json::write(&auth_path, &original_auth, &auth)
-        .context("OpenCode plugin step completed, but saving authentication failed; close OpenCode and retry")
+        "failed to apply OpenCode Hub removal; close OpenCode and retry"
+    })
 }
 
-fn remove_plugin(configs: &[(PathBuf, Value)]) -> Result<()> {
-    for (path, original) in configs {
-        let mut config = original.clone();
-        if let Some(plugins) = config.get_mut("plugin").and_then(Value::as_array_mut) {
-            plugins.retain(|entry| !is_hub_plugin(entry));
-        }
-        config_files::json::write(path, original, &config)
-            .context("failed to remove OpenCode Hub declaration; retry to finish cleanup")?;
+fn remove_plugin(configs: &mut [FileChange]) -> Result<()> {
+    for change in configs {
+        config_files::json::update(&mut change.after, |config| {
+            if let Some(plugins) = config.get_mut("plugin").and_then(Value::as_array_mut) {
+                plugins.retain(|entry| !is_hub_plugin(entry));
+            }
+            Ok(())
+        })?;
     }
     Ok(())
 }

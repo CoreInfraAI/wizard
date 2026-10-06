@@ -176,13 +176,13 @@ export function AgentList({ agents, token }: { agents: AgentStates; token: strin
           <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} token={token} />
         )}
       </Installation>
-      <Installation name="ChatGPT" detection={agents.chatgpt} />
+      {/*<Installation name="ChatGPT" detection={agents.chatgpt} />*/}
       <Installation name="Claude Code" detection={agents.claude}>
         {agents.claude.status === "found" && (
           <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} token={token} />
         )}
       </Installation>
-      <Installation name="Claude Desktop" detection={agents.claude_desktop} />
+      {/*<Installation name="Claude Desktop" detection={agents.claude_desktop} />*/}
       <Installation name="OpenCode" detection={agents.opencode}>
         {agents.opencode.status === "found" && (
           <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} token={token} />

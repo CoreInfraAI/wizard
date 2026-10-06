@@ -2,13 +2,17 @@ use super::{
     AgentDetection,
     detection::{self, Agent, AgentInfo},
 };
-use crate::{config_files, platform::env_var_not_empty};
+use crate::{
+    config_files::{
+        self,
+        changes::{FileChange, FileSnapshot},
+    },
+    platform::env_var_not_empty,
+};
 use anyhow::{Context as _, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    fs,
-    io::Write as _,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -86,42 +90,44 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("Claude proxy lock poisoned"))?;
     let dir = config_dir()?;
-    let settings_path = dir.join("settings.json");
     let script_path = dir.join("no-proxy.sh");
-    let settings_was = config_files::json::read(&settings_path)?;
-    let current_mode = mode_from_config(&settings_was);
-    if mode == ProxyMode::Disabled && current_mode == ProxyMode::Disabled {
-        return Ok(());
-    }
-    let mut settings = settings_was.clone();
-    let env = settings
-        .as_object_mut()
-        .context("Claude settings must be an object")?
-        .entry("env")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .context("Claude env must be an object")?;
+    let mut settings = FileChange::read(dir.join("settings.json"))?;
+    let mut global = FileChange::read(global_config_path()?)?;
+    let mut script = FileChange::read(script_path.clone())?;
 
-    remove_inactive_proxy_settings(env, current_mode);
-    write_proxy_settings(env, mode, token, &script_path)?;
+    let current_mode = mode_from_config(&config_files::json::parse(settings.after.as_ref())?);
+    if !(mode == ProxyMode::Disabled && current_mode == ProxyMode::Disabled) {
+        config_files::json::update(&mut settings.after, |settings| {
+            let env = settings
+                .as_object_mut()
+                .context("Claude settings must be an object")?
+                .entry("env")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .context("Claude env must be an object")?;
+            remove_inactive_proxy_settings(env, current_mode);
+            write_proxy_settings(env, mode, token, &script_path)
+        })?;
+    }
+    if mode == ProxyMode::ProxyHub {
+        // The saved token is ASCII; Claude approves its last 20 characters.
+        let suffix = token.get(token.len().saturating_sub(20)..).unwrap_or(token);
+        approve_key(&mut global.after, suffix)?;
+    }
+    if mode == ProxyMode::ProxyApi {
+        prepare_no_proxy_script(&mut script.after)?;
+    }
+    if mode != ProxyMode::ProxyApi && current_mode == ProxyMode::ProxyApi {
+        remove_no_proxy_script(&mut script.after);
+    }
 
-    // Prepare the new mode before changing the active settings.
-    match mode {
-        ProxyMode::Disabled => {}
-        ProxyMode::ProxyHub => {
-            // token contains only ACSII
-            let suffix = token.get(token.len().saturating_sub(20)..).unwrap_or(token);
-            approve_key(&global_config_path()?, suffix)?;
-        }
-        ProxyMode::ProxyApi => write_no_proxy_script(&script_path)?,
-    }
-    config_files::json::write(&settings_path, &settings_was, &settings)
-        .context("Claude preparation completed, but saving proxy settings failed; close Claude Code and retry")?;
-    if current_mode == ProxyMode::ProxyApi && mode != ProxyMode::ProxyApi {
-        remove_no_proxy_script(&script_path)
-            .context("Claude proxy settings saved, but script cleanup failed")?;
-    }
-    Ok(())
+    // Keep preparation files before activation, and script deletion after it.
+    let changes = if mode == ProxyMode::ProxyApi {
+        [global, script, settings]
+    } else {
+        [global, settings, script]
+    };
+    FileChange::apply_all(&changes)
 }
 
 fn remove_inactive_proxy_settings(env: &mut Map<String, Value>, current_mode: ProxyMode) {
@@ -202,86 +208,49 @@ fn write_proxy_settings(
     Ok(())
 }
 
-fn approve_key(path: &Path, suffix: &str) -> Result<()> {
-    let original = config_files::json::read(path)?;
-    let mut config = original.clone();
-    config["hasCompletedOnboarding"] = json!(true);
-    let approved = config
-        .as_object_mut()
-        .context("Claude config must be an object")?
-        .entry("customApiKeyResponses")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .context("Claude customApiKeyResponses must be an object")?
-        .entry("approved")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .context("Claude approved keys must be an array")?;
-    if !approved.iter().any(|value| value.as_str() == Some(suffix)) {
-        approved.push(json!(suffix));
-    }
-    // Preserve old approvals and onboarding when switching away from Hub.
-    config_files::json::write(path, &original, &config)
-}
-
-fn write_no_proxy_script(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            ensure!(
-                metadata.is_file() && !metadata.file_type().is_symlink(),
-                "Claude no-proxy.sh must be a regular file"
-            );
-            ensure!(
-                fs::read(path).context("failed to read Claude no-proxy.sh")?
-                    == NO_PROXY_SCRIPT.as_bytes(),
-                "Claude no-proxy.sh contains custom content; refusing to overwrite it"
-            );
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                    .context("failed to set Claude script permissions")?;
-            }
-            return Ok(());
+fn approve_key(after: &mut Option<FileSnapshot>, suffix: &str) -> Result<()> {
+    config_files::json::update(after, |config| {
+        config["hasCompletedOnboarding"] = json!(true);
+        let approved = config
+            .as_object_mut()
+            .context("Claude config must be an object")?
+            .entry("customApiKeyResponses")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .context("Claude customApiKeyResponses must be an object")?
+            .entry("approved")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .context("Claude approved keys must be an array")?;
+        if !approved.iter().any(|value| value.as_str() == Some(suffix)) {
+            approved.push(json!(suffix));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("failed to inspect Claude no-proxy.sh"),
+        // Preserve old approvals and onboarding when switching away from Hub.
+        Ok(())
+    })
+}
+
+fn prepare_no_proxy_script(after: &mut Option<FileSnapshot>) -> Result<()> {
+    if let Some(snapshot) = after {
+        ensure!(
+            snapshot.content == NO_PROXY_SCRIPT,
+            "Claude no-proxy.sh contains custom content; refusing to overwrite it"
+        );
+        #[cfg(unix)]
+        {
+            snapshot.permissions.mode = 0o700;
+        }
+    } else {
+        *after = Some(FileSnapshot::new(NO_PROXY_SCRIPT.to_owned(), 0o700));
     }
-    let parent = path
-        .parent()
-        .context("Claude script has no parent directory")?;
-    fs::create_dir_all(parent).context("failed to create Claude directory")?;
-    let mut file =
-        tempfile::NamedTempFile::new_in(parent).context("failed to create Claude script")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o700))
-            .context("failed to set Claude script permissions")?;
-    }
-    file.write_all(NO_PROXY_SCRIPT.as_bytes())
-        .context("failed to write Claude script")?;
-    file.as_file()
-        .sync_all()
-        .context("failed to sync Claude script")?;
-    // Never overwrite a file that appeared while creating our script.
-    file.persist_noclobber(path)
-        .context("failed to save Claude script")?;
     Ok(())
 }
 
-fn remove_no_proxy_script(path: &Path) -> Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error).context("failed to inspect Claude script"),
-    };
-    if metadata.is_file()
-        && !metadata.file_type().is_symlink()
-        && fs::read(path).context("failed to read Claude script")? == NO_PROXY_SCRIPT.as_bytes()
+fn remove_no_proxy_script(after: &mut Option<FileSnapshot>) {
+    if after
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.content == NO_PROXY_SCRIPT)
     {
-        fs::remove_file(path).context("failed to remove Claude script")?;
+        *after = None;
     }
-    Ok(())
 }

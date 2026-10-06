@@ -1,18 +1,9 @@
-use std::{fs, io::Write as _, path::Path, sync::Mutex};
+use std::path::Path;
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow};
 use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
-static WRITE_LOCK: Mutex<()> = Mutex::new(());
-
-fn read_text(path: &Path) -> Result<Option<String>> {
-    log::debug!("reading TOML config: {}", path.display());
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
-    }
-}
+use super::changes::FileSnapshot;
 
 fn parse(text: &str) -> Result<DocumentMut> {
     // Omit source text because configuration files may contain credentials.
@@ -21,7 +12,10 @@ fn parse(text: &str) -> Result<DocumentMut> {
 }
 
 pub(crate) fn read(path: &Path) -> Result<DocumentMut> {
-    parse(read_text(path)?.as_deref().unwrap_or_default())
+    log::debug!("reading TOML config: {}", path.display());
+    let snapshot =
+        FileSnapshot::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    parse(snapshot.as_ref().map_or("", |snapshot| &snapshot.content))
 }
 
 pub(crate) fn get_string<'a>(doc: &'a DocumentMut, keys: &[&str]) -> Option<&'a str> {
@@ -116,61 +110,24 @@ pub(crate) fn remove(doc: &mut DocumentMut, keys: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Applies one edit and atomically replaces the file. An absent, unchanged document is not created.
-pub(crate) fn update(path: &Path, edit: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
-    let _guard = WRITE_LOCK
-        .lock()
-        .map_err(|_| anyhow!("TOML write lock poisoned"))?;
-    log::debug!("updating TOML config: {}", path.display());
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            bail!("config is a symlink; refusing to replace it");
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("failed to inspect config file"),
-    }
-    let original = read_text(path)?;
-    let mut doc = parse(original.as_deref().unwrap_or_default())?;
+/// Edits only the working snapshot, preserving comments and existing permissions.
+/// An absent, unchanged document remains absent.
+pub(crate) fn update(
+    after: &mut Option<FileSnapshot>,
+    edit: impl FnOnce(&mut DocumentMut) -> Result<()>,
+) -> Result<()> {
+    let original_content = after
+        .as_ref()
+        .map_or("", |snapshot| snapshot.content.as_str());
+    let mut doc = parse(original_content)?;
     edit(&mut doc)?;
     let updated = doc.to_string();
-    if original.as_deref().unwrap_or_default() == updated {
-        log::info!(
-            "TOML config already matches requested changes: {}",
-            path.display()
-        );
+    if original_content == updated {
         return Ok(());
     }
-
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).context("failed to create config directory")?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .context("failed to create temporary config file")?;
-    if original.is_some() {
-        let permissions = fs::metadata(path)
-            .context("failed to read config permissions")?
-            .permissions();
-        temporary
-            .as_file()
-            .set_permissions(permissions)
-            .context("failed to preserve config permissions")?;
+    match after {
+        Some(snapshot) => snapshot.content = updated,
+        None => *after = Some(FileSnapshot::new(updated, 0o600)),
     }
-    temporary
-        .write_all(updated.as_bytes())
-        .context("failed to write config")?;
-    temporary
-        .as_file()
-        .sync_all()
-        .context("failed to sync config")?;
-    if read_text(path)? != original {
-        bail!("config changed during the operation; please retry");
-    }
-    temporary
-        .persist(path)
-        .with_context(|| format!("failed to save {}", path.display()))?;
-    log::info!("TOML config saved: {}", path.display());
     Ok(())
 }

@@ -1,10 +1,13 @@
-use crate::{config_files, platform::env_var_not_empty};
+use crate::{
+    config_files::{
+        self,
+        changes::{FileChange, FileSnapshot},
+    },
+    platform::env_var_not_empty,
+};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
-use std::{
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
+use std::{path::PathBuf, sync::Mutex};
 use toml_edit::DocumentMut;
 
 use super::{
@@ -72,16 +75,19 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("Codex proxy lock poisoned"))?;
     let path = config_path()?;
+    let mut config = FileChange::read(path.clone())?;
+    let mut dotenv = FileChange::read(path.with_file_name(".env"))?;
 
     let mut current_mode = ProxyMode::Disabled;
-    config_files::toml::update(&path, |doc| {
+    config_files::toml::update(&mut config.after, |doc| {
         current_mode = mode_from_config(doc);
         remove_inactive_proxy_settings(doc, current_mode, mode)?;
         write_proxy_settings(doc, mode)
     })?;
 
-    write_proxy_env(&path.with_file_name(".env"), current_mode, mode, token)
-        .context("Codex config updated, but updating Codex .env failed; please retry")
+    remove_inactive_proxy_env(&mut dotenv.after, current_mode, mode)?;
+    write_proxy_env(&mut dotenv.after, mode, token)?;
+    FileChange::apply_all(&[config, dotenv])
 }
 
 const API_FILTERS: &[&str] = &[
@@ -185,52 +191,44 @@ fn write_proxy_settings(doc: &mut DocumentMut, mode: ProxyMode) -> Result<()> {
     Ok(())
 }
 
-fn write_proxy_env(
-    path: &Path,
+fn remove_inactive_proxy_env(
+    after: &mut Option<FileSnapshot>,
     current_mode: ProxyMode,
     mode: ProxyMode,
-    token: &str,
 ) -> Result<()> {
-    let api_key = if mode == ProxyMode::Disabled {
-        None
-    } else {
-        Some(token)
-    };
-
-    // API mode writes all four variables.
-    if mode == ProxyMode::ProxyApi {
-        return config_files::env::set_many(
-            path,
+    if mode == ProxyMode::Disabled {
+        config_files::env::set_many(after, &[("COREINFRA_API_KEY", None)])?;
+    }
+    if current_mode == ProxyMode::ProxyApi && mode != ProxyMode::ProxyApi {
+        config_files::env::set_many(
+            after,
             &[
-                ("COREINFRA_API_KEY", api_key, true),
+                ("COREINFRA_PROXY_URL", None),
+                ("HTTPS_PROXY", None),
+                ("NO_PROXY", None),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn write_proxy_env(after: &mut Option<FileSnapshot>, mode: ProxyMode, token: &str) -> Result<()> {
+    match mode {
+        ProxyMode::Disabled => Ok(()),
+        ProxyMode::ProxyHub => {
+            config_files::env::set_many(after, &[("COREINFRA_API_KEY", Some(token))])
+        }
+        ProxyMode::ProxyApi => config_files::env::set_many(
+            after,
+            &[
+                ("COREINFRA_API_KEY", Some(token)),
                 (
                     "COREINFRA_PROXY_URL",
                     Some("https://coreinfra:${COREINFRA_API_KEY}@proxy.hub.coreinfra.ai:443"),
-                    false,
                 ),
-                ("HTTPS_PROXY", Some("${COREINFRA_PROXY_URL}"), false),
-                (
-                    "NO_PROXY",
-                    Some("localhost,127.0.0.1,::1,hub.coreinfra.ai"),
-                    true,
-                ),
+                ("HTTPS_PROXY", Some("${COREINFRA_PROXY_URL}")),
+                ("NO_PROXY", Some("localhost,127.0.0.1,::1,hub.coreinfra.ai")),
             ],
-        );
+        ),
     }
-
-    // Leaving API mode also removes its three proxy variables.
-    if current_mode == ProxyMode::ProxyApi {
-        return config_files::env::set_many(
-            path,
-            &[
-                ("COREINFRA_API_KEY", api_key, true),
-                ("COREINFRA_PROXY_URL", None, true),
-                ("HTTPS_PROXY", None, true),
-                ("NO_PROXY", None, true),
-            ],
-        );
-    }
-
-    // Otherwise only our API key is changed.
-    config_files::env::set_many(path, &[("COREINFRA_API_KEY", api_key, true)])
 }
