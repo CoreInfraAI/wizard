@@ -15,16 +15,11 @@ function AgentPanel({ updateTile }: { updateTile: ReactNode }) {
   if (state.status === "error") return <ErrorText>Не удалось загрузить состояние агентов: {state.message}</ErrorText>;
 
   return (
-    <>
-      <div className={updateTile
-        ? "grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-6"
-        : "grid grid-cols-1"}
-      >
-        <CoreInfraToken token={state.data.coreinfra_token} />
-        {updateTile}
-      </div>
+    <div className="@container grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-6">
+      <CoreInfraToken token={state.data.coreinfra_token} className="@min-[664px]:col-span-2" />
+      {updateTile}
       <AgentList agents={state.data.agents} token={state.data.coreinfra_token} />
-    </>
+    </div>
   );
 }
 

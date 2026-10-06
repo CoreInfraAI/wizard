@@ -44,10 +44,10 @@ pub(crate) async fn get_update_state(
     last_revision: Option<u32>,
     state: tauri::State<'_, Arc<RevisionSignal<UpdateState>>>,
 ) -> Result<RevisionSnapshot<UpdateState>, String> {
-    // state.update(|current| {
-    //     (!current.is_in_progress()).then(|| UpdateState::Failed { message: "test update error".to_owned() })
-    //     // (!current.is_in_progress()).then(|| UpdateState::Available { version: "0.0.0".to_owned() })
-    // });
+    state.update(|current| {
+        // (!current.is_in_progress()).then(|| UpdateState::Failed { message: "test update error".to_owned() })
+        (!current.is_in_progress()).then(|| UpdateState::Available { version: "0.0.0".to_owned() })
+    });
     state
         .wait(last_revision)
         .await
