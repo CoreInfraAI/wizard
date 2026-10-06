@@ -1,19 +1,17 @@
+use super::{
+    AgentDetection,
+    detection::{self, Agent, AgentInfo},
+};
+use crate::{config_files, platform::env_var_not_empty};
+use anyhow::{Context as _, Result, ensure};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 use std::{
     fs,
     io::Write as _,
     path::{Path, PathBuf},
     sync::Mutex,
 };
-
-use anyhow::{Context as _, Result, ensure};
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
-
-use super::{
-    AgentDetection,
-    detection::{self, Agent, AgentInfo},
-};
-use crate::{config_files, platform::env_var_not_empty};
 
 const HUB_URL: &str = "https://hub.coreinfra.ai/claude/api";
 const API_URL: &str = "https://hub.coreinfra.ai/anthropic/subscription/api";
@@ -238,6 +236,12 @@ fn write_no_proxy_script(path: &Path) -> Result<()> {
                     == NO_PROXY_SCRIPT.as_bytes(),
                 "Claude no-proxy.sh contains custom content; refusing to overwrite it"
             );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                    .context("failed to set Claude script permissions")?;
+            }
             return Ok(());
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
