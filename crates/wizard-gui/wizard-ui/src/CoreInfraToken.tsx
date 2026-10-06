@@ -1,4 +1,5 @@
 import { useState } from "react";
+import clsx from "clsx";
 import { sendAgentEvent } from "./agents_state";
 import { reportError } from "./log";
 import { Button } from "./components/catalyst/button";
@@ -8,7 +9,7 @@ import { Heading } from "./components/catalyst/heading";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
 
-export function CoreInfraToken({ token: savedToken }: { token: string }) {
+export function CoreInfraToken({ token: savedToken, className }: { token: string; className?: string }) {
   const saved = savedToken !== "";
   const [token, setToken] = useState(savedToken);
   const [pending, setPending] = useState(false);
@@ -31,14 +32,14 @@ export function CoreInfraToken({ token: savedToken }: { token: string }) {
   }
 
   return (
-    <section className="min-w-0 space-y-3 rounded-lg border border-zinc-200 bg-white p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900">
+    <section className={clsx(className, "@container min-w-0 space-y-3 rounded-lg border border-zinc-200 bg-white p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900")}>
       <div className="flex flex-wrap items-center gap-2">
         <Heading level={2}>CoreInfra API токен</Heading>
         <Badge color={saved ? "green" : "zinc"}>{saved ? "Сохранён" : "Не задан"}</Badge>
       </div>
-      <div className="flex max-w-xl flex-col gap-3 sm:flex-row sm:items-center">
+      <div className="flex flex-wrap items-center gap-3">
         <Input
-          className="min-w-0 flex-1"
+          className="w-80! max-w-full shrink-0"
           type="text"
           autoComplete="off"
           spellCheck={false}

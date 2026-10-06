@@ -171,34 +171,28 @@ function Installation({ name, detection, children }: {
 export function AgentList({ agents, token }: { agents: AgentStates; token: string }) {
   return (
     <>
-      <div className="grid grid-cols-2 gap-6">
-        <Installation name="Codex" detection={agents.codex}>
-          {agents.codex.status === "found" && (
-            <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} token={token} />
-          )}
-        </Installation>
-        <Installation name="ChatGPT" detection={agents.chatgpt} />
-      </div>
-      <div className="grid grid-cols-2 gap-6">
-        <Installation name="Claude Code" detection={agents.claude}>
-          {agents.claude.status === "found" && (
-            <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} token={token} />
-          )}
-        </Installation>
-        <Installation name="Claude Desktop" detection={agents.claude_desktop} />
-      </div>
-      <div className="grid grid-cols-2 gap-6">
-        <Installation name="OpenCode" detection={agents.opencode}>
-          {agents.opencode.status === "found" && (
-            <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} token={token} />
-          )}
-        </Installation>
-        <Installation name="Pi" detection={agents.pi}>
-          {agents.pi.status === "found" && (
-            <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} token={token} />
-          )}
-        </Installation>
-      </div>
+      <Installation name="Codex" detection={agents.codex}>
+        {agents.codex.status === "found" && (
+          <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} token={token} />
+        )}
+      </Installation>
+      <Installation name="ChatGPT" detection={agents.chatgpt} />
+      <Installation name="Claude Code" detection={agents.claude}>
+        {agents.claude.status === "found" && (
+          <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} token={token} />
+        )}
+      </Installation>
+      <Installation name="Claude Desktop" detection={agents.claude_desktop} />
+      <Installation name="OpenCode" detection={agents.opencode}>
+        {agents.opencode.status === "found" && (
+          <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} token={token} />
+        )}
+      </Installation>
+      <Installation name="Pi" detection={agents.pi}>
+        {agents.pi.status === "found" && (
+          <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} token={token} />
+        )}
+      </Installation>
     </>
   );
 }
