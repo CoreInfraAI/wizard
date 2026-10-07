@@ -120,7 +120,7 @@ impl BackupManager {
 #[derive(Serialize, Deserialize)]
 struct State {
     agent: AgentKind,
-    state_version: u32,
+    version: u32,
     next_backup_id: u32,
     last_written: Option<BTreeMap<PathBuf, FileSnapshot>>,
 }
@@ -129,7 +129,7 @@ impl State {
     fn default(agent: AgentKind) -> Self {
         Self {
             agent,
-            state_version: STATE_VERSION,
+            version: STATE_VERSION,
             next_backup_id: 1,
             last_written: None,
         }
@@ -146,7 +146,7 @@ impl State {
         let state: Self = serde_json::from_str(content)
             .map_err(|_| anyhow::anyhow!("invalid backup state JSON"))?;
         ensure!(
-            state.state_version == STATE_VERSION,
+            state.version == STATE_VERSION,
             "unsupported backup state version"
         );
         ensure!(
@@ -192,7 +192,7 @@ impl State {
 #[derive(Serialize, Deserialize)]
 pub struct Backup {
     id: u32,
-    backup_version: u32,
+    version: u32,
     time_created: DateTime<Utc>,
     files: BTreeMap<PathBuf, FileSnapshot>,
 }
@@ -201,7 +201,7 @@ impl Backup {
     fn from_changes(id: u32, changes: &[FileChange]) -> Self {
         Self {
             id,
-            backup_version: BACKUP_VERSION,
+            version: BACKUP_VERSION,
             time_created: Utc::now(),
             files: changes
                 .iter()
@@ -224,7 +224,7 @@ impl Backup {
             "backup identifier does not match its filename"
         );
         ensure!(
-            backup.backup_version == BACKUP_VERSION,
+            backup.version == BACKUP_VERSION,
             "unsupported backup version"
         );
         Ok(backup)
@@ -243,6 +243,7 @@ impl Backup {
     }
 }
 
+#[expect(clippy::ref_option)]
 fn compare<A: PartialEq, B: PartialEq>(
     last: &Option<BTreeMap<A, B>>,
     current: &BTreeMap<&A, &B>,
