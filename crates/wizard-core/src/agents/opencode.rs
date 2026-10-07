@@ -72,7 +72,7 @@ fn read_configs(dir: &Path) -> Result<(Vec<FileChange>, bool)> {
     let mut installed = false;
     for name in ["config.json", "opencode.json", "opencode.jsonc"] {
         let change = FileChange::read(dir.join(name))?;
-        let value = config_files::json::parse(change.after.as_ref())
+        let value = config_files::json::parse(&change.after)
             .with_context(|| format!("failed to read OpenCode {name}; Wizard currently supports JSON without comments or trailing commas"))?;
         if let Some(plugins) = value.get("plugin") {
             ensure!(plugins.is_array(), "OpenCode plugin must be an array");

@@ -10,37 +10,63 @@ use anyhow::{Context as _, Result, ensure};
 use tempfile::NamedTempFile;
 
 // No Debug: file contents may contain credentials.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct FileSnapshot {
-    pub content: String,
-    #[cfg(unix)]
-    pub permissions: FilePermissions,
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum FileSnapshot {
+    Missing,
+    Present {
+        content: String,
+        #[cfg(unix)]
+        #[serde(with = "octal_mode")]
+        mode: u32,
+    },
 }
 
-// Plain data so a new file can be described without touching the filesystem.
 #[cfg(unix)]
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct FilePermissions {
-    pub mode: u32,
+mod octal_mode {
+    use serde::{Deserialize as _, Deserializer, Serializer, de::Error as _};
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde field serializer signature"
+    )]
+    pub fn serialize<S: Serializer>(mode: &u32, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("{mode:04o}"))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        if value.len() != 4 || !value.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
+            return Err(D::Error::custom("invalid Unix mode"));
+        }
+        u32::from_str_radix(&value, 8).map_err(|_| D::Error::custom("invalid Unix mode"))
+    }
 }
 
 impl FileSnapshot {
     pub(crate) fn new(content: String, unix_mode: u32) -> Self {
         #[cfg(not(unix))]
         let _ = unix_mode;
-        Self {
+        Self::Present {
             content,
             #[cfg(unix)]
-            permissions: FilePermissions { mode: unix_mode },
+            mode: unix_mode,
+        }
+    }
+
+    pub(crate) fn content(&self) -> Option<&str> {
+        match self {
+            Self::Missing => None,
+            Self::Present { content, .. } => Some(content),
         }
     }
 
     /// Reads the current UTF-8 file and its permissions without changing it.
     /// A missing file is distinct from an existing empty file.
-    pub(crate) fn read(path: &Path) -> Result<Option<Self>> {
+    pub(crate) fn read(path: &Path) -> Result<Self> {
         let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::Missing),
             Err(error) => return Err(error).context("failed to inspect file"),
         };
         ensure!(
@@ -51,25 +77,31 @@ impl FileSnapshot {
 
         let mut file = fs::File::open(path).context("failed to open file")?;
         #[cfg(unix)]
-        let permissions = FilePermissions {
-            mode: file
-                .metadata()
-                .context("failed to read file permissions")?
-                .permissions()
-                .mode()
-                & 0o7777,
-        };
+        let mode = file
+            .metadata()
+            .context("failed to read file permissions")?
+            .permissions()
+            .mode()
+            & 0o7777;
         let mut content = String::new();
         file.read_to_string(&mut content)
             .context("failed to read UTF-8 file")?;
-        Ok(Some(Self {
+        Ok(Self::Present {
             content,
             #[cfg(unix)]
-            permissions,
-        }))
+            mode,
+        })
     }
 
-    fn prepare_file(&self, path: &Path) -> Result<NamedTempFile> {
+    fn crate_temp_file_for(&self, path: &Path) -> Result<Option<NamedTempFile>> {
+        let Self::Present {
+            content,
+            #[cfg(unix)]
+            mode,
+        } = self
+        else {
+            return Ok(None);
+        };
         let parent = path
             .parent()
             .context("config file has no parent directory")?;
@@ -77,18 +109,18 @@ impl FileSnapshot {
         let mut temporary = NamedTempFile::new_in(parent)
             .with_context(|| format!("failed to prepare {}", path.display()))?;
         temporary
-            .write_all(self.content.as_bytes())
+            .write_all(content.as_bytes())
             .context("failed to write temporary config file")?;
         #[cfg(unix)]
         temporary
             .as_file()
-            .set_permissions(fs::Permissions::from_mode(self.permissions.mode))
+            .set_permissions(fs::Permissions::from_mode(*mode))
             .context("failed to set config permissions")?;
         temporary
             .as_file()
             .sync_all()
             .context("failed to sync temporary config file")?;
-        Ok(temporary)
+        Ok(Some(temporary))
     }
 }
 
@@ -96,8 +128,8 @@ impl FileSnapshot {
 // No Debug: snapshots may contain credentials.
 pub(crate) struct FileChange {
     path: PathBuf,
-    before: Option<FileSnapshot>,
-    pub after: Option<FileSnapshot>,
+    before: FileSnapshot,
+    pub after: FileSnapshot,
 }
 
 impl FileChange {
@@ -148,11 +180,7 @@ impl FileChange {
 
         let mut prepared = Vec::with_capacity(changes.len());
         for change in &changes {
-            let temporary = change
-                .after
-                .as_ref()
-                .map(|after| after.prepare_file(&change.path))
-                .transpose()?;
+            let temporary = change.after.crate_temp_file_for(&change.path)?;
             prepared.push(temporary);
         }
 
@@ -175,7 +203,7 @@ impl FileChange {
         self.verify_before()?;
         match temporary {
             Some(temporary) => {
-                if self.before.is_none() {
+                if matches!(self.before, FileSnapshot::Missing) {
                     // Do not overwrite a file created after the last check.
                     temporary
                         .persist_noclobber(&self.path)

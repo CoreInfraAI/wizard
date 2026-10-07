@@ -95,7 +95,7 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
     let mut global = FileChange::read(global_config_path()?)?;
     let mut script = FileChange::read(script_path.clone())?;
 
-    let current_mode = mode_from_config(&config_files::json::parse(settings.after.as_ref())?);
+    let current_mode = mode_from_config(&config_files::json::parse(&settings.after)?);
     if !(mode == ProxyMode::Disabled && current_mode == ProxyMode::Disabled) {
         config_files::json::update(&mut settings.after, |settings| {
             let env = settings
@@ -115,10 +115,10 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
         approve_key(&mut global.after, suffix)?;
     }
     if mode == ProxyMode::ProxyApi {
-        prepare_no_proxy_script(&mut script.after)?;
+        script.after = FileSnapshot::new(NO_PROXY_SCRIPT.to_owned(), 0o700);
     }
     if mode != ProxyMode::ProxyApi && current_mode == ProxyMode::ProxyApi {
-        remove_no_proxy_script(&mut script.after);
+        script.after = FileSnapshot::Missing;
     }
 
     // Keep preparation files before activation, and script deletion after it.
@@ -208,7 +208,7 @@ fn write_proxy_settings(
     Ok(())
 }
 
-fn approve_key(after: &mut Option<FileSnapshot>, suffix: &str) -> Result<()> {
+fn approve_key(after: &mut FileSnapshot, suffix: &str) -> Result<()> {
     config_files::json::update(after, |config| {
         config["hasCompletedOnboarding"] = json!(true);
         let approved = config
@@ -228,29 +228,4 @@ fn approve_key(after: &mut Option<FileSnapshot>, suffix: &str) -> Result<()> {
         // Preserve old approvals and onboarding when switching away from Hub.
         Ok(())
     })
-}
-
-fn prepare_no_proxy_script(after: &mut Option<FileSnapshot>) -> Result<()> {
-    if let Some(snapshot) = after {
-        ensure!(
-            snapshot.content == NO_PROXY_SCRIPT,
-            "Claude no-proxy.sh contains custom content; refusing to overwrite it"
-        );
-        #[cfg(unix)]
-        {
-            snapshot.permissions.mode = 0o700;
-        }
-    } else {
-        *after = Some(FileSnapshot::new(NO_PROXY_SCRIPT.to_owned(), 0o700));
-    }
-    Ok(())
-}
-
-fn remove_no_proxy_script(after: &mut Option<FileSnapshot>) {
-    if after
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.content == NO_PROXY_SCRIPT)
-    {
-        *after = None;
-    }
 }

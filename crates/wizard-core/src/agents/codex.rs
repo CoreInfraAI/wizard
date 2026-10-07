@@ -192,7 +192,7 @@ fn write_proxy_settings(doc: &mut DocumentMut, mode: ProxyMode) -> Result<()> {
 }
 
 fn remove_inactive_proxy_env(
-    after: &mut Option<FileSnapshot>,
+    after: &mut FileSnapshot,
     current_mode: ProxyMode,
     mode: ProxyMode,
 ) -> Result<()> {
@@ -212,7 +212,7 @@ fn remove_inactive_proxy_env(
     Ok(())
 }
 
-fn write_proxy_env(after: &mut Option<FileSnapshot>, mode: ProxyMode, token: &str) -> Result<()> {
+fn write_proxy_env(after: &mut FileSnapshot, mode: ProxyMode, token: &str) -> Result<()> {
     match mode {
         ProxyMode::Disabled => Ok(()),
         ProxyMode::ProxyHub => {

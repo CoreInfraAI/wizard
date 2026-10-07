@@ -5,11 +5,8 @@ use super::changes::FileSnapshot;
 /// Replaces variables in the supplied order, preserving unrelated records verbatim.
 /// Entries are `(key, value)`. Dollar signs are preserved for dotenv interpolation.
 /// Changes only the working snapshot. Never include parser errors or values in diagnostics.
-pub(crate) fn set_many(
-    after: &mut Option<FileSnapshot>,
-    entries: &[(&str, Option<&str>)],
-) -> Result<()> {
-    let original_content = after.as_ref().map(|snapshot| snapshot.content.as_str());
+pub(crate) fn set_many(after: &mut FileSnapshot, entries: &[(&str, Option<&str>)]) -> Result<()> {
+    let original_content = after.content();
     let mut updated = original_content.unwrap_or_default().to_owned();
     let newline = if updated.contains("\r\n") {
         "\r\n"
@@ -26,7 +23,7 @@ pub(crate) fn set_many(
     if original_content.unwrap_or_default() == updated {
         return Ok(());
     }
-    *after = Some(FileSnapshot::new(updated, 0o600));
+    *after = FileSnapshot::new(updated, 0o600);
     Ok(())
 }
 

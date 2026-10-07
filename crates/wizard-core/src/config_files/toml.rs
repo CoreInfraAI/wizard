@@ -15,7 +15,7 @@ pub(crate) fn read(path: &Path) -> Result<DocumentMut> {
     log::debug!("reading TOML config: {}", path.display());
     let snapshot =
         FileSnapshot::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    parse(snapshot.as_ref().map_or("", |snapshot| &snapshot.content))
+    parse(snapshot.content().unwrap_or_default())
 }
 
 pub(crate) fn get_string<'a>(doc: &'a DocumentMut, keys: &[&str]) -> Option<&'a str> {
@@ -113,12 +113,10 @@ pub(crate) fn remove(doc: &mut DocumentMut, keys: &[&str]) -> Result<()> {
 /// Edits only the working snapshot, preserving comments and existing permissions.
 /// An absent, unchanged document remains absent.
 pub(crate) fn update(
-    after: &mut Option<FileSnapshot>,
+    after: &mut FileSnapshot,
     edit: impl FnOnce(&mut DocumentMut) -> Result<()>,
 ) -> Result<()> {
-    let original_content = after
-        .as_ref()
-        .map_or("", |snapshot| snapshot.content.as_str());
+    let original_content = after.content().unwrap_or_default();
     let mut doc = parse(original_content)?;
     edit(&mut doc)?;
     let updated = doc.to_string();
@@ -126,8 +124,8 @@ pub(crate) fn update(
         return Ok(());
     }
     match after {
-        Some(snapshot) => snapshot.content = updated,
-        None => *after = Some(FileSnapshot::new(updated, 0o600)),
+        FileSnapshot::Present { content, .. } => *content = updated,
+        FileSnapshot::Missing => *after = FileSnapshot::new(updated, 0o600),
     }
     Ok(())
 }
