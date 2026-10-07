@@ -1,6 +1,7 @@
 use crate::{
     config_files::{
         self,
+        backups::{AgentKind, BackupManager},
         changes::{FileChange, FileSnapshot},
     },
     platform::env_var_not_empty,
@@ -87,7 +88,7 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
 
     remove_inactive_proxy_env(&mut dotenv.after, current_mode, mode)?;
     write_proxy_env(&mut dotenv.after, mode, token)?;
-    FileChange::apply_all(&[config, dotenv])
+    BackupManager::apply_changes(AgentKind::Codex, &[config, dotenv])
 }
 
 const API_FILTERS: &[&str] = &[

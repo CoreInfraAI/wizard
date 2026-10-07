@@ -5,11 +5,12 @@ use super::{
 use crate::{
     config_files::{
         self,
+        backups::{AgentKind, BackupManager},
         changes::{FileChange, FileSnapshot},
     },
     platform::env_var_not_empty,
 };
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
@@ -127,7 +128,7 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
     } else {
         [global, settings, script]
     };
-    FileChange::apply_all(&changes)
+    BackupManager::apply_changes(AgentKind::Claude, &changes)
 }
 
 fn remove_inactive_proxy_settings(env: &mut Map<String, Value>, current_mode: ProxyMode) {

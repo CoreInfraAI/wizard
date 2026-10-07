@@ -14,11 +14,7 @@ pub struct Settings {
 }
 
 fn settings_path() -> Result<PathBuf> {
-    // match `identifier` in crates/wizard-gui/tauri.conf.json.
-    const IDENTIFIER: &str = "ai.coreinfra.wizard";
-    dirs::config_dir()
-        .map(|dir| dir.join(IDENTIFIER).join("config.toml"))
-        .context("failed to resolve Wizard settings directory")
+    Ok(crate::config_dir()?.join("config.toml"))
 }
 
 pub fn load_from_file() -> Result<Settings> {

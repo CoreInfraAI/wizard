@@ -148,6 +148,14 @@ impl FileChange {
         self.before != self.after
     }
 
+    pub(crate) fn before(&self) -> &FileSnapshot {
+        &self.before
+    }
+
+    pub(crate) fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
     fn verify_before(&self) -> Result<()> {
         let current = FileSnapshot::read(&self.path)
             .with_context(|| format!("failed to reread {}", self.path.display()))?;

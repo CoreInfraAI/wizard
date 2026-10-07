@@ -1,12 +1,20 @@
-use std::sync::LazyLock;
+use std::{path::PathBuf, sync::LazyLock};
 
-use anyhow::ensure;
+use anyhow::{Context as _, ensure};
 use regex::Regex;
 
 pub mod agents;
 mod config_files;
 mod platform;
 pub mod settings;
+
+pub(crate) fn config_dir() -> anyhow::Result<PathBuf> {
+    // Match `identifier` in crates/wizard-gui/tauri.conf.json.
+    const IDENTIFIER: &str = "ai.coreinfra.wizard";
+    dirs::config_dir()
+        .map(|dir| dir.join(IDENTIFIER))
+        .context("failed to resolve Wizard settings directory")
+}
 
 pub fn validate_token(token: &str) -> anyhow::Result<()> {
     static TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
