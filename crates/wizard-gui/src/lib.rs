@@ -74,6 +74,7 @@ pub fn run_application() -> Result<()> {
             logs::read_logs,
             updater::get_update_state,
             updater::request_update,
+            settings::get_settings_state,
             agents::get_agent_state,
             agents::get_agent_backups,
             agents::agent_event,

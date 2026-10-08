@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { AgentList } from "./AgentList";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
@@ -9,19 +8,13 @@ import { requestUpdate, useUpdateState } from "./update";
 import { UpdateScreen } from "./UpdateScreen";
 import { UpdateTile } from "./UpdateTile";
 
-function AgentPanel({ updateTile }: { updateTile: ReactNode }) {
+function AgentPanel() {
   const state = useAgentState();
 
   if (state.status === "loading") return <Text>Загрузка...</Text>;
   if (state.status === "error") return <ErrorText>Не удалось загрузить состояние агентов: {state.message}</ErrorText>;
 
-  return (
-    <div className="@container grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-6">
-      <CoreInfraToken token={state.data.coreinfra_token} className="@min-[664px]:col-span-2" />
-      {updateTile}
-      <AgentList agents={state.data.agents} token={state.data.coreinfra_token} />
-    </div>
-  );
+  return <AgentList agents={state.data.agents} />;
 }
 
 function App() {
@@ -50,7 +43,11 @@ function App() {
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8">
-      <AgentPanel updateTile={updateTile} />
+      <div className="@container grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-6">
+        <CoreInfraToken className="@min-[664px]:col-span-2" />
+        {updateTile}
+        <AgentPanel />
+      </div>
       <div className="mt-auto shrink-0">
         <OpenLogsButton />
       </div>

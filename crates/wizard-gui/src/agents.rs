@@ -38,9 +38,7 @@ pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateS
         .current()
         .revision;
     log::debug!("collecting agent state at revision {revision}");
-    let settings = settings::get_state(&app)
-        .await
-        .map_err(|error| format!("{error:#}"))?;
+    let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
     let state = collect_agent_state(&settings).await;
     log::debug!("agent state collected at revision {revision}");
     Ok(AgentStateSnapshot { revision, state })
@@ -104,7 +102,7 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
             .await
         }
         AgentEvent::CodexSetProxy(mode) => {
-            let current = settings::get_state(app).await?;
+            let current = settings::get_state(app)?;
             tauri::async_runtime::spawn_blocking(move || {
                 codex::set_proxy(mode, &current.coreinfra_token)
             })
@@ -113,7 +111,7 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
             .flatten()
         }
         AgentEvent::ClaudeSetProxy(mode) => {
-            let current = settings::get_state(app).await?;
+            let current = settings::get_state(app)?;
             tauri::async_runtime::spawn_blocking(move || {
                 claude::set_proxy(mode, &current.coreinfra_token)
             })
@@ -131,7 +129,7 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
             .flatten()
         }
         AgentEvent::SetOpenCodeHub(install) => {
-            let current = settings::get_state(app).await?;
+            let current = settings::get_state(app)?;
             tauri::async_runtime::spawn_blocking(move || {
                 opencode::set_hub(install, &current.coreinfra_token)
             })
@@ -140,7 +138,7 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
             .flatten()
         }
         AgentEvent::SetPiHub(install) => {
-            let current = settings::get_state(app).await?;
+            let current = settings::get_state(app)?;
             tauri::async_runtime::spawn_blocking(move || {
                 pi::set_hub(install, &current.coreinfra_token)
             })

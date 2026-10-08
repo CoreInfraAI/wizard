@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { type AgentDetection, type AgentStates, type BackupAgent, type ProxyMode, sendAgentEvent } from "./agents_state";
 import { BackupDialog } from "./BackupDialog";
+import { useSettings } from "./settings";
 import { reportError } from "./log";
 import { Button } from "./components/catalyst/button";
 import { Badge } from "./components/catalyst/badge";
@@ -16,11 +17,12 @@ const proxyOptions = [
   { mode: "proxy_api", label: "CoreInfra API" },
 ] as const;
 
-function HubProxy({ agent, installed, token }: {
+function HubProxy({ agent, installed }: {
   agent: "Pi" | "OpenCode";
   installed: boolean;
-  token: string;
 }) {
+  const { settings, error: settingsError } = useSettings();
+  const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
   const [selected, setSelected] = useState(installed);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -64,7 +66,7 @@ function HubProxy({ agent, installed, token }: {
           <Label>CoreInfra Hub</Label>
         </RadioField>
       </RadioGroup>
-      <Button outline type="button" disabled={pending || (selected && token === "")} onClick={() => void send()}>
+      <Button outline type="button" disabled={pending || (selected && !hasToken)} onClick={() => void send()}>
         Применить
       </Button>
       {error && <ErrorText>{error}</ErrorText>}
@@ -125,11 +127,12 @@ function BackupButton({ agent }: { agent: BackupAgent }) {
   );
 }
 
-function AgentProxy({ agent, mode, token }: {
+function AgentProxy({ agent, mode }: {
   agent: BackupAgent;
   mode: ProxyMode;
-  token: string;
 }) {
+  const { settings, error: settingsError } = useSettings();
+  const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
   const [pending, setPending] = useState(false);
   const [draft, setDraft] = useState<ProxyMode>();
   const [error, setError] = useState<string>();
@@ -180,7 +183,7 @@ function AgentProxy({ agent, mode, token }: {
           </RadioField>
         ))}
       </RadioGroup>
-      <Button outline type="button" disabled={pending || (selected !== "disabled" && token === "")} onClick={() => void send()}>
+      <Button outline type="button" disabled={pending || (selected !== "disabled" && !hasToken)} onClick={() => void send()}>
         Применить
       </Button>
       {error && <ErrorText>{error}</ErrorText>}
@@ -188,29 +191,29 @@ function AgentProxy({ agent, mode, token }: {
   );
 }
 
-export function AgentList({ agents, token }: { agents: AgentStates; token: string }) {
+export function AgentList({ agents }: { agents: AgentStates }) {
   return (
     <>
       <Installation name="Codex" detection={agents.codex} actions={<BackupButton agent="codex" />}>
         {agents.codex.status === "found" && (
-          <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} token={token} />
+          <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} />
         )}
       </Installation>
       {/*<Installation name="ChatGPT" detection={agents.chatgpt} />*/}
       <Installation name="Claude Code" detection={agents.claude} actions={<BackupButton agent="claude" />}>
         {agents.claude.status === "found" && (
-          <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} token={token} />
+          <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} />
         )}
       </Installation>
       {/*<Installation name="Claude Desktop" detection={agents.claude_desktop} />*/}
       <Installation name="OpenCode" detection={agents.opencode}>
         {agents.opencode.status === "found" && (
-          <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} token={token} />
+          <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} />
         )}
       </Installation>
       <Installation name="Pi" detection={agents.pi}>
         {agents.pi.status === "found" && (
-          <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} token={token} />
+          <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} />
         )}
       </Installation>
     </>
