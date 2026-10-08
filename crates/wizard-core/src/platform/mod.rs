@@ -14,7 +14,7 @@ pub(crate) mod macos;
 pub(crate) fn env_var_not_empty(name: &str) -> Option<OsString> {
     let value = std::env::var_os(name).filter(|value| !value.is_empty());
     if value.is_none() {
-        log::info!("environment variable {name} is unset or empty");
+        log::debug!("environment variable {name} is unset or empty");
     }
     value
 }

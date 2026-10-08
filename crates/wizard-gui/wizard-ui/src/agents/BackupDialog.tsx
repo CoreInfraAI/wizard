@@ -72,7 +72,7 @@ export function BackupDialog({ agent, onClose }: {
           </>
         ) : backups ? (
           backups.length === 0 ? (
-            <Text>Резервных копий пока нет. Они появятся при изменении конфигурации через Wizard.</Text>
+            <Text>Резервных копий пока нет.</Text>
           ) : (
             <RadioGroup value={selected === undefined ? "" : String(selected)} onChange={(value) => setSelected(Number(value))} aria-label="Резервная копия" className="max-h-72 overflow-y-auto">
               {backups.map((item) => (
