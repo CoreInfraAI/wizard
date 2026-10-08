@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Button } from "./components/catalyst/button";
-import { Heading } from "./components/catalyst/heading";
-import { Text } from "./components/catalyst/text";
-import { ErrorText } from "./components/ErrorText";
+import { Button } from "../components/catalyst/button";
+import { Heading } from "../components/catalyst/heading";
+import { Text } from "../components/catalyst/text";
+import { ErrorText } from "../components/ErrorText";
 
 export function LogWindow() {
   const [text, setText] = useState<string>();

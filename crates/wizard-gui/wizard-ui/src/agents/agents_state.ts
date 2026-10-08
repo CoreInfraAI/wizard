@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { reportError, info, debug } from "./log";
+import { reportError, info, debug } from "../logs/log";
 
 export type AgentEvent =
   | { CodexSetProxy: ProxyMode }

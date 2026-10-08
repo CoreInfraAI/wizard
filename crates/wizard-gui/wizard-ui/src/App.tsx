@@ -1,12 +1,12 @@
-import { AgentList } from "./AgentList";
+import { AgentList } from "./agents/AgentList";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
-import { CoreInfraToken } from "./CoreInfraToken";
-import { OpenLogsButton } from "./OpenLogsButton";
-import { useAgentState } from "./agents_state";
-import { requestUpdate, useUpdateState } from "./update";
-import { UpdateScreen } from "./UpdateScreen";
-import { UpdateTile } from "./UpdateTile";
+import { CoreInfraToken } from "./settings/CoreInfraToken";
+import { OpenLogsButton } from "./logs/OpenLogsButton";
+import { useAgentState } from "./agents/agents_state";
+import { requestUpdate, useUpdateState } from "./updates/update";
+import { UpdateScreen } from "./updates/UpdateScreen";
+import { UpdateTile } from "./updates/UpdateTile";
 
 function AgentPanel() {
   const state = useAgentState();

@@ -1,15 +1,15 @@
 import { type ReactNode, useState } from "react";
 import { type AgentDetection, type AgentStates, type BackupAgent, type ProxyMode, sendAgentEvent } from "./agents_state";
 import { BackupDialog } from "./BackupDialog";
-import { useSettings } from "./settings";
-import { reportError } from "./log";
-import { Button } from "./components/catalyst/button";
-import { Badge } from "./components/catalyst/badge";
-import { Heading } from "./components/catalyst/heading";
-import { Label } from "./components/catalyst/fieldset";
-import { Radio, RadioField, RadioGroup } from "./components/catalyst/radio";
-import { Text } from "./components/catalyst/text";
-import { ErrorText } from "./components/ErrorText";
+import { useSettings } from "../settings/settings";
+import { reportError } from "../logs/log";
+import { Button } from "../components/catalyst/button";
+import { Badge } from "../components/catalyst/badge";
+import { Heading } from "../components/catalyst/heading";
+import { Label } from "../components/catalyst/fieldset";
+import { Radio, RadioField, RadioGroup } from "../components/catalyst/radio";
+import { Text } from "../components/catalyst/text";
+import { ErrorText } from "../components/ErrorText";
 
 const proxyOptions = [
   { mode: "disabled", label: "Без CoreInfra" },

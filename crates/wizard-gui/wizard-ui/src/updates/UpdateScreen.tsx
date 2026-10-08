@@ -1,5 +1,5 @@
-import { Heading } from "./components/catalyst/heading";
-import { Text } from "./components/catalyst/text";
+import { Heading } from "../components/catalyst/heading";
+import { Text } from "../components/catalyst/text";
 import type { UpdateState } from "./update";
 
 export function UpdateScreen({ state }: { state: UpdateState | undefined }) {

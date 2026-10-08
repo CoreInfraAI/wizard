@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { reportError } from "./log";
+import { reportError } from "../logs/log";
 
 export type Settings = { coreinfra_api_key?: string };
 type SettingsSnapshot = Settings & { revision: number };

@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { type Backup, type BackupAgent, getAgentBackups, sendAgentEvent } from "./agents_state";
-import { Button } from "./components/catalyst/button";
-import { Dialog, DialogActions, DialogBody, DialogDescription, DialogTitle } from "./components/catalyst/dialog";
-import { Label } from "./components/catalyst/fieldset";
-import { Radio, RadioField, RadioGroup } from "./components/catalyst/radio";
-import { Text } from "./components/catalyst/text";
-import { ErrorText } from "./components/ErrorText";
+import { Button } from "../components/catalyst/button";
+import { Dialog, DialogActions, DialogBody, DialogDescription, DialogTitle } from "../components/catalyst/dialog";
+import { Label } from "../components/catalyst/fieldset";
+import { Radio, RadioField, RadioGroup } from "../components/catalyst/radio";
+import { Text } from "../components/catalyst/text";
+import { ErrorText } from "../components/ErrorText";
 
 function label(backup: Backup): string {
   return `${new Date(backup.time_created).toLocaleString("ru-RU", {

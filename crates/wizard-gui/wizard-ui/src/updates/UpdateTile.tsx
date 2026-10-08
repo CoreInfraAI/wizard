@@ -1,8 +1,8 @@
-import { Button } from "./components/catalyst/button";
-import { Heading } from "./components/catalyst/heading";
-import { Text } from "./components/catalyst/text";
-import { ErrorText } from "./components/ErrorText";
-import { reportError } from "./log";
+import { Button } from "../components/catalyst/button";
+import { Heading } from "../components/catalyst/heading";
+import { Text } from "../components/catalyst/text";
+import { ErrorText } from "../components/ErrorText";
+import { reportError } from "../logs/log";
 import type { UpdateObservation } from "./update";
 
 export function UpdateTile({ state, update }: {

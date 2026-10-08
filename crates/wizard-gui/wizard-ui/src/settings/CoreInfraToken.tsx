@@ -1,14 +1,14 @@
 import { useState } from "react";
 import clsx from "clsx";
-import { sendAgentEvent } from "./agents_state";
+import { sendAgentEvent } from "../agents/agents_state";
 import { useSettings } from "./settings";
-import { reportError } from "./log";
-import { Button } from "./components/catalyst/button";
-import { Badge } from "./components/catalyst/badge";
-import { Input } from "./components/catalyst/input";
-import { Heading } from "./components/catalyst/heading";
-import { Text } from "./components/catalyst/text";
-import { ErrorText } from "./components/ErrorText";
+import { reportError } from "../logs/log";
+import { Button } from "../components/catalyst/button";
+import { Badge } from "../components/catalyst/badge";
+import { Input } from "../components/catalyst/input";
+import { Heading } from "../components/catalyst/heading";
+import { Text } from "../components/catalyst/text";
+import { ErrorText } from "../components/ErrorText";
 
 export function CoreInfraToken({ className }: { className?: string }) {
   const { settings, error: settingsError } = useSettings();

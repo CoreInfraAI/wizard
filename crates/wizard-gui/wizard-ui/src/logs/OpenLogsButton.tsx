@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Button } from "./components/catalyst/button";
-import { ErrorText } from "./components/ErrorText";
+import { Button } from "../components/catalyst/button";
+import { ErrorText } from "../components/ErrorText";
 
 export function OpenLogsButton() {
   const [pending, setPending] = useState(false);

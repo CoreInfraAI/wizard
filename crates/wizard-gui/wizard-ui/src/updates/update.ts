@@ -1,7 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { reportError } from "./log";
+import { reportError } from "../logs/log";
 
 let applicationVersionRequest: Promise<string> | undefined;
 
