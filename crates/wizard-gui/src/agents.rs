@@ -4,7 +4,9 @@ use crate::{revision_signal::RevisionSignal, settings};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
-use wizard_core::agents::{AgentState, claude, codex, collect_agent_state, opencode, pi};
+use wizard_core::agents::{
+    AgentState, Backup, BackupAgent, claude, codex, collect_agent_state, opencode, pi,
+};
 use wizard_core::validate_token;
 
 #[derive(Clone)]
@@ -44,11 +46,27 @@ pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateS
     Ok(AgentStateSnapshot { revision, state })
 }
 
+#[tauri::command]
+pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>, String> {
+    // TODO: files can make this response large and include credentials.
+    // Consider loading file contents on demand if backup inspection is added to the UI.
+    // Never log the response.
+    tauri::async_runtime::spawn_blocking(move || match agent {
+        BackupAgent::Codex => codex::get_backups(),
+        BackupAgent::Claude => claude::get_backups(),
+    })
+    .await
+    .context("backup listing task failed")
+    .flatten()
+    .map_err(|error| format!("{error:#}"))
+}
+
 // No Debug: event payloads may contain credentials.
 #[derive(Deserialize)]
 pub(crate) enum AgentEvent {
     CodexSetProxy(codex::ProxyMode),
     ClaudeSetProxy(claude::ProxyMode),
+    RestoreBackup { agent: BackupAgent, id: u32 },
     SetPiHub(bool),
     SetOpenCodeHub(bool),
     SetCoreInfraToken(String),
@@ -59,6 +77,7 @@ pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Res
     let name = match &event {
         AgentEvent::CodexSetProxy(_) => "CodexSetProxy",
         AgentEvent::ClaudeSetProxy(_) => "ClaudeSetProxy",
+        AgentEvent::RestoreBackup { .. } => "RestoreBackup",
         AgentEvent::SetPiHub(_) => "SetPiHub",
         AgentEvent::SetOpenCodeHub(_) => "SetOpenCodeHub",
         AgentEvent::SetCoreInfraToken(_) => "SetCoreInfraToken",
@@ -100,6 +119,15 @@ async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
             })
             .await
             .context("agent event task failed")
+            .flatten()
+        }
+        AgentEvent::RestoreBackup { agent, id } => {
+            tauri::async_runtime::spawn_blocking(move || match agent {
+                BackupAgent::Codex => codex::restore_backup(id),
+                BackupAgent::Claude => claude::restore_backup(id),
+            })
+            .await
+            .context("backup restore task failed")
             .flatten()
         }
         AgentEvent::SetOpenCodeHub(install) => {

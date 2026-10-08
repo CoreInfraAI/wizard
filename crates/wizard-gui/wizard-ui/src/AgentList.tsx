@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
-import { type AgentDetection, type AgentStates, type ProxyMode, sendAgentEvent } from "./agents_state";
+import { type AgentDetection, type AgentStates, type BackupAgent, type ProxyMode, sendAgentEvent } from "./agents_state";
+import { BackupDialog } from "./BackupDialog";
 import { reportError } from "./log";
 import { Button } from "./components/catalyst/button";
 import { Badge } from "./components/catalyst/badge";
@@ -14,65 +15,6 @@ const proxyOptions = [
   { mode: "proxy_hub", label: "CoreInfra Hub" },
   { mode: "proxy_api", label: "CoreInfra API" },
 ] as const;
-
-function AgentProxy({ agent, mode, token }: {
-  agent: "codex" | "claude";
-  mode: ProxyMode;
-  token: string;
-}) {
-  const [selected, setSelected] = useState(mode);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string>();
-
-  async function send() {
-    setPending(true);
-    setError(undefined);
-    try {
-      await sendAgentEvent(agent === "codex"
-        ? { CodexSetProxy: selected }
-        : { ClaudeSetProxy: selected });
-    } catch (cause: unknown) {
-      const message = `Не удалось применить настройки ${agent === "codex" ? "Codex" : "Claude Code"}`;
-      reportError(message, cause);
-      setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return (
-    <>
-      <div>
-        <Badge color={mode === "disabled" ? "zinc" : "green"}>
-          {proxyOptions.find((option) => option.mode === mode)?.label}
-          {mode !== "disabled" && " · активно"}
-        </Badge>
-      </div>
-      <RadioGroup
-        value={selected}
-        onChange={(value) => {
-          setSelected(value as ProxyMode);
-          setError(undefined);
-        }}
-      >
-        {proxyOptions.map((option) => (
-          <RadioField key={option.mode}>
-            <Radio value={option.mode} />
-            <Label>
-              {option.label}{option.mode === "proxy_api"
-                ? ` — через вашу подписку ${agent === "codex" ? "ChatGPT" : "Claude"}`
-                : ""}
-            </Label>
-          </RadioField>
-        ))}
-      </RadioGroup>
-      <Button outline type="button" disabled={pending || (selected !== "disabled" && token === "")} onClick={() => void send()}>
-        Применить
-      </Button>
-      {error && <ErrorText>{error}</ErrorText>}
-    </>
-  );
-}
 
 function HubProxy({ agent, installed, token }: {
   agent: "Pi" | "OpenCode";
@@ -130,20 +72,24 @@ function HubProxy({ agent, installed, token }: {
   );
 }
 
-function Installation({ name, detection, children }: {
+function Installation({ name, detection, children, actions }: {
   name: string;
   detection: AgentDetection<{ path: string; version: string | null }>;
   children?: ReactNode;
+  actions?: ReactNode;
 }) {
   return (
     <section className="flex min-w-0 flex-col gap-3 rounded-lg border border-zinc-200 bg-white p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <Heading level={2}>{name}</Heading>
-        {detection.status === "found" && (
-          <span className="text-sm text-zinc-500 dark:text-zinc-400">
-            {detection.data.version ? `v${detection.data.version}` : "Версия неизвестна"}
-          </span>
-        )}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+          <Heading level={2}>{name}</Heading>
+          {detection.status === "found" && (
+            <span className="text-sm text-zinc-500 dark:text-zinc-400">
+              {detection.data.version ? `v${detection.data.version}` : "Версия неизвестна"}
+            </span>
+          )}
+        </div>
+        {actions && <div className="max-w-1/2 shrink-0">{actions}</div>}
       </div>
       {detection.status === "found" && (
         <>
@@ -168,16 +114,90 @@ function Installation({ name, detection, children }: {
   );
 }
 
+function BackupButton({ agent }: { agent: BackupAgent }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <Button plain onClick={() => setOpen(true)}>Резервные копии…</Button>
+      {open && <BackupDialog agent={agent} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function AgentProxy({ agent, mode, token }: {
+  agent: BackupAgent;
+  mode: ProxyMode;
+  token: string;
+}) {
+  const [pending, setPending] = useState(false);
+  const [draft, setDraft] = useState<ProxyMode>();
+  const [error, setError] = useState<string>();
+  const selected = draft ?? mode;
+
+  async function send() {
+    if (pending) return;
+    setPending(true);
+    setError(undefined);
+    try {
+      await sendAgentEvent(agent === "codex"
+        ? { CodexSetProxy: selected }
+        : { ClaudeSetProxy: selected });
+      setDraft(undefined);
+    } catch (cause: unknown) {
+      const message = `Не удалось применить настройки ${agent === "codex" ? "Codex" : "Claude Code"}`;
+      reportError(message, cause);
+      setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <div>
+        <Badge color={mode === "disabled" ? "zinc" : "green"}>
+          {proxyOptions.find((option) => option.mode === mode)?.label}
+          {mode !== "disabled" && " · активно"}
+        </Badge>
+      </div>
+      <RadioGroup
+        value={selected}
+        disabled={pending}
+        onChange={(value) => {
+          setDraft(value as ProxyMode);
+          setError(undefined);
+        }}
+      >
+        {proxyOptions.map((option) => (
+          <RadioField key={option.mode}>
+            <Radio value={option.mode} />
+            <Label>
+              {option.label}{option.mode === "proxy_api"
+                ? ` — через вашу подписку ${agent === "codex" ? "ChatGPT" : "Claude"}`
+                : ""}
+            </Label>
+          </RadioField>
+        ))}
+      </RadioGroup>
+      <Button outline type="button" disabled={pending || (selected !== "disabled" && token === "")} onClick={() => void send()}>
+        Применить
+      </Button>
+      {error && <ErrorText>{error}</ErrorText>}
+    </>
+  );
+}
+
 export function AgentList({ agents, token }: { agents: AgentStates; token: string }) {
   return (
     <>
-      <Installation name="Codex" detection={agents.codex}>
+      <Installation name="Codex" detection={agents.codex} actions={<BackupButton agent="codex" />}>
         {agents.codex.status === "found" && (
           <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} token={token} />
         )}
       </Installation>
       {/*<Installation name="ChatGPT" detection={agents.chatgpt} />*/}
-      <Installation name="Claude Code" detection={agents.claude}>
+      <Installation name="Claude Code" detection={agents.claude} actions={<BackupButton agent="claude" />}>
         {agents.claude.status === "found" && (
           <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} token={token} />
         )}

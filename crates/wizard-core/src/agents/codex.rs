@@ -70,6 +70,17 @@ fn mode_from_config(doc: &DocumentMut) -> ProxyMode {
     }
 }
 
+pub fn get_backups() -> Result<Vec<super::Backup>> {
+    BackupManager::get_backups(AgentKind::Codex)
+}
+
+pub fn restore_backup(id: u32) -> Result<()> {
+    let _guard = PROXY_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Codex proxy lock poisoned"))?;
+    BackupManager::load_backup(AgentKind::Codex, id)
+}
+
 pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
     // Serialize the whole TOML + dotenv operation, not individual file writes.
     let _guard = PROXY_LOCK

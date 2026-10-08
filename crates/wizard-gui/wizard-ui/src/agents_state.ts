@@ -5,6 +5,7 @@ import { reportError, info, debug } from "./log";
 export type AgentEvent =
   | { CodexSetProxy: ProxyMode }
   | { ClaudeSetProxy: ProxyMode }
+  | { RestoreBackup: { agent: BackupAgent; id: number } }
   | { SetPiHub: boolean }
   | { SetOpenCodeHub: boolean }
   | { SetCoreInfraToken: string };
@@ -12,10 +13,25 @@ export type AgentEvent =
 export function sendAgentEvent(event: AgentEvent): Promise<void> {
   const name = "CodexSetProxy" in event ? "CodexSetProxy"
     : "ClaudeSetProxy" in event ? "ClaudeSetProxy"
+    : "RestoreBackup" in event ? "RestoreBackup"
     : "SetPiHub" in event ? "SetPiHub"
     : "SetOpenCodeHub" in event ? "SetOpenCodeHub" : "SetCoreInfraToken";
   info(`sending agent event: ${name}`);
   return invoke<void>("agent_event", { event });
+}
+
+export type BackupAgent = "codex" | "claude";
+
+export type Backup = {
+  id: number;
+  backup_version: number;
+  time_created: string;
+  files: Record<string, { content: string; mode?: string } | null>;
+};
+
+export function getAgentBackups(agent: BackupAgent): Promise<Backup[]> {
+  // The response contains credentials; do not log or persist it in frontend storage.
+  return invoke<Backup[]>("get_agent_backups", { agent });
 }
 
 export type AgentDetection<T> =

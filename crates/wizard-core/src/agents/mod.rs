@@ -4,6 +4,8 @@ use serde::Serialize;
 
 use crate::settings;
 
+pub use crate::config_files::backups::{AgentKind as BackupAgent, Backup};
+
 pub mod chatgpt;
 pub mod claude;
 pub mod claude_desktop;

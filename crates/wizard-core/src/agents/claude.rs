@@ -86,6 +86,17 @@ fn mode_from_config(settings: &Value) -> ProxyMode {
     }
 }
 
+pub fn get_backups() -> Result<Vec<super::Backup>> {
+    BackupManager::get_backups(AgentKind::Claude)
+}
+
+pub fn restore_backup(id: u32) -> Result<()> {
+    let _guard = PROXY_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Claude proxy lock poisoned"))?;
+    BackupManager::load_backup(AgentKind::Claude, id)
+}
+
 pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
     let _guard = PROXY_LOCK
         .lock()
