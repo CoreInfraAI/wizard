@@ -1,0 +1,118 @@
+name: Hub E2E
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hub-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hub:
+    name: ${{ matrix.agent }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        agent:
+          - codex
+          - claude
+          - pi
+          - opencode
+        include:
+          - agent: codex
+            package: '@openai/codex@latest'
+          - agent: claude
+            package: '@anthropic-ai/claude-code@latest'
+          - agent: pi
+            package: '@earendil-works/pi-coding-agent@latest'
+          - agent: opencode
+            package: 'opencode-ai@latest'
+    env:
+      AGENT: ${{ matrix.agent }}
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Build Wizard CLI
+        run: cargo build --locked --package wizard-cli
+
+      - name: Install agent
+        timeout-minutes: 10
+        run: npm install --global "${{ matrix.package }}"
+
+      - name: Configure Hub through Wizard CLI
+        timeout-minutes: 10
+        env:
+          COREINFRA_API_KEY: ${{ secrets.COREINFRA_API_KEY }}
+        run: |
+          if [ -z "$COREINFRA_API_KEY" ]; then
+            echo '::error::Set the COREINFRA_API_KEY repository secret.'
+            exit 1
+          fi
+          # Do not print settings, status, or package output: they may contain credentials.
+          printf '%s\n' "$COREINFRA_API_KEY" | cargo cli set-token > "$RUNNER_TEMP/wizard.log" 2>&1
+          unset COREINFRA_API_KEY
+          cargo cli "$AGENT" hub >> "$RUNNER_TEMP/wizard.log" 2>&1
+          cargo cli status > "$RUNNER_TEMP/status.json" 2>> "$RUNNER_TEMP/wizard.log"
+          node -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const state = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, "status.json"), "utf8")).agents[process.env.AGENT];
+            if (state?.status !== "found" || !(state.data.proxy_mode === "proxy_hub" || state.data.proxy_installed === true)) process.exit(1);
+          ' 2>> "$RUNNER_TEMP/wizard.log"
+
+      - name: Ask agent through Hub
+        timeout-minutes: 5
+        env:
+          OPENCODE_PERMISSION: '{"*":"deny"}'
+        run: |
+          mkdir -p "$RUNNER_TEMP/hub-e2e/work"
+          cd "$RUNNER_TEMP/hub-e2e/work"
+          prompt='What is 17 + 25? Reply with exactly 42 and nothing else. Do not use tools.'
+          # The secret is not inherited here; authentication must come from Wizard-written files.
+          case "$AGENT" in
+            codex)
+              codex exec --skip-git-repo-check --sandbox read-only --ephemeral --model gpt-6-luna --output-last-message "$RUNNER_TEMP/answer.txt" "$prompt" > "$RUNNER_TEMP/agent.log" 2>&1
+              ;;
+            claude)
+              claude --print --model claude-gpt-6-luna --tools "" --no-session-persistence "$prompt" > "$RUNNER_TEMP/answer.txt" 2> "$RUNNER_TEMP/agent.log"
+              ;;
+            pi)
+              pi --print --model coreinfra/gpt-6-luna --no-tools --no-session "$prompt" > "$RUNNER_TEMP/answer.txt" 2> "$RUNNER_TEMP/agent.log"
+              ;;
+            opencode)
+              opencode run --model coreinfra/gpt-6-luna --format json "$prompt" > "$RUNNER_TEMP/events.jsonl" 2> "$RUNNER_TEMP/agent.log"
+              node -e '
+                const fs = require("node:fs");
+                const path = require("node:path");
+                const events = fs.readFileSync(path.join(process.env.RUNNER_TEMP, "events.jsonl"), "utf8").trim().split(/\r?\n/).map(JSON.parse);
+                if (events.some(event => event.type === "error")) process.exit(1);
+                process.stdout.write(events.filter(event => event.type === "text").map(event => event.part.text).join(""));
+              ' > "$RUNNER_TEMP/answer.txt" 2>> "$RUNNER_TEMP/agent.log"
+              ;;
+          esac
+          if ! node -e 'process.exit(require("node:fs").readFileSync(process.argv[1], "utf8").trim() === "42" ? 0 : 1)' "$RUNNER_TEMP/answer.txt"; then
+            echo '::error::Expected the answer 42. Raw output is withheld because it may contain credentials.'
+            exit 1
+          fi
+          echo 'Hub request succeeded: 42'
