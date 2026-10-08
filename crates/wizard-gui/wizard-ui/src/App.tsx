@@ -3,6 +3,7 @@ import { AgentList } from "./AgentList";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
 import { CoreInfraToken } from "./CoreInfraToken";
+import { OpenLogsButton } from "./OpenLogsButton";
 import { useAgentState } from "./agents_state";
 import { requestUpdate, useUpdateState } from "./update";
 import { UpdateScreen } from "./UpdateScreen";
@@ -30,10 +31,15 @@ function App() {
   if (update.error === undefined && (!state || state.status === "checking" || state.status === "installing")) {
     return (
       <main className={!state || state.status === "checking"
-        ? "mx-auto max-w-6xl space-y-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8"
-        : "flex min-h-dvh items-center justify-center p-6"}
+        ? "mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8"
+        : "flex min-h-dvh flex-col gap-6 p-6"}
       >
-        <UpdateScreen state={state} />
+        <div className={state?.status === "installing" ? "flex flex-1 items-center justify-center" : undefined}>
+          <UpdateScreen state={state} />
+        </div>
+        <div className="mt-auto shrink-0">
+          <OpenLogsButton />
+        </div>
       </main>
     );
   }
@@ -43,8 +49,11 @@ function App() {
   ) : null;
 
   return (
-    <main className="mx-auto max-w-6xl space-y-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8">
+    <main className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8">
       <AgentPanel updateTile={updateTile} />
+      <div className="mt-auto shrink-0">
+        <OpenLogsButton />
+      </div>
     </main>
   );
 }

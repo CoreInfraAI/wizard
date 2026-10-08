@@ -7,6 +7,7 @@ use tauri::Manager as _;
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
 mod agents;
+mod logs;
 mod revision_signal;
 mod settings;
 mod updater;
@@ -69,6 +70,8 @@ pub fn run_application() -> Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            logs::open_logs,
+            logs::read_logs,
             updater::get_update_state,
             updater::request_update,
             agents::get_agent_state,
