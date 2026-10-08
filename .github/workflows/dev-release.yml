@@ -23,13 +23,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
-        with:
-          cache: false
 
       - name: Create or find draft prerelease
         id: release
@@ -71,8 +67,6 @@ jobs:
             patchelf
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
@@ -113,7 +107,6 @@ jobs:
         run: >-
           gh release upload "$RELEASE_TAG" release-assets/*
           --clobber
-          --repo "$GITHUB_REPOSITORY"
 
   generate-latest-json:
     name: Generate updater metadata
@@ -124,13 +117,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2
-        with:
-          cache: false
 
       - name: Generate and upload latest.json
         env:
