@@ -215,16 +215,13 @@ pub(crate) fn build(
     remove_path(&bundle_dir)?;
     remove_path(output)?;
 
-    // The workflow builds the frontend and xtask before exposing the signing key.
-    // Disable Tauri's frontend hook and remove the key from the Rust build process. The
-    // separate bundling process receives the key only to sign the finished artifacts.
+    // The workflow builds xtask before exposing the signing key. Remove the key
+    // from the Tauri build process, including its frontend hook and Rust build.
+    // Only the separate bundling process receives the key.
     let build_config = if dev {
         json!({
             "version": version.to_string(),
-            "build": {
-                "beforeBuildCommand": "",
-                "beforeBundleCommand": "",
-            },
+            "bundle": { "createUpdaterArtifacts": true },
             "plugins": {
                 "updater": {
                     "endpoints": [DEV_ENDPOINT],
@@ -234,10 +231,7 @@ pub(crate) fn build(
         })
     } else {
         json!({
-            "build": {
-                "beforeBuildCommand": "",
-                "beforeBundleCommand": "",
-            },
+            "bundle": { "createUpdaterArtifacts": true },
         })
     }
     .to_string();

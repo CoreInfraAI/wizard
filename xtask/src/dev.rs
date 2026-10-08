@@ -8,7 +8,6 @@ use serde_json::json;
 /// Runs the application through Tauri with the dev updater channel configured.
 pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
     let config = json!({
-        "bundle": { "createUpdaterArtifacts": false },
         "plugins": {
             "updater": {
                 // "endpoints": [DEV_ENDPOINT],
@@ -34,7 +33,6 @@ pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
 pub(crate) fn dev_app(paths: &Paths, reinstall: bool, console: bool, release: bool) -> Result<()> {
     if reinstall || !paths.installed_executable.is_file() {
         let config = json!({
-            "bundle": { "createUpdaterArtifacts": false },
             "plugins": {
                 "updater": {
                     "endpoints": [DEV_ENDPOINT],
