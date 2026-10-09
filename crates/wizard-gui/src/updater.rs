@@ -69,6 +69,17 @@ pub(crate) fn request_update(app: tauri::AppHandle) {
     start_update(app);
 }
 
+#[tauri::command]
+pub(crate) fn retry_update_check(app: tauri::AppHandle) {
+    let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
+    if !matches!(state.current().state, UpdateState::Failed { .. }) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        check_in_background(&app, &state).await;
+    });
+}
+
 fn start_update(app: tauri::AppHandle) {
     let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
     tauri::async_runtime::spawn(async move {

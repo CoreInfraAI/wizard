@@ -4,7 +4,7 @@ import { ErrorText } from "./components/ErrorText";
 import { CoreInfraToken } from "./settings/CoreInfraToken";
 import { OpenLogsButton } from "./logs/OpenLogsButton";
 import { useAgentState } from "./agents/agents_state";
-import { requestUpdate, useUpdateState } from "./updates/update";
+import { useUpdateState } from "./updates/update";
 import { UpdateScreen } from "./updates/UpdateScreen";
 import { UpdateTile } from "./updates/UpdateTile";
 
@@ -38,7 +38,7 @@ function App() {
   }
 
   const updateTile = update.error !== undefined || state?.status === "failed" || state?.status === "available" ? (
-    <UpdateTile state={update} update={requestUpdate} />
+    <UpdateTile state={update} />
   ) : null;
 
   return (

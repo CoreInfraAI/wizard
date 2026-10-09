@@ -75,6 +75,7 @@ pub fn run_application() -> Result<()> {
             logs::read_logs,
             updater::get_update_state,
             updater::request_update,
+            updater::retry_update_check,
             settings::get_settings_state,
             agents::get_agent_state,
             agents::get_agent_backups,

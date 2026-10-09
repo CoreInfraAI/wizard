@@ -24,8 +24,7 @@ export function BackupDialog({ agent, onClose }: {
   const [pending, setPending] = useState(false);
   const [backups, setBackups] = useState<Backup[]>();
   const [selected, setSelected] = useState<number>();
-  const [confirming, setConfirming] = useState(false);
-  const [restored, setRestored] = useState(false);
+  const [restored, setRestored] = useState<number>();
   const [error, setError] = useState<string>();
   const backup = backups?.find((item) => item.id === selected);
 
@@ -43,9 +42,10 @@ export function BackupDialog({ agent, onClose }: {
     if (!backup || pending) return;
     setPending(true);
     setError(undefined);
+    setRestored(undefined);
     try {
       await sendAgentEvent({ RestoreBackup: { agent, id: backup.id } });
-      setRestored(true);
+      setRestored(backup.id);
     } catch (cause: unknown) {
       setError(`Не удалось восстановить копию: ${String(cause)}. Часть файлов могла быть изменена.`);
     } finally {
@@ -60,17 +60,7 @@ export function BackupDialog({ agent, onClose }: {
         Сохранённые конфигурации перед изменениями Wizard. Это не история каждого переключения режима.
       </DialogDescription>
       <DialogBody className="space-y-3">
-        {restored ? (
-          <Text role="status">Копия №{selected} восстановлена.</Text>
-        ) : confirming && backup ? (
-          <>
-            <Text>Восстановить копию {label(backup)}?</Text>
-            <Text>
-              Конфигурационные файлы будут заменены целиком, включая сохранённые ключи и сторонние настройки.
-              Файлы, отсутствовавшие в копии, будут удалены. Настройки самого Wizard не изменятся.
-            </Text>
-          </>
-        ) : backups ? (
+        {backups ? (
           backups.length === 0 ? (
             <Text>Резервных копий пока нет.</Text>
           ) : (
@@ -84,25 +74,16 @@ export function BackupDialog({ agent, onClose }: {
             </RadioGroup>
           )
         ) : !error && <Text role="status">Загрузка…</Text>}
+        {restored !== undefined && <Text role="status">Восстановлена резервная копия №{restored}.</Text>}
         {error && <ErrorText>{error}</ErrorText>}
       </DialogBody>
       <DialogActions>
-        <Button plain disabled={pending} onClick={() => {
-          if (confirming && !restored) {
-            setConfirming(false);
-            setError(undefined);
-          } else onClose();
-        }}>
-          {confirming && !restored ? "Назад" : "Закрыть"}
+        <Button plain disabled={pending} onClick={onClose}>
+          Закрыть
         </Button>
-        {!restored && (
-          <Button outline disabled={!backup || pending} onClick={() => {
-            if (confirming) void restore();
-            else setConfirming(true);
-          }}>
-            {pending ? "Восстановление…" : confirming ? "Восстановить" : "Восстановить…"}
-          </Button>
-        )}
+        <Button outline disabled={!backup || pending} onClick={() => void restore()}>
+          {pending ? "Восстановление…" : "Восстановить"}
+        </Button>
       </DialogActions>
     </Dialog>
   );

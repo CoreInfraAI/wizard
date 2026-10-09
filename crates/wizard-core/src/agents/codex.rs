@@ -87,6 +87,7 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("Codex proxy lock poisoned"))?;
     let path = config_path()?;
+
     let mut config = FileChange::read(path.clone())?;
     let mut dotenv = FileChange::read(path.with_file_name(".env"))?;
 

@@ -23,6 +23,10 @@ export function requestUpdate(): Promise<void> {
   return invoke<void>("request_update");
 }
 
+export function retryUpdateCheck(): Promise<void> {
+  return invoke<void>("retry_update_check");
+}
+
 export function useUpdateState(): UpdateObservation {
   const [state, setState] = useState<UpdateState>();
   const [error, setError] = useState<string>();

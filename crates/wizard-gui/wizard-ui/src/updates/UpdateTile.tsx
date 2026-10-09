@@ -3,11 +3,10 @@ import { Heading } from "../components/catalyst/heading";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 import { reportError } from "../logs/log";
-import type { UpdateObservation } from "./update";
+import { type UpdateObservation, requestUpdate, retryUpdateCheck } from "./update";
 
-export function UpdateTile({ state, update }: {
+export function UpdateTile({ state }: {
   state: UpdateObservation;
-  update: () => Promise<void>;
 }) {
   const current = state.state;
   const error = state.error ?? (current?.status === "failed" ? current.message : undefined);
@@ -15,7 +14,8 @@ export function UpdateTile({ state, update }: {
   if (error === undefined && current?.status !== "available") return null;
 
   function request() {
-    void update().catch((cause: unknown) => {
+    const action = current?.status === "failed" ? retryUpdateCheck : requestUpdate;
+    void action().catch((cause: unknown) => {
       reportError("Не удалось запустить обновление", cause);
     });
   }

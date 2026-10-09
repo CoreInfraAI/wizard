@@ -103,6 +103,7 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Claude proxy lock poisoned"))?;
     let dir = config_dir()?;
     let script_path = dir.join("no-proxy.sh");
+
     let mut settings = FileChange::read(dir.join("settings.json"))?;
     let mut global = FileChange::read(global_config_path()?)?;
     let mut script = FileChange::read(script_path.clone())?;

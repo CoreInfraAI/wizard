@@ -100,7 +100,9 @@ pub fn set_hub(install: bool, token: &str) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Pi Hub lock poisoned"))?;
     let dir = agent_dir()?;
     let settings = config_files::json::read(&dir.join("settings.json"))?;
+
     let mut auth = FileChange::read(dir.join("auth.json"))?;
+
     let installed = has_hub_package(&settings)?;
     config_files::json::update(&mut auth.after, |auth| {
         let object = auth.as_object_mut().context("Pi auth must be an object")?;

@@ -72,6 +72,7 @@ fn read_configs(dir: &Path) -> Result<(Vec<FileChange>, bool)> {
     let mut installed = false;
     for name in ["config.json", "opencode.json", "opencode.jsonc"] {
         let change = FileChange::read(dir.join(name))?;
+
         let value = config_files::json::parse(&change.after)
             .with_context(|| format!("failed to read OpenCode {name}; Wizard currently supports JSON without comments or trailing commas"))?;
         if let Some(plugins) = value.get("plugin") {
@@ -117,8 +118,10 @@ pub fn set_hub(install: bool, token: &str) -> Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("OpenCode Hub lock poisoned"))?;
     let dir = config_dir()?;
+
     let (mut configs, _) = read_configs(&dir)?;
     let mut auth = FileChange::read(auth_path()?)?;
+
     config_files::json::update(&mut auth.after, |auth| {
         let credentials = auth
             .as_object_mut()
