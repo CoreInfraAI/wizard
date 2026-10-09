@@ -77,6 +77,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Status => {
             let settings = settings::load_from_file()?;
             let state = runtime.block_on(agents::collect_agent_state(&settings));
+            settings::update_file(|settings| state.update_settings_paths(settings))?;
             println!("{}", serde_json::to_string_pretty(&state)?);
         }
         Command::SetToken => {
@@ -114,9 +115,17 @@ fn run(cli: Cli) -> Result<()> {
             };
             agents::claude::set_proxy(mode, &token)?;
         }
-        Command::Pi { command } => run_hub_command(&runtime, &command, agents::pi::set_hub)?,
+        Command::Pi { command } => {
+            let settings = settings::load_from_file()?;
+            run_hub_command(&runtime, &command, move |install| {
+                agents::pi::set_hub(install, &settings)
+            })?;
+        }
         Command::Opencode { command } => {
-            run_hub_command(&runtime, &command, agents::opencode::set_hub)?;
+            let settings = settings::load_from_file()?;
+            run_hub_command(&runtime, &command, move |install| {
+                agents::opencode::set_hub(install, &settings)
+            })?;
         }
     }
     Ok(())
@@ -125,16 +134,11 @@ fn run(cli: Cli) -> Result<()> {
 fn run_hub_command(
     runtime: &tokio::runtime::Runtime,
     command: &HubCommand,
-    apply: fn(bool, &str) -> Result<()>,
+    apply: impl FnOnce(bool) -> Result<()> + Send + 'static,
 ) -> Result<()> {
     let install = matches!(command, HubCommand::Hub);
-    let token = if install {
-        settings::load_from_file()?.coreinfra_token
-    } else {
-        String::new()
-    };
     runtime.block_on(async {
-        tokio::task::spawn_blocking(move || apply(install, &token))
+        tokio::task::spawn_blocking(move || apply(install))
             .await
             .context("Hub command task failed")?
     })

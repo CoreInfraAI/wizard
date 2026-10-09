@@ -1,3 +1,7 @@
+use super::{
+    AgentDetection,
+    detection::{self, Agent, AgentInfo},
+};
 use crate::{
     config_files::{
         self,
@@ -5,16 +9,12 @@ use crate::{
         changes::{FileChange, FileSnapshot},
     },
     platform::env_var_not_empty,
+    settings::Settings,
 };
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Mutex};
 use toml_edit::DocumentMut;
-
-use super::{
-    AgentDetection,
-    detection::{self, Agent, AgentInfo},
-};
 
 static PROXY_LOCK: Mutex<()> = Mutex::new(());
 
@@ -26,15 +26,15 @@ pub enum ProxyMode {
     ProxyApi,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Codex {
     #[serde(flatten)]
     pub info: AgentInfo,
     pub proxy_mode: ProxyMode,
 }
 
-pub(super) fn detect() -> AgentDetection<Codex> {
-    let info = match detection::detect(Agent::Codex) {
+pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
+    let info = match detection::detect(Agent::Codex, settings.codex_path_last.as_deref()) {
         AgentDetection::Found(info) => info,
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),

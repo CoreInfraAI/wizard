@@ -1,8 +1,7 @@
-use alloc::sync::Arc;
-use core::time::Duration;
-
 use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
+use alloc::sync::Arc;
 use anyhow::{Context as _, Result};
+use core::time::Duration;
 use serde::Serialize;
 use tauri::Manager as _;
 use tauri_plugin_updater::{Update, UpdaterExt as _};

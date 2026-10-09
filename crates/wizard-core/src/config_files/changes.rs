@@ -1,3 +1,4 @@
+use anyhow::{Context as _, Result, ensure};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::{
@@ -5,8 +6,6 @@ use std::{
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
 };
-
-use anyhow::{Context as _, Result, ensure};
 use tempfile::NamedTempFile;
 
 // No Debug: file contents may contain credentials.

@@ -1,10 +1,8 @@
-use std::process::Command;
-
+use crate::utils::{Paths, gh_api_json, stable_version};
 use anyhow::{Context as _, Result, bail};
 use semver::Version;
 use serde_json::Value;
-
-use crate::utils::{Paths, gh_api_json, stable_version};
+use std::process::Command;
 
 struct DevTag {
     version: Version,

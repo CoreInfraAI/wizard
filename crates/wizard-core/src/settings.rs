@@ -1,16 +1,27 @@
 //! Backend-only settings storage. The API key is stored as plaintext, never logged.
 
-use std::{fs, io::Write as _, path::PathBuf};
-
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+use std::{fs, io::Write as _, path::PathBuf};
 
 // No Debug: settings contain a secret and must not be logged.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Settings {
     #[serde(rename = "coreinfra_api_key", skip_serializing_if = "String::is_empty")]
     pub coreinfra_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_path_last: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chatgpt_path_last: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_path_last: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_desktop_path_last: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode_path_last: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pi_path_last: Option<PathBuf>,
 }
 
 fn settings_path() -> Result<PathBuf> {
@@ -63,7 +74,11 @@ pub fn save_to_file(settings: &Settings) -> Result<()> {
 }
 
 pub fn update_file(edit: impl FnOnce(&mut Settings)) -> Result<()> {
-    let mut settings = load_from_file()?;
+    let current = load_from_file()?;
+    let mut settings = current.clone();
     edit(&mut settings);
+    if settings == current {
+        return Ok(());
+    }
     save_to_file(&settings)
 }

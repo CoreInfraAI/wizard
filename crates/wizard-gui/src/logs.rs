@@ -1,12 +1,11 @@
 //! Read-only viewer for the current GUI log file.
 
+use anyhow::{Context as _, Result};
 use std::{
     fs::File,
     io::{Read as _, Seek as _, SeekFrom},
     path::Path,
 };
-
-use anyhow::{Context as _, Result};
 use tauri::Manager as _;
 
 const WINDOW_LABEL: &str = "logs";

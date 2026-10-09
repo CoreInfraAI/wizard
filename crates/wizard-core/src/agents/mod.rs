@@ -1,8 +1,7 @@
 //! Agent discovery and configuration shared by GUI and CLI.
 
+use crate::settings::Settings;
 use serde::Serialize;
-
-use crate::settings;
 
 pub use crate::config_files::backups::{AgentKind as BackupAgent, Backup};
 
@@ -14,13 +13,36 @@ mod detection;
 pub mod opencode;
 pub mod pi;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct AgentState {
     agents: AgentStates,
     coreinfra_token: String,
 }
 
-#[derive(Debug, Serialize)]
+impl AgentState {
+    pub fn update_settings_paths(&self, settings: &mut Settings) {
+        if let AgentDetection::Found(agent) = &self.agents.codex {
+            settings.codex_path_last = Some(agent.info.path.clone());
+        }
+        if let AgentDetection::Found(agent) = &self.agents.chatgpt {
+            settings.chatgpt_path_last = Some(agent.info.path.clone());
+        }
+        if let AgentDetection::Found(agent) = &self.agents.claude {
+            settings.claude_path_last = Some(agent.info.path.clone());
+        }
+        if let AgentDetection::Found(agent) = &self.agents.claude_desktop {
+            settings.claude_desktop_path_last = Some(agent.info.path.clone());
+        }
+        if let AgentDetection::Found(agent) = &self.agents.opencode {
+            settings.opencode_path_last = Some(agent.info.path.clone());
+        }
+        if let AgentDetection::Found(agent) = &self.agents.pi {
+            settings.pi_path_last = Some(agent.info.path.clone());
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct AgentStates {
     pub codex: AgentDetection<codex::Codex>,
     pub chatgpt: AgentDetection<chatgpt::ChatGpt>,
@@ -30,7 +52,7 @@ pub(crate) struct AgentStates {
     pub pi: AgentDetection<pi::Pi>,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(tag = "status", content = "data", rename_all = "snake_case")]
 pub enum AgentDetection<T> {
     Found(T),
@@ -45,8 +67,8 @@ impl<T> AgentDetection<T> {
 }
 
 /// Collects state for GUI or CLI. Must be called within a Tokio runtime with I/O and time enabled.
-pub async fn collect_agent_state(settings: &settings::Settings) -> AgentState {
-    let agents = detect().await;
+pub async fn collect_agent_state(settings: &Settings) -> AgentState {
+    let agents = detect(settings).await;
 
     AgentState {
         agents,
@@ -54,7 +76,7 @@ pub async fn collect_agent_state(settings: &settings::Settings) -> AgentState {
     }
 }
 
-async fn detect() -> AgentStates {
+async fn detect(settings: &Settings) -> AgentStates {
     async fn collect<T: core::fmt::Debug>(
         name: &str,
         task: tokio::task::JoinHandle<AgentDetection<T>>,
@@ -70,13 +92,21 @@ async fn detect() -> AgentStates {
         result
     }
 
+    fn spawn_detection<T: Send + 'static>(
+        settings: &Settings,
+        detect: fn(&Settings) -> AgentDetection<T>,
+    ) -> tokio::task::JoinHandle<AgentDetection<T>> {
+        let settings = settings.clone();
+        tokio::task::spawn_blocking(move || detect(&settings))
+    }
+
     // Start all detectors before awaiting their results so they can run concurrently.
-    let codex = tokio::task::spawn_blocking(codex::detect);
-    let chatgpt = tokio::task::spawn_blocking(chatgpt::detect);
-    let claude = tokio::task::spawn_blocking(claude::detect);
-    let claude_desktop = tokio::task::spawn_blocking(claude_desktop::detect);
-    let opencode = tokio::task::spawn_blocking(opencode::detect);
-    let pi = tokio::task::spawn_blocking(pi::detect);
+    let codex = spawn_detection(settings, codex::detect);
+    let chatgpt = spawn_detection(settings, chatgpt::detect);
+    let claude = spawn_detection(settings, claude::detect);
+    let claude_desktop = spawn_detection(settings, claude_desktop::detect);
+    let opencode = spawn_detection(settings, opencode::detect);
+    let pi = spawn_detection(settings, pi::detect);
 
     AgentStates {
         codex: collect("Codex", codex).await,

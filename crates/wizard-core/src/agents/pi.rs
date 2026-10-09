@@ -1,14 +1,3 @@
-use core::time::Duration;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
-
-use anyhow::{Context as _, Result, ensure};
-use serde::Serialize;
-use serde_json::{Value, json};
-
 use super::{
     AgentDetection,
     detection::{self, Agent, AgentInfo},
@@ -16,21 +5,31 @@ use super::{
 use crate::{
     config_files::{self, changes::FileChange},
     platform::{append_command_path, command_output, env_var_not_empty, find_executable},
+    settings::Settings,
+};
+use anyhow::{Context as _, Result, ensure};
+use core::time::Duration;
+use serde::Serialize;
+use serde_json::{Value, json};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 const PACKAGE: &str = "npm:@coreinfra/pi-plugin";
 const INSTALL_SOURCE: &str = "npm:@coreinfra/pi-plugin@latest";
 static HUB_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Pi {
     #[serde(flatten)]
     pub info: AgentInfo,
     pub proxy_installed: bool,
 }
 
-pub(super) fn detect() -> AgentDetection<Pi> {
-    let info = match detection::detect(Agent::Pi) {
+pub(super) fn detect(settings: &Settings) -> AgentDetection<Pi> {
+    let info = match detection::detect(Agent::Pi, settings.pi_path_last.as_deref()) {
         AgentDetection::Found(info) => info,
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
@@ -94,22 +93,22 @@ fn has_hub_package(settings: &Value) -> Result<bool> {
 }
 
 /// Call from a Tokio blocking worker. Close Pi before changing its configuration.
-pub fn set_hub(install: bool, token: &str) -> Result<()> {
+pub fn set_hub(install: bool, settings: &Settings) -> Result<()> {
     let _guard = HUB_LOCK
         .lock()
         .map_err(|_| anyhow::anyhow!("Pi Hub lock poisoned"))?;
     let dir = agent_dir()?;
-    let settings = config_files::json::read(&dir.join("settings.json"))?;
+    let pi_settings = config_files::json::read(&dir.join("settings.json"))?;
 
     let mut auth = FileChange::read(dir.join("auth.json"))?;
 
-    let installed = has_hub_package(&settings)?;
+    let installed = has_hub_package(&pi_settings)?;
     config_files::json::update(&mut auth.after, |auth| {
         let object = auth.as_object_mut().context("Pi auth must be an object")?;
         if install {
             object.insert(
                 "coreinfra".to_owned(),
-                json!({"type": "api_key", "key": token}),
+                json!({"type": "api_key", "key": settings.coreinfra_token}),
             );
         } else {
             object.remove("coreinfra");
@@ -121,17 +120,21 @@ pub fn set_hub(install: bool, token: &str) -> Result<()> {
         "Pi auth is locked; close Pi and retry"
     );
     if install || installed {
-        run_package_command(&dir, if install { "install" } else { "remove" })?;
+        run_package_command(
+            &dir,
+            if install { "install" } else { "remove" },
+            settings.pi_path_last.as_deref(),
+        )?;
     }
     apply_auth(&dir, auth)
         .context("Pi package step completed, but saving authentication failed; close Pi and retry")
 }
 
-fn run_package_command(dir: &Path, action: &str) -> Result<()> {
+fn run_package_command(dir: &Path, action: &str, last_found: Option<&Path>) -> Result<()> {
     let extra = vec![PathBuf::from("~/.pi/agent/bin")];
-    let pi = find_executable("pi", extra)?.context("Pi executable not found")?;
-    let node = find_executable("node", vec![])?.context("Node executable not found")?;
-    let npm = find_executable("npm", vec![])?.context("npm executable not found")?;
+    let pi = find_executable("pi", extra, last_found)?.context("Pi executable not found")?;
+    let node = find_executable("node", vec![], None)?.context("Node executable not found")?;
+    let npm = find_executable("npm", vec![], None)?.context("npm executable not found")?;
     let paths = [
         node.parent().context("Node executable has no parent")?,
         npm.parent().context("npm executable has no parent")?,

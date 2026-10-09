@@ -1,7 +1,6 @@
-use std::{path::PathBuf, sync::LazyLock};
-
 use anyhow::{Context as _, ensure};
 use regex::Regex;
+use std::{path::PathBuf, sync::LazyLock};
 
 pub mod agents;
 mod config_files;

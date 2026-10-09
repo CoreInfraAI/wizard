@@ -1,12 +1,11 @@
+use anyhow::{Context as _, Result, bail};
+use semver::Version;
+use serde_json::Value;
 use std::{
     env, fs,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
-
-use anyhow::{Context as _, Result, bail};
-use semver::Version;
-use serde_json::Value;
 
 const APP_NAME: &str = "CoreInfra Wizard.app";
 const INSTALLED_APP: &str = "/Applications/CoreInfra Wizard.app";

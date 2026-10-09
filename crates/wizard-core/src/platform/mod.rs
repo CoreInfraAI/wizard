@@ -1,11 +1,10 @@
+use anyhow::{Context as _, Result};
 use core::time::Duration;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::Output,
 };
-
-use anyhow::{Context as _, Result};
 
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
@@ -43,10 +42,21 @@ pub(crate) fn append_command_path(
     Ok(())
 }
 
-/// Searches common directories, extra directories, the per-user Nix profile, then PATH.
+/// Checks the last found executable first, then searches common directories,
+/// extra directories, the per-user Nix profile, and PATH.
 /// Expands a leading `~` path component. On Windows, also expands leading `%VAR%/`
 /// and checks `.exe` before `.cmd` in each directory.
-pub(crate) fn find_executable(name: &str, extra_paths: Vec<PathBuf>) -> Result<Option<PathBuf>> {
+pub(crate) fn find_executable(
+    name: &str,
+    extra_paths: Vec<PathBuf>,
+    last_found: Option<&Path>,
+) -> Result<Option<PathBuf>> {
+    if let Some(path) = last_found
+        && is_executable(path)?
+    {
+        return Ok(Some(std::path::absolute(path)?));
+    }
+
     // Common to all supported platforms.
     let mut paths = vec!["~/.local/bin", "~/.bun/bin"];
 
@@ -129,29 +139,34 @@ pub(crate) fn find_executable(name: &str, extra_paths: Vec<PathBuf>) -> Result<O
         };
         for filename in &filenames {
             let candidate = directory.join(filename);
-            let metadata = match std::fs::metadata(&candidate) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("failed to inspect {}", candidate.display()));
-                }
-            };
-            if !metadata.is_file() {
-                continue;
+            if is_executable(&candidate)? {
+                return Ok(Some(std::path::absolute(candidate)?));
             }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                if metadata.permissions().mode() & 0o111 == 0 {
-                    continue;
-                }
-            }
-            return Ok(Some(candidate));
         }
     }
 
     Ok(None)
+}
+
+fn is_executable(path: &Path) -> Result<bool> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Runs a prepared command with bounded execution time and no stdin.

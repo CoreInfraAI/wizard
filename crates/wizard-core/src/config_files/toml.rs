@@ -1,9 +1,7 @@
-use std::path::Path;
-
-use anyhow::{Context as _, Result, anyhow};
-use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
-
 use super::changes::FileSnapshot;
+use anyhow::{Context as _, Result, anyhow};
+use std::path::Path;
+use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
 fn parse(text: &str) -> Result<DocumentMut> {
     // Omit source text because configuration files may contain credentials.

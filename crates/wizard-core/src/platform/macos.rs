@@ -1,7 +1,6 @@
-use std::path::Path;
-
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
+use std::path::Path;
 
 #[derive(Deserialize)]
 struct AppInfo {

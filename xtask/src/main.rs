@@ -1,9 +1,7 @@
-use std::{path::PathBuf, process::Command};
-
+use crate::utils::{Paths, clean_build_command, paths, require_success, stable_version};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-
-use crate::utils::{Paths, clean_build_command, paths, require_success, stable_version};
+use std::{path::PathBuf, process::Command};
 
 mod dev;
 mod dev_tag;

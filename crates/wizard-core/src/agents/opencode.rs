@@ -1,14 +1,3 @@
-use core::time::Duration;
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-    sync::Mutex,
-};
-
-use anyhow::{Context as _, Result, ensure};
-use serde::Serialize;
-use serde_json::{Value, json};
-
 use super::{
     AgentDetection,
     detection::{self, Agent, AgentInfo},
@@ -16,21 +5,31 @@ use super::{
 use crate::{
     config_files::{self, changes::FileChange},
     platform::{append_command_path, command_output, env_var_not_empty, find_executable},
+    settings::Settings,
+};
+use anyhow::{Context as _, Result, ensure};
+use core::time::Duration;
+use serde::Serialize;
+use serde_json::{Value, json};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Mutex,
 };
 
 const PACKAGE: &str = "@coreinfra/opencode-plugin";
 const INSTALL_SOURCE: &str = "@coreinfra/opencode-plugin@latest";
 static HUB_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct OpenCode {
     #[serde(flatten)]
     pub info: AgentInfo,
     pub proxy_installed: bool,
 }
 
-pub(super) fn detect() -> AgentDetection<OpenCode> {
-    let info = match detection::detect(Agent::OpenCode) {
+pub(super) fn detect(settings: &Settings) -> AgentDetection<OpenCode> {
+    let info = match detection::detect(Agent::OpenCode, settings.opencode_path_last.as_deref()) {
         AgentDetection::Found(info) => info,
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
@@ -113,7 +112,7 @@ fn proxy_installed() -> Result<bool> {
 }
 
 /// Call from a Tokio blocking worker. Changes global configuration only; close `OpenCode` first.
-pub fn set_hub(install: bool, token: &str) -> Result<()> {
+pub fn set_hub(install: bool, settings: &Settings) -> Result<()> {
     let _guard = HUB_LOCK
         .lock()
         .map_err(|_| anyhow::anyhow!("OpenCode Hub lock poisoned"))?;
@@ -127,14 +126,17 @@ pub fn set_hub(install: bool, token: &str) -> Result<()> {
             .as_object_mut()
             .context("OpenCode auth must be an object")?;
         if install {
-            credentials.insert("coreinfra".into(), json!({"type": "api", "key": token}));
+            credentials.insert(
+                "coreinfra".into(),
+                json!({"type": "api", "key": settings.coreinfra_token}),
+            );
         } else {
             credentials.remove("coreinfra");
         }
         Ok(())
     })?;
     if install {
-        run_install_command(&dir)?;
+        run_install_command(&dir, settings.opencode_path_last.as_deref())?;
         let (_, installed) = read_configs(&dir)?;
         ensure!(
             installed,
@@ -166,12 +168,16 @@ fn remove_plugin(configs: &mut [FileChange]) -> Result<()> {
     Ok(())
 }
 
-fn run_install_command(config_dir: &Path) -> Result<()> {
-    let opencode = find_executable("opencode", vec![PathBuf::from("~/.opencode/bin")])?
-        .context("OpenCode executable not found")?;
+fn run_install_command(config_dir: &Path, last_found: Option<&Path>) -> Result<()> {
+    let opencode = find_executable(
+        "opencode",
+        vec![PathBuf::from("~/.opencode/bin")],
+        last_found,
+    )?
+    .context("OpenCode executable not found")?;
     let cwd = tempfile::tempdir().context("failed to create OpenCode install working directory")?;
     let mut command = tokio::process::Command::new(opencode);
-    if let Some(node) = find_executable("node", vec![])? {
+    if let Some(node) = find_executable("node", vec![], None)? {
         append_command_path(
             &mut command,
             &[node.parent().context("Node executable has no parent")?],

@@ -1,9 +1,7 @@
-use std::path::Path;
-
+use super::changes::FileSnapshot;
 use anyhow::{Context as _, Result, ensure};
 use serde_json::{Value, json};
-
-use super::changes::FileSnapshot;
+use std::path::Path;
 
 pub(crate) fn read(path: &Path) -> Result<Value> {
     let snapshot = FileSnapshot::read(path).context("failed to read JSON file")?;

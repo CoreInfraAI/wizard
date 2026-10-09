@@ -9,6 +9,7 @@ use crate::{
         changes::{FileChange, FileSnapshot},
     },
     platform::env_var_not_empty,
+    settings::Settings,
 };
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
@@ -31,15 +32,15 @@ pub enum ProxyMode {
     ProxyApi,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Claude {
     #[serde(flatten)]
     pub info: AgentInfo,
     pub proxy_mode: ProxyMode,
 }
 
-pub(super) fn detect() -> AgentDetection<Claude> {
-    let info = match detection::detect(Agent::Claude) {
+pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
+    let info = match detection::detect(Agent::Claude, settings.claude_path_last.as_deref()) {
         AgentDetection::Found(info) => info,
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),

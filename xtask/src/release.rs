@@ -1,21 +1,19 @@
+use crate::utils::{
+    Paths, clean_build_command, gh_api_bytes, gh_api_json, gh_release_upload, remove_path,
+    require_success, required_env, stable_version,
+};
+use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY, dev_tag};
+use anyhow::{Context as _, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use core::fmt::Write as _;
+use minisign_verify::{PublicKey, Signature};
+use serde_json::{Value, json};
 use std::{
     fs,
     io::Write as _,
     path::{Path, PathBuf},
     process::Command,
 };
-
-use anyhow::{Context as _, Result, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use minisign_verify::{PublicKey, Signature};
-use serde_json::{Value, json};
-
-use crate::utils::{
-    Paths, clean_build_command, gh_api_bytes, gh_api_json, gh_release_upload, remove_path,
-    require_success, required_env, stable_version,
-};
-use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY, dev_tag};
 
 /// Finds or creates the draft release used by the release workflow.
 pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {

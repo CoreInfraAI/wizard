@@ -1,6 +1,5 @@
-use anyhow::{Context as _, Result, ensure};
-
 use super::changes::FileSnapshot;
+use anyhow::{Context as _, Result, ensure};
 
 /// Replaces variables in the supplied order, preserving unrelated records verbatim.
 /// Entries are `(key, value)`. Dollar signs are preserved for dotenv interpolation.

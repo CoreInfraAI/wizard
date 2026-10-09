@@ -1,6 +1,7 @@
 //! Agent-wide backups. No automatic rollback, pending journal, or history pruning.
 extern crate alloc;
 
+use super::changes::{FileChange, FileSnapshot};
 use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, ensure};
 use chrono::{DateTime, Utc};
@@ -8,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 #[cfg(unix)]
 use std::{fs::Permissions, os::unix::fs::PermissionsExt as _};
-
-use super::changes::{FileChange, FileSnapshot};
 
 const BACKUP_VERSION: u32 = 1;
 const STATE_VERSION: u32 = 1;
