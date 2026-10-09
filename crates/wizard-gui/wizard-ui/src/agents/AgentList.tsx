@@ -108,7 +108,7 @@ function Installation({ name, detection, children, actions }: {
 */}
         </>
       )}
-      {detection.status === "not_found" && <Text>Not found</Text>}
+      {detection.status === "not_found" && <Text>Не найден</Text>}
       {detection.status === "error" && (
         <ErrorText>Не удалось обнаружить {name}: {detection.data}</ErrorText>
       )}

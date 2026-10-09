@@ -89,11 +89,7 @@ type DetectionState =
   | { status: "ready"; data: AgentStateSnapshot }
   | { status: "error"; message: string };
 
-type AgentStateSnapshot = {
-  revision: number;
-  coreinfra_token: string;
-  agents: AgentStates;
-};
+type AgentStateSnapshot = AgentStates & { revision: number };
 
 // Deduplicate concurrent reads, but never cache a completed snapshot.
 let pendingSnapshot: Promise<AgentStateSnapshot> | undefined;

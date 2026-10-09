@@ -14,7 +14,7 @@ function AgentPanel() {
   if (state.status === "loading") return <Text>Загрузка...</Text>;
   if (state.status === "error") return <ErrorText>Не удалось загрузить состояние агентов: {state.message}</ErrorText>;
 
-  return <AgentList agents={state.data.agents} />;
+  return <AgentList agents={state.data} />;
 }
 
 function App() {

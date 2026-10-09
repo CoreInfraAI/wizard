@@ -18,7 +18,7 @@ export function CoreInfraToken({ className }: { className?: string }) {
   const [draft, setDraft] = useState<string>();
   const token = draft ?? savedToken;
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | undefined>("test backend error");
+  const [error, setError] = useState<string>();
 
   async function updateToken(value: string) {
     if (!ready || pending) return;

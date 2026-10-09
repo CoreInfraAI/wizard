@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 use wizard_core::agents::{
-    AgentState, Backup, BackupAgent, claude, codex, collect_agent_state, opencode, pi,
+    AgentStates, Backup, BackupAgent, claude, codex, collect_agent_state, opencode, pi,
 };
 use wizard_core::validate_token;
 
@@ -28,7 +28,7 @@ pub(crate) async fn wait_for_update(
 pub(crate) struct AgentStateSnapshot {
     revision: u32,
     #[serde(flatten)]
-    state: AgentState,
+    state: AgentStates,
 }
 
 #[tauri::command]

@@ -13,43 +13,37 @@ mod detection;
 pub mod opencode;
 pub mod pi;
 
-#[derive(Clone, Serialize)]
-pub struct AgentState {
-    agents: AgentStates,
-    coreinfra_token: String,
+#[derive(Clone, Debug, Serialize)]
+pub struct AgentStates {
+    codex: AgentDetection<codex::Codex>,
+    chatgpt: AgentDetection<chatgpt::ChatGpt>,
+    claude: AgentDetection<claude::Claude>,
+    claude_desktop: AgentDetection<claude_desktop::ClaudeDesktop>,
+    opencode: AgentDetection<opencode::OpenCode>,
+    pi: AgentDetection<pi::Pi>,
 }
 
-impl AgentState {
+impl AgentStates {
     pub fn update_settings_paths(&self, settings: &mut Settings) {
-        if let AgentDetection::Found(agent) = &self.agents.codex {
+        if let AgentDetection::Found(agent) = &self.codex {
             settings.codex_path_last = Some(agent.info.path.clone());
         }
-        if let AgentDetection::Found(agent) = &self.agents.chatgpt {
+        if let AgentDetection::Found(agent) = &self.chatgpt {
             settings.chatgpt_path_last = Some(agent.info.path.clone());
         }
-        if let AgentDetection::Found(agent) = &self.agents.claude {
+        if let AgentDetection::Found(agent) = &self.claude {
             settings.claude_path_last = Some(agent.info.path.clone());
         }
-        if let AgentDetection::Found(agent) = &self.agents.claude_desktop {
+        if let AgentDetection::Found(agent) = &self.claude_desktop {
             settings.claude_desktop_path_last = Some(agent.info.path.clone());
         }
-        if let AgentDetection::Found(agent) = &self.agents.opencode {
+        if let AgentDetection::Found(agent) = &self.opencode {
             settings.opencode_path_last = Some(agent.info.path.clone());
         }
-        if let AgentDetection::Found(agent) = &self.agents.pi {
+        if let AgentDetection::Found(agent) = &self.pi {
             settings.pi_path_last = Some(agent.info.path.clone());
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct AgentStates {
-    pub codex: AgentDetection<codex::Codex>,
-    pub chatgpt: AgentDetection<chatgpt::ChatGpt>,
-    pub claude: AgentDetection<claude::Claude>,
-    pub claude_desktop: AgentDetection<claude_desktop::ClaudeDesktop>,
-    pub opencode: AgentDetection<opencode::OpenCode>,
-    pub pi: AgentDetection<pi::Pi>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -67,16 +61,7 @@ impl<T> AgentDetection<T> {
 }
 
 /// Collects state for GUI or CLI. Must be called within a Tokio runtime with I/O and time enabled.
-pub async fn collect_agent_state(settings: &Settings) -> AgentState {
-    let agents = detect(settings).await;
-
-    AgentState {
-        agents,
-        coreinfra_token: settings.coreinfra_token.clone(),
-    }
-}
-
-async fn detect(settings: &Settings) -> AgentStates {
+pub async fn collect_agent_state(settings: &Settings) -> AgentStates {
     async fn collect<T: core::fmt::Debug>(
         name: &str,
         task: tokio::task::JoinHandle<AgentDetection<T>>,
