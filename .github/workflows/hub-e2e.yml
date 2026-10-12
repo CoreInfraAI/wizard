@@ -53,6 +53,39 @@ jobs:
         with:
           node-version: 24
 
+      # Analysis only: capture uses tcpdump / the built-in Windows pktmon, not Npcap.
+      - name: Install network diagnostics (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tcpdump tshark
+
+      - name: Prepare network diagnostics (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/wireshark.dmg" \
+            'https://www.wireshark.org/download/osx/all-versions/Wireshark%204.6.4.dmg'
+          echo "08150f79cfc5828820f991b6d944c68536db9595b1c3052982bbde79fb2053df  $RUNNER_TEMP/wireshark.dmg" | shasum -a 256 --check
+          mount="$RUNNER_TEMP/wireshark-mount"
+          hdiutil attach "$RUNNER_TEMP/wireshark.dmg" -mountpoint "$mount" -readonly -nobrowse
+          trap 'hdiutil detach "$mount"' EXIT
+          ditto "$mount/Wireshark.app" "$RUNNER_TEMP/Wireshark.app"
+          echo "$RUNNER_TEMP/Wireshark.app/Contents/MacOS" >> "$GITHUB_PATH"
+
+      - name: Install network diagnostics (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'wireshark.exe'
+          Invoke-WebRequest 'https://www.wireshark.org/download/win64/all-versions/Wireshark-4.6.4-x64.exe' -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne '102017d8e99a75b57895cd2144e6a61dc335a8ff14c7a25bd83a55f8ea9ad77b') {
+            throw 'Wireshark checksum mismatch'
+          }
+          # The silent installer does not install Npcap. Only offline analysis is needed.
+          $process = Start-Process $installer -ArgumentList '/S', '/desktopicon=no' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Wireshark installation failed' }
+          "$env:ProgramFiles\Wireshark" >> $env:GITHUB_PATH
+
       - name: Build Wizard CLI
         run: cargo build --locked --package wizard-cli
 
@@ -80,6 +113,44 @@ jobs:
             const state = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, "status.json"), "utf8"))[process.env.AGENT];
             if (state?.status !== "found" || !(state.data.proxy_mode === "proxy_hub" || state.data.proxy_installed === true)) process.exit(1);
           ' 2>> "$RUNNER_TEMP/wizard.log"
+
+      - name: Start network capture
+        id: capture
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/network-capture"
+          cd "$RUNNER_TEMP/network-capture"
+          tshark --version > analyzer.log 2>&1
+          node -e '
+            const filters = Object.values(require("node:os").networkInterfaces()).flat()
+              .map(({ family, address }) => `${family === "IPv4" ? "ip" : "ipv6"}.src == ${address.split("%")[0]}`);
+            if (!filters.length) throw new Error("No local network addresses");
+            require("node:fs").writeFileSync("outgoing.filter", filters.join(" || "));
+          '
+          case "$RUNNER_OS" in
+            Windows)
+              pwsh -NoProfile -NonInteractive -Command '
+                pktmon start --capture --comp nics --pkt-size 0 --file-name capture.etl
+                if ($LASTEXITCODE -ne 0) { throw "Network capture failed to start" }
+              ' > capture.log 2>&1
+              ;;
+            Linux|macOS)
+              interface=any
+              if [ "$RUNNER_OS" = macOS ]; then interface=pktap,all; fi
+              # Save tcpdump's PID, not the sudo wrapper's. Drop privileges before writing packets.
+              sudo -n sh -c 'echo $$; exec tcpdump "$@"' sh \
+                -i "$interface" -n -s 0 -U -Z "$(id -un)" -w capture.pcapng > capture.pid 2> capture.log &
+              ready=false
+              for attempt in {1..100}; do
+                if grep -q 'listening on' capture.log; then ready=true; break; fi
+                sleep 0.1
+              done
+              if [ "$ready" != true ]; then
+                echo '::error::Network capture failed to start.'
+                exit 1
+              fi
+              ;;
+          esac
 
       - name: Ask agent through Hub
         timeout-minutes: 5
@@ -116,3 +187,60 @@ jobs:
             exit 1
           fi
           echo 'Hub request succeeded: 42'
+
+      # Also runs when the agent fails. Capture covers the whole runner, not just its processes.
+      - name: Stop capture and report network destinations
+        if: ${{ always() && (steps.capture.outcome == 'success' || steps.capture.outcome == 'failure') }}
+        timeout-minutes: 2
+        run: |
+          cd "$RUNNER_TEMP/network-capture"
+          # Never upload packet captures: unexpected plaintext traffic could contain credentials.
+          trap 'rm -f capture.pcapng capture.etl destinations.tsv' EXIT
+          case "$RUNNER_OS" in
+            Windows)
+              pwsh -NoProfile -NonInteractive -Command '
+                pktmon stop
+                if ($LASTEXITCODE -ne 0) { throw "Network capture failed to stop" }
+                pktmon etl2pcap capture.etl --out capture.pcapng
+                if ($LASTEXITCODE -ne 0) { throw "Network capture conversion failed" }
+              ' > stop.log 2>&1
+              ;;
+            Linux|macOS)
+              read -r pid < capture.pid
+              sudo -n kill -INT "$pid"
+              stopped=false
+              for attempt in {1..100}; do
+                if ! sudo -n kill -0 "$pid" 2>/dev/null; then stopped=true; break; fi
+                sleep 0.1
+              done
+              if [ "$stopped" != true ]; then
+                sudo -n kill -TERM "$pid" || true
+                echo '::error::Network capture did not stop cleanly.'
+                exit 1
+              fi
+              sudo -n chown "$(id -u):$(id -g)" capture.pcapng
+              chmod 600 capture.pcapng
+              # tcpdump reports counters only with -w; no packet contents are printed.
+              grep 'packets dropped by kernel' capture.log || true
+              if grep -Eq '[1-9][0-9]* packets dropped by kernel' capture.log; then
+                echo '::error::Network capture dropped packets.'
+                exit 1
+              fi
+              ;;
+          esac
+          # -n prevents analysis from making reverse-DNS requests. Export metadata only.
+          tshark -n -2 -r capture.pcapng -Y "$(<outgoing.filter)" -T fields -E escape=y \
+            -e ip.dst -e ipv6.dst -e tcp.dstport -e udp.dstport \
+            -e dns.qry.name -e tls.handshake.extensions_server_name -e http.host \
+            > destinations.tsv 2> analyzer.log
+          if [ ! -s destinations.tsv ]; then
+            echo '::error::No outgoing IP packets observed; network audit is inconclusive.'
+            exit 1
+          fi
+          {
+            printf '## Network audit: %s (%s)\n\n' "$AGENT" "$RUNNER_OS"
+            printf 'Whole-runner traffic during the request; no process attribution or allowlist enforcement. Names may be absent. Windows: NIC capture only.\n\n'
+            printf '```text\nIPv4\tIPv6\tTCP port\tUDP port\tDNS name\tTLS SNI\tHTTP Host\n'
+            LC_ALL=C sort -u destinations.tsv
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
