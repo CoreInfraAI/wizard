@@ -5,7 +5,7 @@ use serde_json::json;
 use std::{fs, process::Command};
 
 /// Runs the application through Tauri with the dev updater channel configured.
-pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
+pub(crate) fn run(paths: &Paths, release: bool, watch: bool) -> Result<()> {
     let config = json!({
         "plugins": {
             "updater": {
@@ -19,6 +19,9 @@ pub(crate) fn run(paths: &Paths, release: bool) -> Result<()> {
 
     let mut command = clean_build_command("node");
     command.args(["wizard-ui/node_modules/@tauri-apps/cli/tauri.js", "dev"]);
+    if !watch {
+        command.arg("--no-watch");
+    }
     if release {
         command.arg("--release");
     }

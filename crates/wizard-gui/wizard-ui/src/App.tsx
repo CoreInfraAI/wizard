@@ -42,9 +42,9 @@ function App() {
   ) : null;
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8">
-      <div className="@container grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] gap-6">
-        <CoreInfraToken className="@min-[664px]:col-span-2" />
+    <main className="mx-auto flex min-h-dvh flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8">
+      <div className="@container grid grid-cols-[repeat(auto-fit,minmax(350px,1fr))] gap-6">
+        <CoreInfraToken className="@min-[724px]:col-span-2" />
         {updateTile}
         <AgentPanel />
       </div>

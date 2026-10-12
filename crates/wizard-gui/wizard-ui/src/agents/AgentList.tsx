@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { type AgentDetection, type AgentStates, type BackupAgent, type ProxyMode, sendAgentEvent } from "./agents_state";
 import { BackupDialog } from "./BackupDialog";
 import { useSettings } from "../settings/settings";
@@ -138,6 +138,10 @@ function AgentProxy({ agent, mode }: {
   const [error, setError] = useState<string>();
   const selected = draft ?? mode;
 
+  useEffect(() => {
+    if (draft !== undefined && draft === mode) setDraft(undefined);
+  }, [draft, mode]);
+
   async function send() {
     if (pending) return;
     setPending(true);
@@ -146,7 +150,6 @@ function AgentProxy({ agent, mode }: {
       await sendAgentEvent(agent === "codex"
         ? { CodexSetProxy: selected }
         : { ClaudeSetProxy: selected });
-      setDraft(undefined);
     } catch (cause: unknown) {
       const message = `Не удалось применить настройки ${agent === "codex" ? "Codex" : "Claude Code"}`;
       reportError(message, cause);

@@ -25,6 +25,9 @@ enum Commands {
         /// Use the standard Cargo release profile.
         #[arg(long)]
         release: bool,
+        /// Disable automatic Rust rebuilds and window restarts, keeping frontend HMR.
+        #[arg(long)]
+        no_watch: bool,
     },
     /// Launch the installed application, installing it first if missing.
     DevApp {
@@ -84,7 +87,7 @@ enum Commands {
 fn main() -> Result<()> {
     let command = Cli::parse().command;
     let release = match &command {
-        Commands::Run { release } | Commands::DevApp { release, .. } => *release,
+        Commands::Run { release, .. } | Commands::DevApp { release, .. } => *release,
         Commands::Ci
         | Commands::CreateRelease { .. }
         | Commands::ReleaseBuild { .. }
@@ -94,7 +97,7 @@ fn main() -> Result<()> {
     let paths = paths(release)?;
 
     match command {
-        Commands::Run { release } => dev::run(&paths, release),
+        Commands::Run { release, no_watch } => dev::run(&paths, release, !no_watch),
         Commands::DevApp {
             reinstall,
             release,
