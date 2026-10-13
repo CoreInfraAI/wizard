@@ -54,10 +54,12 @@ export function getAgentBackups(agent: BackupAgent): Promise<Backup[]> {
 
 export type DirectChange =
   | { SetCoreInfraToken: string }
+  | { SetProxyEnabled: boolean }
   | { RestoreBackup: { agent: BackupAgent; id: number } };
 
 export function applyDirectChange(change: DirectChange): Promise<void> {
-  const name = "SetCoreInfraToken" in change ? "SetCoreInfraToken" : "RestoreBackup";
+  const name = "SetCoreInfraToken" in change ? "SetCoreInfraToken"
+    : "SetProxyEnabled" in change ? "SetProxyEnabled" : "RestoreBackup";
   info(`applying direct change: ${name}`);
 
   return invoke<void>("apply_direct_change", { change });

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { reportError } from "../logs/log";
 
-export type Settings = { coreinfra_api_key?: string };
+export type Settings = { coreinfra_api_key?: string; proxy_enabled: boolean };
 type SettingsSnapshot = Settings & { revision: number };
 
 export function useSettings(): { settings: Settings | undefined; error: string | undefined } {

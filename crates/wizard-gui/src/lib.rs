@@ -1,18 +1,24 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use log::LevelFilter;
-use tauri::Manager as _;
+use std::sync::Mutex;
+use tauri::{Manager as _, WebviewWindowBuilder};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
 mod agents;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod autostart;
 mod logs;
 mod revision_signal;
 mod settings;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod tray;
 mod updater;
 
 const MAIN_WINDOW_NAME: &str = "main";
+static MAIN_WINDOW_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn run_application() -> Result<()> {
     let log_level = match std::env::var("WIZARD_LOG") {
@@ -28,11 +34,14 @@ pub fn run_application() -> Result<()> {
         }
     };
 
-    tauri::Builder::default()
+    let minimized = std::env::args_os().skip(1).any(|arg| arg == "--minimized");
+
+    let app = tauri::Builder::default()
         // This plugin must be registered first to stop a second process before other plugins start.
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            // focus on second execution
-            focus_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().skip(1).any(|arg| arg == "--minimized") {
+                request_main_window(app);
+            }
         }))
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -54,19 +63,26 @@ pub fn run_application() -> Result<()> {
         .manage(revision_signal::RevisionSignal::new(
             agents::AgentRevisionState,
         ))
-        .setup(|app| {
+        .setup(move |app| {
             log::info!("----------");
             log::info!("starting CoreInfra Wizard {}", app.package_info().version);
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_NAME) {
-                window.set_title(&format!(
-                    "{} v{}",
-                    window.title()?,
-                    app.package_info().version
-                ))?;
-            }
             tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
-            // focus after restart
-            focus_window(app.handle());
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let tray_enabled = {
+                let proxy_enabled = settings::get_state(app.handle())?.proxy_enabled;
+                autostart::initialize(app.handle())?;
+                autostart::set_enabled(app.handle(), proxy_enabled)?;
+
+                app.on_menu_event(|app, event| tray::on_menu_event(app, &event));
+                tray::set_enabled(app.handle(), proxy_enabled)?;
+                tray::is_enabled(app.handle())
+            };
+            #[cfg(target_os = "linux")]
+            let tray_enabled = false;
+
+            if !minimized || !tray_enabled {
+                request_main_window(app.handle());
+            }
             updater::start(app.handle().clone());
             Ok(())
         })
@@ -84,20 +100,59 @@ pub fn run_application() -> Result<()> {
             agents::apply_direct_change,
             agents::wait_for_update,
         ])
-        .run(tauri::generate_context!())
-        .context("failed to run CoreInfra Wizard")
+        .build(tauri::generate_context!())
+        .context("failed to build CoreInfra Wizard")?;
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    app.run(|app, event| {
+        if let tauri::RunEvent::ExitRequested {
+            code: None, api, ..
+        } = &event
+            && tray::is_enabled(app)
+            && app.webview_windows().is_empty()
+        {
+            // Keep the process, not the closed window. Explicit tray exit uses code Some(0).
+            api.prevent_exit();
+        }
+        #[cfg(target_os = "macos")]
+        if matches!(event, tauri::RunEvent::Reopen { .. }) {
+            request_main_window(app);
+        }
+    });
+    #[cfg(target_os = "linux")]
+    app.run(|_, _| {});
+    Ok(())
 }
 
-fn focus_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_NAME) {
-        if let Err(error) = window.show() {
-            eprintln!("failed to show main window: {error}");
+fn request_main_window(app: &tauri::AppHandle) {
+    let app = app.clone();
+    // WebView2 creation must not block a synchronous event callback on Windows.
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = open_main_window(&app) {
+            log::error!("failed to open main window: {error:#}");
         }
-        if let Err(error) = window.unminimize() {
-            eprintln!("failed to restore main window: {error}");
-        }
-        if let Err(error) = window.set_focus() {
-            eprintln!("failed to focus main window: {error}");
-        }
-    }
+    });
+}
+
+fn open_main_window(app: &tauri::AppHandle) -> Result<()> {
+    let _guard = MAIN_WINDOW_LOCK
+        .lock()
+        .map_err(|_| anyhow!("main window lock poisoned"))?;
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == MAIN_WINDOW_NAME)
+        .context("main window configuration not found")?;
+    let window = match app.get_webview_window(MAIN_WINDOW_NAME) {
+        Some(window) => window,
+        None => WebviewWindowBuilder::from_config(app, config)?.build()?,
+    };
+
+    window.set_title(&format!("{} v{}", config.title, app.package_info().version))?;
+    window.show()?;
+    window.unminimize()?;
+    window.set_focus()?;
+    Ok(())
 }

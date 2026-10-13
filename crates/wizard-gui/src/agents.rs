@@ -157,6 +157,7 @@ pub(crate) async fn apply_agent_plan(
 #[derive(Deserialize)]
 pub(crate) enum DirectChange {
     SetCoreInfraToken(String),
+    SetProxyEnabled(bool),
     RestoreBackup { agent: BackupAgent, id: u32 },
 }
 
@@ -167,6 +168,7 @@ pub(crate) async fn apply_direct_change(
 ) -> Result<(), String> {
     let name = match &change {
         DirectChange::SetCoreInfraToken(_) => "SetCoreInfraToken",
+        DirectChange::SetProxyEnabled(_) => "SetProxyEnabled",
         DirectChange::RestoreBackup { .. } => "RestoreBackup",
     };
     log::info!("received direct change: {name}");
@@ -175,6 +177,9 @@ pub(crate) async fn apply_direct_change(
         DirectChange::SetCoreInfraToken(token) => {
             validate_token(&token).map_err(|error| format!("{error:#}"))?;
             settings::update_state(&app, move |settings| settings.coreinfra_token = token).await
+        }
+        DirectChange::SetProxyEnabled(enabled) => {
+            settings::update_state(&app, move |settings| settings.proxy_enabled = enabled).await
         }
         DirectChange::RestoreBackup { agent, id } => {
             let result = tauri::async_runtime::spawn_blocking(move || match agent {

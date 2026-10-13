@@ -57,8 +57,18 @@ pub(crate) async fn update_state(
         if next == current {
             return Ok(());
         }
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let proxy_change =
+            (next.proxy_enabled != current.proxy_enabled).then_some(next.proxy_enabled);
+
         settings::save_to_file(&next)?;
         signal.notify(next);
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(enabled) = proxy_change {
+            crate::autostart::set_enabled(&app, enabled)?;
+            crate::tray::set_enabled(&app, enabled)?;
+        }
         Ok(())
     })
     .await
