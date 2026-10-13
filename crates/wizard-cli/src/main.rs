@@ -1,7 +1,19 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use clap::{Parser, Subcommand};
-use std::{io, process::ExitCode};
-use wizard_core::{agents, settings, validate_token};
+use std::{
+    io::{self, IsTerminal as _, Write as _},
+    process::ExitCode,
+};
+use wizard_core::{
+    agents::{
+        self,
+        claude::{self, ProxyMode as ClaudeMode},
+        codex::{self, ProxyMode as CodexMode},
+        opencode, pi,
+    },
+    prepared_plan::PreparedPlan,
+    settings, validate_token,
+};
 
 #[derive(Parser)]
 #[command(
@@ -9,6 +21,9 @@ use wizard_core::{agents, settings, validate_token};
     about = "CoreInfra Wizard backend CLI. Close the GUI before changing settings."
 )]
 struct Cli {
+    /// Apply the displayed plan without an interactive confirmation.
+    #[arg(long, global = true)]
+    yes: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -85,61 +100,100 @@ fn run(cli: Cli) -> Result<()> {
             io::stdin().read_line(&mut token)?;
             let token = token.trim().to_owned();
             validate_token(&token)?;
-            settings::update_file(|settings| {
-                settings.coreinfra_token = token;
-            })?;
+
+            settings::update_file(|settings| settings.coreinfra_token = token)?;
         }
         Command::Codex { command } => {
-            let mode = match command {
-                ProxyCommand::Hub => agents::codex::ProxyMode::ProxyHub,
-                ProxyCommand::Api => agents::codex::ProxyMode::ProxyApi,
-                ProxyCommand::None => agents::codex::ProxyMode::Disabled,
-            };
-            let token = if mode == agents::codex::ProxyMode::Disabled {
-                String::new()
-            } else {
-                settings::load_from_file()?.coreinfra_token
-            };
-            agents::codex::set_proxy(mode, &token)?;
+            let settings = settings::load_from_file()?;
+
+            run_plan(&runtime, cli.yes, move || {
+                let mode = match command {
+                    ProxyCommand::Hub => CodexMode::ProxyHub,
+                    ProxyCommand::Api => CodexMode::ProxyApi,
+                    ProxyCommand::None => CodexMode::Disabled,
+                };
+                codex::prepare_proxy(mode, &settings)
+            })?;
         }
         Command::Claude { command } => {
-            let mode = match command {
-                ProxyCommand::Hub => agents::claude::ProxyMode::ProxyHub,
-                ProxyCommand::Api => agents::claude::ProxyMode::ProxyApi,
-                ProxyCommand::None => agents::claude::ProxyMode::Disabled,
-            };
-            let token = if mode == agents::claude::ProxyMode::Disabled {
-                String::new()
-            } else {
-                settings::load_from_file()?.coreinfra_token
-            };
-            agents::claude::set_proxy(mode, &token)?;
+            let settings = settings::load_from_file()?;
+
+            run_plan(&runtime, cli.yes, move || {
+                let mode = match command {
+                    ProxyCommand::Hub => ClaudeMode::ProxyHub,
+                    ProxyCommand::Api => ClaudeMode::ProxyApi,
+                    ProxyCommand::None => ClaudeMode::Disabled,
+                };
+                claude::prepare_proxy(mode, &settings)
+            })?;
         }
         Command::Pi { command } => {
             let settings = settings::load_from_file()?;
-            run_hub_command(&runtime, &command, move |install| {
-                agents::pi::set_hub(install, &settings)
+            let install = matches!(command, HubCommand::Hub);
+
+            run_plan(&runtime, cli.yes, move || {
+                pi::prepare_hub(install, &settings)
             })?;
         }
         Command::Opencode { command } => {
             let settings = settings::load_from_file()?;
-            run_hub_command(&runtime, &command, move |install| {
-                agents::opencode::set_hub(install, &settings)
+            let install = matches!(command, HubCommand::Hub);
+
+            run_plan(&runtime, cli.yes, move || {
+                opencode::prepare_hub(install, &settings)
             })?;
         }
     }
     Ok(())
 }
 
-fn run_hub_command(
+fn run_plan(
     runtime: &tokio::runtime::Runtime,
-    command: &HubCommand,
-    apply: impl FnOnce(bool) -> Result<()> + Send + 'static,
+    yes: bool,
+    prepare: impl FnOnce() -> Result<PreparedPlan> + Send + 'static,
 ) -> Result<()> {
-    let install = matches!(command, HubCommand::Hub);
-    runtime.block_on(async {
-        tokio::task::spawn_blocking(move || apply(install))
+    let plan = runtime.block_on(async {
+        tokio::task::spawn_blocking(prepare)
             .await
-            .context("Hub command task failed")?
-    })
+            .context("plan preparation task failed")?
+    })?;
+
+    let preview = plan.info();
+    if preview.is_empty() {
+        eprintln!("Изменения не требуются.");
+        return Ok(());
+    }
+
+    eprintln!("Wizard выполнит:");
+    for (index, info) in preview.iter().enumerate() {
+        eprintln!("{}. {}", index + 1, info.description);
+    }
+    eprintln!("Завершите текущую работу и закройте агента перед применением.");
+
+    if !yes {
+        ensure!(
+            io::stdin().is_terminal(),
+            "non-interactive execution requires --yes; nothing was applied"
+        );
+
+        eprint!("Применить? [y/N] ");
+        io::stderr().flush()?;
+
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            eprintln!("Отменено. Изменения не применены.");
+            return Ok(());
+        }
+    }
+
+    runtime.block_on(async {
+        tokio::task::spawn_blocking(move || plan.apply())
+            .await
+            .context("plan application task failed")?
+    })?;
+
+    eprintln!("Готово.");
+    Ok(())
 }

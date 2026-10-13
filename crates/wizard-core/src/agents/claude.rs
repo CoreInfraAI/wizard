@@ -9,6 +9,7 @@ use crate::{
         changes::{FileChange, FileSnapshot},
     },
     platform::env_var_not_empty,
+    prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
     settings::Settings,
 };
 use anyhow::{Context as _, Result};
@@ -22,7 +23,7 @@ use std::{
 const HUB_URL: &str = "https://hub.coreinfra.ai/claude/api";
 const API_URL: &str = "https://hub.coreinfra.ai/anthropic/subscription/api";
 const NO_PROXY_SCRIPT: &str = "#!/bin/sh\n\nunset HTTPS_PROXY NO_PROXY\n";
-static PROXY_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static PROXY_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,10 +99,10 @@ pub fn restore_backup(id: u32) -> Result<()> {
     BackupManager::load_backup(AgentKind::Claude, id)
 }
 
-pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
-    let _guard = PROXY_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Claude proxy lock poisoned"))?;
+pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPlan> {
+    let _guard = PreparedAgent::Claude.lock()?;
+
+    let token = &settings.coreinfra_token;
     let dir = config_dir()?;
     let script_path = dir.join("no-proxy.sh");
 
@@ -141,7 +142,15 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
     } else {
         [global, settings, script]
     };
-    BackupManager::apply_changes(AgentKind::Claude, &changes)
+    Ok(prepare_plan(changes.into()))
+}
+
+fn prepare_plan(changes: Vec<FileChange>) -> PreparedPlan {
+    let steps = changes
+        .into_iter()
+        .map(|change| PreparedStep::ChangeFile { change })
+        .collect();
+    PreparedPlan::new(PreparedAgent::Claude, steps)
 }
 
 fn remove_inactive_proxy_settings(env: &mut Map<String, Value>, current_mode: ProxyMode) {

@@ -5,6 +5,7 @@ use std::{path::PathBuf, sync::LazyLock};
 pub mod agents;
 mod config_files;
 mod platform;
+pub mod prepared_plan;
 pub mod settings;
 
 pub(crate) fn config_dir() -> anyhow::Result<PathBuf> {

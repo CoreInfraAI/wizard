@@ -5,6 +5,7 @@ use super::{
 use crate::{
     config_files::{self, changes::FileChange},
     platform::{append_command_path, command_output, env_var_not_empty, find_executable},
+    prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
     settings::Settings,
 };
 use anyhow::{Context as _, Result, ensure};
@@ -19,7 +20,7 @@ use std::{
 
 const PACKAGE: &str = "@coreinfra/opencode-plugin";
 const INSTALL_SOURCE: &str = "@coreinfra/opencode-plugin@latest";
-static HUB_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static HUB_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct OpenCode {
@@ -111,11 +112,10 @@ fn proxy_installed() -> Result<bool> {
     Ok(installed)
 }
 
-/// Call from a Tokio blocking worker. Changes global configuration only; close `OpenCode` first.
-pub fn set_hub(install: bool, settings: &Settings) -> Result<()> {
-    let _guard = HUB_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("OpenCode Hub lock poisoned"))?;
+/// Prepare global configuration changes without running the installer or writing files.
+pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
+    let _guard = PreparedAgent::OpenCode.lock()?;
+
     let dir = config_dir()?;
 
     let (mut configs, _) = read_configs(&dir)?;
@@ -135,25 +135,42 @@ pub fn set_hub(install: bool, settings: &Settings) -> Result<()> {
         }
         Ok(())
     })?;
+
+    let mut steps = Vec::new();
     if install {
-        run_install_command(&dir, settings.opencode_path_last.as_deref())?;
-        let (_, installed) = read_configs(&dir)?;
-        ensure!(
-            installed,
-            "OpenCode plugin command completed but no CoreInfra declaration was found"
-        );
-        // The installer owns config edits. Their unchanged snapshots are skipped
-        // by apply_all, so its output is never replaced by pre-install contents.
+        let executable = find_executable(
+            "opencode",
+            vec![PathBuf::from("~/.opencode/bin")],
+            settings.opencode_path_last.as_deref(),
+        )?
+        .context("OpenCode executable not found")?;
+
+        steps.push(PreparedStep::OpenCodeInstallPlugin {
+            executable,
+            config_dir: dir.clone(),
+        });
+        steps.push(PreparedStep::OpenCodeVerifyPlugin { config_dir: dir });
+        // Do not write unchanged config snapshots over the installer's output.
     } else {
         remove_plugin(&mut configs)?;
     }
 
     configs.push(auth);
-    FileChange::apply_all(&configs).context(if install {
-        "OpenCode plugin installation completed, but saving authentication failed; close OpenCode and retry"
-    } else {
-        "failed to apply OpenCode Hub removal; close OpenCode and retry"
-    })
+    steps.extend(
+        configs
+            .into_iter()
+            .map(|change| PreparedStep::ChangeFile { change }),
+    );
+    Ok(PreparedPlan::new(PreparedAgent::OpenCode, steps))
+}
+
+pub(crate) fn verify_plugin(config_dir: &Path) -> Result<()> {
+    let (_, installed) = read_configs(config_dir)?;
+    ensure!(
+        installed,
+        "OpenCode plugin command completed but no CoreInfra declaration was found"
+    );
+    Ok(())
 }
 
 fn remove_plugin(configs: &mut [FileChange]) -> Result<()> {
@@ -168,15 +185,11 @@ fn remove_plugin(configs: &mut [FileChange]) -> Result<()> {
     Ok(())
 }
 
-fn run_install_command(config_dir: &Path, last_found: Option<&Path>) -> Result<()> {
-    let opencode = find_executable(
-        "opencode",
-        vec![PathBuf::from("~/.opencode/bin")],
-        last_found,
-    )?
-    .context("OpenCode executable not found")?;
+/// Call from a Tokio blocking worker. Only runs the installer; does not update auth.
+pub fn install_plugin(executable: &Path, config_dir: &Path) -> Result<()> {
     let cwd = tempfile::tempdir().context("failed to create OpenCode install working directory")?;
-    let mut command = tokio::process::Command::new(opencode);
+
+    let mut command = tokio::process::Command::new(executable);
     if let Some(node) = find_executable("node", vec![], None)? {
         append_command_path(
             &mut command,

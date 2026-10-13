@@ -8,15 +8,21 @@ use crate::{
         backups::{AgentKind, BackupManager},
         changes::{FileChange, FileSnapshot},
     },
-    platform::env_var_not_empty,
+    platform::{command_output, env_var_not_empty, find_executable},
+    prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
     settings::Settings,
 };
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
+use core::time::Duration;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Mutex,
+};
 use toml_edit::DocumentMut;
 
-static PROXY_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static PROXY_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,12 +87,50 @@ pub fn restore_backup(id: u32) -> Result<()> {
     BackupManager::load_backup(AgentKind::Codex, id)
 }
 
-pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
-    // Serialize the whole TOML + dotenv operation, not individual file writes.
-    let _guard = PROXY_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Codex proxy lock poisoned"))?;
-    let path = config_path()?;
+/// Call from a Tokio blocking worker. Restart only if the version probe succeeds.
+/// A restart may interrupt active work; this does not change proxy configuration.
+pub fn restart_daemon(executable: &Path, codex_home: &Path) -> Result<()> {
+    let mut probe = tokio::process::Command::new(executable);
+    probe
+        .args(["app-server", "daemon", "version"])
+        .env("CODEX_HOME", codex_home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    // TODO: Distinguish an absent daemon from command failures and unsupported versions.
+    // For now, spawn errors, timeouts and nonzero exit statuses all mean "no daemon".
+    if !matches!(command_output(probe, Duration::from_secs(15)), Ok(output) if output.status.success())
+    {
+        return Ok(());
+    }
+
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .args(["app-server", "daemon", "restart"])
+        .env("CODEX_HOME", codex_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    // Allow the daemon's maximum five-minute graceful shutdown, plus startup time.
+    let output = command_output(command, Duration::from_secs(360))?;
+    ensure!(
+        output.status.success(),
+        "Codex daemon restart failed with {}; run the command manually for diagnostics",
+        output.status
+    );
+    Ok(())
+}
+
+/// Prepare without writing files or probing the daemon.
+pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPlan> {
+    let _guard = PreparedAgent::Codex.lock()?;
+
+    let path = std::path::absolute(config_path()?)?;
+    let codex_home = path
+        .parent()
+        .context("Codex config has no parent")?
+        .to_owned();
 
     let mut config = FileChange::read(path.clone())?;
     let mut dotenv = FileChange::read(path.with_file_name(".env"))?;
@@ -94,13 +138,30 @@ pub fn set_proxy(mode: ProxyMode, token: &str) -> Result<()> {
     let mut current_mode = ProxyMode::Disabled;
     config_files::toml::update(&mut config.after, |doc| {
         current_mode = mode_from_config(doc);
-        remove_inactive_proxy_settings(doc, current_mode, mode)?;
+        remove_inactive_proxy_settings(doc, current_mode)?;
         write_proxy_settings(doc, mode)
     })?;
 
     remove_inactive_proxy_env(&mut dotenv.after, current_mode, mode)?;
-    write_proxy_env(&mut dotenv.after, mode, token)?;
-    BackupManager::apply_changes(AgentKind::Codex, &[config, dotenv])
+    write_proxy_env(&mut dotenv.after, mode, &settings.coreinfra_token)?;
+
+    let mut steps: Vec<_> = [config, dotenv]
+        .into_iter()
+        .map(|change| PreparedStep::ChangeFile { change })
+        .collect();
+
+    #[cfg(target_os = "windows")]
+    let extra = vec![PathBuf::from("%LOCALAPPDATA%/Programs/OpenAI/Codex/bin")];
+    #[cfg(not(target_os = "windows"))]
+    let extra = vec![];
+    let executable = find_executable("codex", extra, settings.codex_path_last.as_deref())?
+        .context("Codex executable not found")?;
+
+    steps.push(PreparedStep::CodexRestartDaemon {
+        executable,
+        codex_home,
+    });
+    Ok(PreparedPlan::new(PreparedAgent::Codex, steps))
 }
 
 const API_FILTERS: &[&str] = &[
@@ -110,11 +171,7 @@ const API_FILTERS: &[&str] = &[
     "NO_PROXY",
 ];
 
-fn remove_inactive_proxy_settings(
-    doc: &mut DocumentMut,
-    current_mode: ProxyMode,
-    _mode: ProxyMode,
-) -> Result<()> {
+fn remove_inactive_proxy_settings(doc: &mut DocumentMut, current_mode: ProxyMode) -> Result<()> {
     if current_mode != ProxyMode::Disabled {
         config_files::toml::remove(doc, &["model_provider"])?;
     }

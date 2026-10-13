@@ -75,23 +75,40 @@ impl BackupManager {
         backups.reverse();
         Ok(backups)
     }
+
     pub fn apply_changes(agent: AgentKind, changes: &[FileChange]) -> Result<()> {
-        if changes.iter().all(|c| !c.is_changed()) {
+        Self::create_backup_if_needed(agent, changes)?;
+
+        FileChange::apply_all(changes)?;
+
+        Self::save_last_written(agent, changes)
+    }
+
+    pub fn create_backup_if_needed(agent: AgentKind, changes: &[FileChange]) -> Result<()> {
+        if changes.iter().all(|change| !change.is_changed()) {
             return Ok(());
         }
+
         let mut state = State::load(agent)?;
         state.create_backup_if_needed(changes)?;
-        state.save()?;
-        FileChange::apply_all(changes)?;
+        state.save()
+    }
+
+    pub fn save_last_written(agent: AgentKind, changes: &[FileChange]) -> Result<()> {
+        if changes.iter().all(|change| !change.is_changed()) {
+            return Ok(());
+        }
+
+        let mut state = State::load(agent)?;
         state.last_written = Some(
             changes
                 .iter()
                 .map(|change| (change.path().clone(), change.after.clone()))
                 .collect(),
         );
-        state.save()?;
-        Ok(())
+        state.save()
     }
+
     pub fn load_backup(agent: AgentKind, id: u32) -> Result<()> {
         let backup = Backup::load(agent, id)?;
         let state = State::load(agent)?;
@@ -171,8 +188,10 @@ impl State {
         backup_id
     }
     fn create_backup_if_needed(&mut self, changes: &[FileChange]) -> Result<()> {
+        // A path may occur in multiple steps; keep its first original snapshot.
         let current_state: BTreeMap<&PathBuf, &FileSnapshot> = changes
             .iter()
+            .rev()
             .map(|change| (change.path(), change.before()))
             .collect();
         let same = compare(&self.last_written, &current_state);
@@ -204,6 +223,7 @@ impl Backup {
             time_created: Utc::now(),
             files: changes
                 .iter()
+                .rev()
                 .map(|change| (change.path().clone(), change.before().clone()))
                 .collect(),
         }

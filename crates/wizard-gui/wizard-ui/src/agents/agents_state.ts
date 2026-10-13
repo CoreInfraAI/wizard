@@ -2,22 +2,40 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { reportError, info, debug } from "../logs/log";
 
-export type AgentEvent =
+export type AgentChange =
   | { CodexSetProxy: ProxyMode }
   | { ClaudeSetProxy: ProxyMode }
-  | { RestoreBackup: { agent: BackupAgent; id: number } }
   | { SetPiHub: boolean }
-  | { SetOpenCodeHub: boolean }
-  | { SetCoreInfraToken: string };
+  | { SetOpenCodeHub: boolean };
 
-export function sendAgentEvent(event: AgentEvent): Promise<void> {
-  const name = "CodexSetProxy" in event ? "CodexSetProxy"
-    : "ClaudeSetProxy" in event ? "ClaudeSetProxy"
-    : "RestoreBackup" in event ? "RestoreBackup"
-    : "SetPiHub" in event ? "SetPiHub"
-    : "SetOpenCodeHub" in event ? "SetOpenCodeHub" : "SetCoreInfraToken";
-  info(`sending agent event: ${name}`);
-  return invoke<void>("agent_event", { event });
+// Opaque backend payload: may contain credentials. Do not log, modify or persist it.
+export type PreparedPlan = unknown;
+
+export type PreparedStepInfo = {
+  description: string;
+};
+
+export type AgentId = "codex" | "claude" | "pi" | "opencode";
+
+export type PreparedAgentChange = {
+  change: AgentChange;
+  agent: AgentId;
+  plan: PreparedPlan;
+  info: PreparedStepInfo[];
+};
+
+export function prepareAgentChange(change: AgentChange): Promise<PreparedAgentChange> {
+  const name = "CodexSetProxy" in change ? "CodexSetProxy"
+    : "ClaudeSetProxy" in change ? "ClaudeSetProxy"
+    : "SetPiHub" in change ? "SetPiHub" : "SetOpenCodeHub";
+  info(`preparing agent change: ${name}`);
+
+  return invoke<PreparedAgentChange>("prepare_agent_change", { change });
+}
+
+export function applyAgentPlan(plan: PreparedPlan): Promise<void> {
+  info("applying agent plan");
+  return invoke<void>("apply_agent_plan", { plan });
 }
 
 export type BackupAgent = "codex" | "claude";
@@ -32,6 +50,17 @@ export type Backup = {
 export function getAgentBackups(agent: BackupAgent): Promise<Backup[]> {
   // The response contains credentials; do not log or persist it in frontend storage.
   return invoke<Backup[]>("get_agent_backups", { agent });
+}
+
+export type DirectChange =
+  | { SetCoreInfraToken: string }
+  | { RestoreBackup: { agent: BackupAgent; id: number } };
+
+export function applyDirectChange(change: DirectChange): Promise<void> {
+  const name = "SetCoreInfraToken" in change ? "SetCoreInfraToken" : "RestoreBackup";
+  info(`applying direct change: ${name}`);
+
+  return invoke<void>("apply_direct_change", { change });
 }
 
 export type AgentDetection<T> =

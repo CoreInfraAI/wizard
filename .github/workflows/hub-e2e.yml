@@ -105,7 +105,7 @@ jobs:
           # Do not print settings, status, or package output: they may contain credentials.
           printf '%s\n' "$COREINFRA_API_KEY" | cargo cli set-token > "$RUNNER_TEMP/wizard.log" 2>&1
           unset COREINFRA_API_KEY
-          cargo cli "$AGENT" hub >> "$RUNNER_TEMP/wizard.log" 2>&1
+          cargo cli "$AGENT" hub --yes >> "$RUNNER_TEMP/wizard.log" 2>&1
           cargo cli status > "$RUNNER_TEMP/status.json" 2>> "$RUNNER_TEMP/wizard.log"
           node -e '
             const fs = require("node:fs");

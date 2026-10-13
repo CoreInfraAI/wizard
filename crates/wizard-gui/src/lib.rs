@@ -79,7 +79,9 @@ pub fn run_application() -> Result<()> {
             settings::get_settings_state,
             agents::get_agent_state,
             agents::get_agent_backups,
-            agents::agent_event,
+            agents::prepare_agent_change,
+            agents::apply_agent_plan,
+            agents::apply_direct_change,
             agents::wait_for_update,
         ])
         .run(tauri::generate_context!())

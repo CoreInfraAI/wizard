@@ -5,6 +5,7 @@ use super::{
 use crate::{
     config_files::{self, changes::FileChange},
     platform::{append_command_path, command_output, env_var_not_empty, find_executable},
+    prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
     settings::Settings,
 };
 use anyhow::{Context as _, Result, ensure};
@@ -19,7 +20,7 @@ use std::{
 
 const PACKAGE: &str = "npm:@coreinfra/pi-plugin";
 const INSTALL_SOURCE: &str = "npm:@coreinfra/pi-plugin@latest";
-static HUB_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static HUB_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Pi {
@@ -92,12 +93,11 @@ fn has_hub_package(settings: &Value) -> Result<bool> {
     Ok(found)
 }
 
-/// Call from a Tokio blocking worker. Close Pi before changing its configuration.
-pub fn set_hub(install: bool, settings: &Settings) -> Result<()> {
-    let _guard = HUB_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Pi Hub lock poisoned"))?;
-    let dir = agent_dir()?;
+/// Prepare without running the package manager or writing authentication.
+pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
+    let _guard = PreparedAgent::Pi.lock()?;
+
+    let dir = std::path::absolute(agent_dir()?)?;
     let pi_settings = config_files::json::read(&dir.join("settings.json"))?;
 
     let mut auth = FileChange::read(dir.join("auth.json"))?;
@@ -115,33 +115,62 @@ pub fn set_hub(install: bool, settings: &Settings) -> Result<()> {
         }
         Ok(())
     })?;
+
     ensure!(
         !dir.join("auth.json.lock").try_exists()?,
         "Pi auth is locked; close Pi and retry"
     );
+
+    let mut steps = Vec::new();
     if install || installed {
-        run_package_command(
-            &dir,
-            if install { "install" } else { "remove" },
+        let executable = find_executable(
+            "pi",
+            vec![PathBuf::from("~/.pi/agent/bin")],
             settings.pi_path_last.as_deref(),
-        )?;
+        )?
+        .context("Pi executable not found")?;
+
+        steps.push(if install {
+            PreparedStep::PiInstallPlugin {
+                executable,
+                agent_dir: dir.clone(),
+            }
+        } else {
+            PreparedStep::PiRemovePlugin {
+                executable,
+                agent_dir: dir.clone(),
+            }
+        });
     }
-    apply_auth(&dir, auth)
-        .context("Pi package step completed, but saving authentication failed; close Pi and retry")
+
+    if !steps.is_empty() && auth.is_changed() {
+        steps.push(PreparedStep::PiApplyAuth { dir, change: auth });
+    }
+    Ok(PreparedPlan::new(PreparedAgent::Pi, steps))
 }
 
-fn run_package_command(dir: &Path, action: &str, last_found: Option<&Path>) -> Result<()> {
-    let extra = vec![PathBuf::from("~/.pi/agent/bin")];
-    let pi = find_executable("pi", extra, last_found)?.context("Pi executable not found")?;
+/// Call from a Tokio blocking worker. Only installs the package; does not update auth.
+pub fn install_plugin(executable: &Path, agent_dir: &Path) -> Result<()> {
+    run_package_command(executable, agent_dir, "install")
+}
+
+/// Call from a Tokio blocking worker. Only removes the package; does not update auth.
+pub fn remove_plugin(executable: &Path, agent_dir: &Path) -> Result<()> {
+    run_package_command(executable, agent_dir, "remove")
+}
+
+fn run_package_command(executable: &Path, dir: &Path, action: &str) -> Result<()> {
     let node = find_executable("node", vec![], None)?.context("Node executable not found")?;
     let npm = find_executable("npm", vec![], None)?.context("npm executable not found")?;
     let paths = [
         node.parent().context("Node executable has no parent")?,
         npm.parent().context("npm executable has no parent")?,
     ];
+
     // Never run package commands in a user's project directory.
     let cwd = tempfile::tempdir().context("failed to create Pi package working directory")?;
-    let mut command = tokio::process::Command::new(pi);
+
+    let mut command = tokio::process::Command::new(executable);
     append_command_path(&mut command, &paths)?;
     command
         .args([action, INSTALL_SOURCE])
@@ -159,7 +188,7 @@ fn run_package_command(dir: &Path, action: &str, last_found: Option<&Path>) -> R
     Ok(())
 }
 
-fn apply_auth(dir: &Path, auth: FileChange) -> Result<()> {
+pub(crate) fn apply_auth(dir: &Path, auth: FileChange) -> Result<()> {
     if !auth.is_changed() {
         return Ok(());
     }

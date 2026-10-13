@@ -1,6 +1,6 @@
 import { useState } from "react";
 import clsx from "clsx";
-import { sendAgentEvent } from "../agents/agents_state";
+import { applyDirectChange } from "../agents/agents_state";
 import { useSettings } from "./settings";
 import { reportError } from "../logs/log";
 import { Button } from "../components/catalyst/button";
@@ -22,11 +22,14 @@ export function CoreInfraToken({ className }: { className?: string }) {
 
   async function updateToken(value: string) {
     if (!ready || pending) return;
+
     const submitted = draft;
     setPending(true);
     setError(undefined);
+
     try {
-      await sendAgentEvent({ SetCoreInfraToken: value });
+      await applyDirectChange({ SetCoreInfraToken: value });
+
       setDraft((current) => current === submitted ? undefined : current);
     } catch (cause: unknown) {
       const message = "Не удалось изменить токен";

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type Backup, type BackupAgent, getAgentBackups, sendAgentEvent } from "./agents_state";
+import { type Backup, type BackupAgent, getAgentBackups, applyDirectChange } from "./agents_state";
 import { Button } from "../components/catalyst/button";
 import { Dialog, DialogActions, DialogBody, DialogDescription, DialogTitle } from "../components/catalyst/dialog";
 import { Label } from "../components/catalyst/fieldset";
@@ -40,11 +40,14 @@ export function BackupDialog({ agent, onClose }: {
 
   async function restore() {
     if (!backup || pending) return;
+
     setPending(true);
     setError(undefined);
     setRestored(undefined);
+
     try {
-      await sendAgentEvent({ RestoreBackup: { agent, id: backup.id } });
+      await applyDirectChange({ RestoreBackup: { agent, id: backup.id } });
+
       setRestored(backup.id);
     } catch (cause: unknown) {
       setError(`Не удалось восстановить копию: ${String(cause)}. Часть файлов могла быть изменена.`);

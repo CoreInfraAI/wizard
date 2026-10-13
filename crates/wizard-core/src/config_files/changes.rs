@@ -125,10 +125,12 @@ impl FileSnapshot {
 
 // Keep the original snapshot and path immutable outside this module.
 // No Debug: snapshots may contain credentials.
-pub(crate) struct FileChange {
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileChange {
     path: PathBuf,
     before: FileSnapshot,
-    pub after: FileSnapshot,
+    pub(crate) after: FileSnapshot,
 }
 
 impl FileChange {

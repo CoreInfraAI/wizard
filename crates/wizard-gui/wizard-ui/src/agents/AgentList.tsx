@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { type AgentDetection, type AgentStates, type BackupAgent, type ProxyMode, sendAgentEvent } from "./agents_state";
+import { type AgentChange, type AgentDetection, type AgentStates, type BackupAgent, type PreparedAgentChange, type ProxyMode, prepareAgentChange } from "./agents_state";
+import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { useSettings } from "../settings/settings";
 import { reportError } from "../logs/log";
@@ -17,31 +18,15 @@ const proxyOptions = [
   { mode: "proxy_api", label: "CoreInfra API" },
 ] as const;
 
-function HubProxy({ agent, installed }: {
+function HubProxy({ agent, installed, disabled, onPrepare }: {
   agent: "Pi" | "OpenCode";
   installed: boolean;
+  disabled: boolean;
+  onPrepare: (change: AgentChange) => void;
 }) {
   const { settings, error: settingsError } = useSettings();
   const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
   const [selected, setSelected] = useState(installed);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string>();
-
-  async function send() {
-    setPending(true);
-    setError(undefined);
-    try {
-      await sendAgentEvent(agent === "Pi"
-        ? { SetPiHub: selected }
-        : { SetOpenCodeHub: selected });
-    } catch (cause: unknown) {
-      const message = `Не удалось применить настройки ${agent}`;
-      reportError(message, cause);
-      setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
-    } finally {
-      setPending(false);
-    }
-  }
 
   return (
     <>
@@ -52,10 +37,8 @@ function HubProxy({ agent, installed }: {
       </div>
       <RadioGroup
         value={selected ? "hub" : "none"}
-        onChange={(value) => {
-          setSelected(value === "hub");
-          setError(undefined);
-        }}
+        disabled={disabled}
+        onChange={(value) => setSelected(value === "hub")}
       >
         <RadioField>
           <Radio value="none" />
@@ -66,10 +49,11 @@ function HubProxy({ agent, installed }: {
           <Label>CoreInfra Hub</Label>
         </RadioField>
       </RadioGroup>
-      <Button outline type="button" disabled={pending || (selected && !hasToken)} onClick={() => void send()}>
+      <Button outline type="button" disabled={disabled || (selected && !hasToken)} onClick={() => onPrepare(agent === "Pi"
+        ? { SetPiHub: selected }
+        : { SetOpenCodeHub: selected })}>
         Применить
       </Button>
-      {error && <ErrorText>{error}</ErrorText>}
     </>
   );
 }
@@ -116,48 +100,31 @@ function Installation({ name, detection, children, actions }: {
   );
 }
 
-function BackupButton({ agent }: { agent: BackupAgent }) {
+function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boolean }) {
   const [open, setOpen] = useState(false);
 
   return (
     <>
-      <Button plain onClick={() => setOpen(true)}>Резервные копии…</Button>
+      <Button plain disabled={disabled} onClick={() => setOpen(true)}>Резервные копии…</Button>
       {open && <BackupDialog agent={agent} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
-function AgentProxy({ agent, mode }: {
+function AgentProxy({ agent, mode, disabled, onPrepare }: {
   agent: BackupAgent;
   mode: ProxyMode;
+  disabled: boolean;
+  onPrepare: (change: AgentChange) => void;
 }) {
   const { settings, error: settingsError } = useSettings();
   const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
-  const [pending, setPending] = useState(false);
   const [draft, setDraft] = useState<ProxyMode>();
-  const [error, setError] = useState<string>();
   const selected = draft ?? mode;
 
   useEffect(() => {
     if (draft !== undefined && draft === mode) setDraft(undefined);
   }, [draft, mode]);
-
-  async function send() {
-    if (pending) return;
-    setPending(true);
-    setError(undefined);
-    try {
-      await sendAgentEvent(agent === "codex"
-        ? { CodexSetProxy: selected }
-        : { ClaudeSetProxy: selected });
-    } catch (cause: unknown) {
-      const message = `Не удалось применить настройки ${agent === "codex" ? "Codex" : "Claude Code"}`;
-      reportError(message, cause);
-      setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
-    } finally {
-      setPending(false);
-    }
-  }
 
   return (
     <>
@@ -169,11 +136,8 @@ function AgentProxy({ agent, mode }: {
       </div>
       <RadioGroup
         value={selected}
-        disabled={pending}
-        onChange={(value) => {
-          setDraft(value as ProxyMode);
-          setError(undefined);
-        }}
+        disabled={disabled}
+        onChange={(value) => setDraft(value as ProxyMode)}
       >
         {proxyOptions.map((option) => (
           <RadioField key={option.mode}>
@@ -186,39 +150,64 @@ function AgentProxy({ agent, mode }: {
           </RadioField>
         ))}
       </RadioGroup>
-      <Button outline type="button" disabled={pending || (selected !== "disabled" && !hasToken)} onClick={() => void send()}>
+      <Button outline type="button" disabled={disabled || (selected !== "disabled" && !hasToken)} onClick={() => onPrepare(agent === "codex"
+        ? { CodexSetProxy: selected }
+        : { ClaudeSetProxy: selected })}>
         Применить
       </Button>
-      {error && <ErrorText>{error}</ErrorText>}
     </>
   );
 }
 
 export function AgentList({ agents }: { agents: AgentStates }) {
+  const [preparedChange, setPreparedChange] = useState<PreparedAgentChange>();
+  const [isPreparingPlan, setIsPreparingPlan] = useState(false);
+  const [error, setError] = useState<string>();
+  const isChangeInProgress = isPreparingPlan || preparedChange !== undefined;
+
+  async function prepare(change: AgentChange) {
+    if (isChangeInProgress) return;
+
+    setIsPreparingPlan(true);
+    setError(undefined);
+
+    try {
+      setPreparedChange(await prepareAgentChange(change));
+    } catch (cause: unknown) {
+      const message = "Не удалось подготовить изменения";
+      reportError(message, cause);
+      setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setIsPreparingPlan(false);
+    }
+  }
+
   return (
     <>
-      <Installation name="Codex" detection={agents.codex} actions={<BackupButton agent="codex" />}>
+      <Installation name="Codex" detection={agents.codex} actions={<BackupButton agent="codex" disabled={isChangeInProgress} />}>
         {agents.codex.status === "found" && (
-          <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} />
+          <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       {/*<Installation name="ChatGPT" detection={agents.chatgpt} />*/}
-      <Installation name="Claude Code" detection={agents.claude} actions={<BackupButton agent="claude" />}>
+      <Installation name="Claude Code" detection={agents.claude} actions={<BackupButton agent="claude" disabled={isChangeInProgress} />}>
         {agents.claude.status === "found" && (
-          <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} />
+          <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       {/*<Installation name="Claude Desktop" detection={agents.claude_desktop} />*/}
       <Installation name="OpenCode" detection={agents.opencode}>
         {agents.opencode.status === "found" && (
-          <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} />
+          <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       <Installation name="Pi" detection={agents.pi}>
         {agents.pi.status === "found" && (
-          <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} />
+          <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
+      {error && <div className="col-span-full"><ErrorText>{error}</ErrorText></div>}
+      {preparedChange && <PreparedPlanDialog prepared={preparedChange} onClose={() => setPreparedChange(undefined)} />}
     </>
   );
 }

@@ -7,6 +7,7 @@ use tauri::Manager as _;
 use wizard_core::agents::{
     AgentStates, Backup, BackupAgent, claude, codex, collect_agent_state, opencode, pi,
 };
+use wizard_core::prepared_plan::{PreparedPlan, PreparedStepInfo};
 use wizard_core::validate_token;
 
 #[derive(Clone)]
@@ -67,88 +68,131 @@ pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>,
     .map_err(|error| format!("{error:#}"))
 }
 
-// No Debug: event payloads may contain credentials.
-#[derive(Deserialize)]
-pub(crate) enum AgentEvent {
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(crate) enum AgentChange {
     CodexSetProxy(codex::ProxyMode),
     ClaudeSetProxy(claude::ProxyMode),
-    RestoreBackup { agent: BackupAgent, id: u32 },
     SetPiHub(bool),
     SetOpenCodeHub(bool),
-    SetCoreInfraToken(String),
+}
+
+// No Debug: the plan contains credentials; only info is intended for display.
+#[derive(Serialize)]
+pub(crate) struct PreparedAgentChange {
+    change: AgentChange,
+    agent: &'static str,
+    plan: PreparedPlan,
+    info: Vec<PreparedStepInfo>,
 }
 
 #[tauri::command]
-pub(crate) async fn agent_event(event: AgentEvent, app: tauri::AppHandle) -> Result<(), String> {
-    let name = match &event {
-        AgentEvent::CodexSetProxy(_) => "CodexSetProxy",
-        AgentEvent::ClaudeSetProxy(_) => "ClaudeSetProxy",
-        AgentEvent::RestoreBackup { .. } => "RestoreBackup",
-        AgentEvent::SetPiHub(_) => "SetPiHub",
-        AgentEvent::SetOpenCodeHub(_) => "SetOpenCodeHub",
-        AgentEvent::SetCoreInfraToken(_) => "SetCoreInfraToken",
+pub(crate) async fn prepare_agent_change(
+    change: AgentChange,
+    app: tauri::AppHandle,
+) -> Result<PreparedAgentChange, String> {
+    let (name, agent) = match &change {
+        AgentChange::CodexSetProxy(_) => ("CodexSetProxy", "codex"),
+        AgentChange::ClaudeSetProxy(_) => ("ClaudeSetProxy", "claude"),
+        AgentChange::SetPiHub(_) => ("SetPiHub", "pi"),
+        AgentChange::SetOpenCodeHub(_) => ("SetOpenCodeHub", "opencode"),
     };
-    log::info!("received agent event: {name}");
-    let result = apply_event(event, &app).await;
+    log::info!("received agent change: {name}");
+
+    let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
+
+    // Plans contain credentials: never log the returned value.
+    let plan = tauri::async_runtime::spawn_blocking(move || match change {
+        AgentChange::CodexSetProxy(mode) => codex::prepare_proxy(mode, &settings),
+        AgentChange::ClaudeSetProxy(mode) => claude::prepare_proxy(mode, &settings),
+        AgentChange::SetPiHub(install) => pi::prepare_hub(install, &settings),
+        AgentChange::SetOpenCodeHub(install) => opencode::prepare_hub(install, &settings),
+    })
+    .await
+    .context("agent change preparation task failed")
+    .flatten()
+    .map_err(|error| {
+        log::error!("agent change {name} preparation failed: {error:#}");
+        format!("{error:#}")
+    })?;
+
+    let info = plan.info();
+
+    log::info!("agent change prepared: {name}");
+    Ok(PreparedAgentChange {
+        change,
+        agent,
+        plan,
+        info,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn apply_agent_plan(
+    plan: PreparedPlan,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Only the trusted local frontend should return plans from prepare_agent_change.
+    // Do not log the plan or recompute it from current settings.
+    log::info!("applying agent plan");
+
+    let result = tauri::async_runtime::spawn_blocking(move || plan.apply())
+        .await
+        .context("agent plan application task failed")
+        .flatten();
+
+    // A failed application may have changed files before the failing step.
     app.state::<RevisionSignal<AgentRevisionState>>()
         .notify(AgentRevisionState);
-    if let Err(error) = result {
-        log::error!("agent event {name} failed: {error:#}");
-        return Err(format!("{error:#}"));
-    }
-    log::info!("agent event completed: {name}");
+
+    result.map_err(|error| {
+        log::error!("agent plan application failed: {error:#}");
+        format!("{error:#}")
+    })?;
+
+    log::info!("agent plan applied");
     Ok(())
 }
 
-async fn apply_event(event: AgentEvent, app: &tauri::AppHandle) -> Result<()> {
-    match event {
-        AgentEvent::SetCoreInfraToken(token) => {
-            validate_token(&token)?;
-            settings::update_state(app, move |settings| {
-                settings.coreinfra_token = token;
-            })
-            .await
+// No Debug: direct changes may contain credentials.
+#[derive(Deserialize)]
+pub(crate) enum DirectChange {
+    SetCoreInfraToken(String),
+    RestoreBackup { agent: BackupAgent, id: u32 },
+}
+
+#[tauri::command]
+pub(crate) async fn apply_direct_change(
+    change: DirectChange,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let name = match &change {
+        DirectChange::SetCoreInfraToken(_) => "SetCoreInfraToken",
+        DirectChange::RestoreBackup { .. } => "RestoreBackup",
+    };
+    log::info!("received direct change: {name}");
+
+    let result = match change {
+        DirectChange::SetCoreInfraToken(token) => {
+            validate_token(&token).map_err(|error| format!("{error:#}"))?;
+            settings::update_state(&app, move |settings| settings.coreinfra_token = token).await
         }
-        AgentEvent::CodexSetProxy(mode) => {
-            let current = settings::get_state(app)?;
-            tauri::async_runtime::spawn_blocking(move || {
-                codex::set_proxy(mode, &current.coreinfra_token)
-            })
-            .await
-            .context("agent event task failed")
-            .flatten()
-        }
-        AgentEvent::ClaudeSetProxy(mode) => {
-            let current = settings::get_state(app)?;
-            tauri::async_runtime::spawn_blocking(move || {
-                claude::set_proxy(mode, &current.coreinfra_token)
-            })
-            .await
-            .context("agent event task failed")
-            .flatten()
-        }
-        AgentEvent::RestoreBackup { agent, id } => {
-            tauri::async_runtime::spawn_blocking(move || match agent {
+        DirectChange::RestoreBackup { agent, id } => {
+            let result = tauri::async_runtime::spawn_blocking(move || match agent {
                 BackupAgent::Codex => codex::restore_backup(id),
                 BackupAgent::Claude => claude::restore_backup(id),
             })
             .await
             .context("backup restore task failed")
-            .flatten()
+            .flatten();
+
+            app.state::<RevisionSignal<AgentRevisionState>>()
+                .notify(AgentRevisionState);
+            result
         }
-        AgentEvent::SetOpenCodeHub(install) => {
-            let current = settings::get_state(app)?;
-            tauri::async_runtime::spawn_blocking(move || opencode::set_hub(install, &current))
-                .await
-                .context("agent event task failed")
-                .flatten()
-        }
-        AgentEvent::SetPiHub(install) => {
-            let current = settings::get_state(app)?;
-            tauri::async_runtime::spawn_blocking(move || pi::set_hub(install, &current))
-                .await
-                .context("agent event task failed")
-                .flatten()
-        }
-    }
+    };
+
+    result.map_err(|error| {
+        log::error!("direct change {name} failed: {error:#}");
+        format!("{error:#}")
+    })
 }
