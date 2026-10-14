@@ -1,0 +1,19 @@
+[package]
+name = "wizard-proxy"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+rustls-native-certs.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "io-util", "macros"] }
+tokio-rustls.workspace = true
