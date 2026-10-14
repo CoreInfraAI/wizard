@@ -5419,6 +5419,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "wizard-core",
+ "wizard-proxy",
 ]
 
 [[package]]

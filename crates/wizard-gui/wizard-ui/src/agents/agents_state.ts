@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { reportError, info, debug } from "../logs/log";
+import { reportError, debug } from "../logs/log";
 
 export type AgentChange =
   | { CodexSetProxy: ProxyMode }
@@ -25,16 +25,10 @@ export type PreparedAgentChange = {
 };
 
 export function prepareAgentChange(change: AgentChange): Promise<PreparedAgentChange> {
-  const name = "CodexSetProxy" in change ? "CodexSetProxy"
-    : "ClaudeSetProxy" in change ? "ClaudeSetProxy"
-    : "SetPiHub" in change ? "SetPiHub" : "SetOpenCodeHub";
-  info(`preparing agent change: ${name}`);
-
   return invoke<PreparedAgentChange>("prepare_agent_change", { change });
 }
 
 export function applyAgentPlan(plan: PreparedPlan): Promise<void> {
-  info("applying agent plan");
   return invoke<void>("apply_agent_plan", { plan });
 }
 
@@ -58,10 +52,6 @@ export type DirectChange =
   | { RestoreBackup: { agent: BackupAgent; id: number } };
 
 export function applyDirectChange(change: DirectChange): Promise<void> {
-  const name = "SetCoreInfraToken" in change ? "SetCoreInfraToken"
-    : "SetProxyEnabled" in change ? "SetProxyEnabled" : "RestoreBackup";
-  info(`applying direct change: ${name}`);
-
   return invoke<void>("apply_direct_change", { change });
 }
 

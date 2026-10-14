@@ -11,6 +11,7 @@ mod agents;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod autostart;
 mod logs;
+mod proxy;
 mod revision_signal;
 mod settings;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -57,6 +58,7 @@ pub fn run_application() -> Result<()> {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(proxy::ProxyState::default())
         .manage(Arc::new(revision_signal::RevisionSignal::new(
             updater::UpdateState::Checking,
         )))
@@ -79,6 +81,10 @@ pub fn run_application() -> Result<()> {
             };
             #[cfg(target_os = "linux")]
             let tray_enabled = false;
+
+            if let Err(error) = tauri::async_runtime::block_on(proxy::sync(app.handle())) {
+                log::error!("proxy startup failed: {error:#}");
+            }
 
             if !minimized || !tray_enabled {
                 request_main_window(app.handle());
@@ -103,24 +109,23 @@ pub fn run_application() -> Result<()> {
         .build(tauri::generate_context!())
         .context("failed to build CoreInfra Wizard")?;
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    app.run(|app, event| {
-        if let tauri::RunEvent::ExitRequested {
+    app.run(|app, event| match event {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        tauri::RunEvent::ExitRequested {
             code: None, api, ..
-        } = &event
-            && tray::is_enabled(app)
-            && app.webview_windows().is_empty()
-        {
+        } if tray::is_enabled(app) && app.webview_windows().is_empty() => {
             // Keep the process, not the closed window. Explicit tray exit uses code Some(0).
             api.prevent_exit();
         }
         #[cfg(target_os = "macos")]
-        if matches!(event, tauri::RunEvent::Reopen { .. }) {
-            request_main_window(app);
+        tauri::RunEvent::Reopen { .. } => request_main_window(app),
+        tauri::RunEvent::Exit => {
+            if let Err(error) = tauri::async_runtime::block_on(proxy::stop(app)) {
+                log::error!("proxy shutdown failed: {error:#}");
+            }
         }
+        _ => {}
     });
-    #[cfg(target_os = "linux")]
-    app.run(|_, _| {});
     Ok(())
 }
 

@@ -2,10 +2,6 @@ use anyhow::{Context as _, Result};
 use tauri_plugin_autostart::ManagerExt as _;
 
 pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<()> {
-    if cfg!(debug_assertions) {
-        return Ok(());
-    }
-
     let builder = tauri_plugin_autostart::Builder::new()
         .app_name(app.config().identifier.clone())
         .arg("--minimized");

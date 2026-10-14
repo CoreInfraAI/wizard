@@ -31,7 +31,8 @@ tauri-plugin-log.workspace = true
 tauri-plugin-single-instance.workspace = true
 tauri-plugin-updater.workspace = true
 tokio.workspace = true
-wizard-core = { path = "../wizard-core" }
+wizard-core.workspace = true
+wizard-proxy.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tauri = { workspace = true, features = ["tray-icon"] }

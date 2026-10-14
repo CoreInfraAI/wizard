@@ -15,4 +15,4 @@ anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
-wizard-core = { path = "../wizard-core" }
+wizard-core.workspace = true
