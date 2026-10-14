@@ -5,10 +5,10 @@ use serde::Serialize;
 
 pub use crate::config_files::backups::{AgentKind as BackupAgent, Backup};
 
-pub mod chatgpt;
 pub mod claude;
 pub mod claude_desktop;
 pub mod codex;
+pub mod codex_desktop;
 mod detection;
 pub mod opencode;
 pub mod pi;
@@ -16,7 +16,7 @@ pub mod pi;
 #[derive(Clone, Debug, Serialize)]
 pub struct AgentStates {
     codex: AgentDetection<codex::Codex>,
-    chatgpt: AgentDetection<chatgpt::ChatGpt>,
+    codex_desktop: AgentDetection<codex_desktop::CodexDesktop>,
     claude: AgentDetection<claude::Claude>,
     claude_desktop: AgentDetection<claude_desktop::ClaudeDesktop>,
     opencode: AgentDetection<opencode::OpenCode>,
@@ -28,8 +28,8 @@ impl AgentStates {
         if let AgentDetection::Found(agent) = &self.codex {
             settings.codex_path_last = Some(agent.info.path.clone());
         }
-        if let AgentDetection::Found(agent) = &self.chatgpt {
-            settings.chatgpt_path_last = Some(agent.info.path.clone());
+        if let AgentDetection::Found(agent) = &self.codex_desktop {
+            settings.codex_desktop_path_last = Some(agent.info.path.clone());
         }
         if let AgentDetection::Found(agent) = &self.claude {
             settings.claude_path_last = Some(agent.info.path.clone());
@@ -87,7 +87,7 @@ pub async fn collect_agent_state(settings: &Settings) -> AgentStates {
 
     // Start all detectors before awaiting their results so they can run concurrently.
     let codex = spawn_detection(settings, codex::detect);
-    let chatgpt = spawn_detection(settings, chatgpt::detect);
+    let codex_desktop = spawn_detection(settings, codex_desktop::detect);
     let claude = spawn_detection(settings, claude::detect);
     let claude_desktop = spawn_detection(settings, claude_desktop::detect);
     let opencode = spawn_detection(settings, opencode::detect);
@@ -95,7 +95,7 @@ pub async fn collect_agent_state(settings: &Settings) -> AgentStates {
 
     AgentStates {
         codex: collect("Codex", codex).await,
-        chatgpt: collect("ChatGPT", chatgpt).await,
+        codex_desktop: collect("Codex Desktop", codex_desktop).await,
         claude: collect("Claude Code", claude).await,
         claude_desktop: collect("Claude Desktop", claude_desktop).await,
         opencode: collect("OpenCode", opencode).await,

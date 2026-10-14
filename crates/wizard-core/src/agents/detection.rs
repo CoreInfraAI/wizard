@@ -15,7 +15,7 @@ use std::{
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Agent {
     Codex,
-    ChatGpt,
+    CodexDesktop,
     Claude,
     ClaudeDesktop,
     OpenCode,
@@ -32,7 +32,7 @@ pub(crate) struct AgentInfo {
 /// Must run inside a Tokio blocking worker.
 pub(super) fn detect(agent: Agent, last_found: Option<&Path>) -> AgentDetection<AgentInfo> {
     let command = match agent {
-        Agent::ChatGpt => return detect_desktop("ChatGPT.app", last_found),
+        Agent::CodexDesktop => return detect_desktop("ChatGPT.app", last_found),
         Agent::ClaudeDesktop => return detect_desktop("Claude.app", last_found),
         Agent::Codex => "codex",
         Agent::Claude => "claude",
@@ -58,7 +58,7 @@ pub(super) fn detect(agent: Agent, last_found: Option<&Path>) -> AgentDetection<
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             paths.push("~/.pi/agent/bin");
         }
-        Agent::ChatGpt | Agent::ClaudeDesktop => {}
+        Agent::CodexDesktop | Agent::ClaudeDesktop => {}
     }
 
     let paths = paths.into_iter().map(PathBuf::from).collect();
@@ -104,7 +104,7 @@ fn cli_version(agent: Agent, path: &Path) -> Result<String> {
         Agent::Codex => text.strip_prefix("codex-cli "),
         Agent::Claude => text.strip_suffix(" (Claude Code)"),
         Agent::OpenCode | Agent::Pi => (text.split_whitespace().count() == 1).then_some(text),
-        Agent::ChatGpt | Agent::ClaudeDesktop => {
+        Agent::CodexDesktop | Agent::ClaudeDesktop => {
             anyhow::bail!("{agent:?} is not a CLI agent");
         }
     };

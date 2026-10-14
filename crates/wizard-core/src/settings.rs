@@ -14,7 +14,7 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_path_last: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub chatgpt_path_last: Option<PathBuf>,
+    pub codex_desktop_path_last: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_path_last: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]

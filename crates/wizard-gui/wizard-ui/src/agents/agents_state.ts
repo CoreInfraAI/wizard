@@ -68,7 +68,7 @@ export type Codex = {
   proxy_mode: ProxyMode;
 };
 
-export type ChatGpt = {
+export type CodexDesktop = {
   path: string;
   version: string | null;
 };
@@ -98,7 +98,7 @@ export type Pi = {
 
 export type AgentStates = {
   codex: AgentDetection<Codex>;
-  chatgpt: AgentDetection<ChatGpt>;
+  codex_desktop: AgentDetection<CodexDesktop>;
   claude: AgentDetection<Claude>;
   claude_desktop: AgentDetection<ClaudeDesktop>;
   opencode: AgentDetection<OpenCode>;

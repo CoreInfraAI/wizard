@@ -189,7 +189,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
           <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
-      {/*<Installation name="ChatGPT" detection={agents.chatgpt} />*/}
+      {/*<Installation name="ChatGPT" detection={agents.codex_desktop} />*/}
       <Installation name="Claude Code" detection={agents.claude} actions={<BackupButton agent="claude" disabled={isChangeInProgress} />}>
         {agents.claude.status === "found" && (
           <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
