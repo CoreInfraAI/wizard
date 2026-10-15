@@ -11,6 +11,7 @@ const agentNames: Record<AgentId, string> = {
   claude: "Claude Code",
   pi: "Pi",
   opencode: "OpenCode",
+  claude_desktop: "Claude Desktop",
 };
 
 export function PreparedPlanDialog({ prepared, onClose }: {

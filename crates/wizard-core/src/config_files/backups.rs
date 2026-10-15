@@ -111,14 +111,6 @@ impl BackupManager {
 
     pub fn load_backup(agent: AgentKind, id: u32) -> Result<()> {
         let backup = Backup::load(agent, id)?;
-        let state = State::load(agent)?;
-
-        let expected = state.last_written.as_ref().unwrap_or(&backup.files);
-        // TODO: bad
-        ensure!(
-            expected.keys().eq(backup.files.keys()),
-            "backup belongs to a different configuration path set"
-        );
 
         let mut changes = Vec::with_capacity(backup.files.len());
         for (path, snapshot) in &backup.files {

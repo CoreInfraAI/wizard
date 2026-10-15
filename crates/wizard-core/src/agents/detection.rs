@@ -15,14 +15,20 @@ use std::{
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Agent {
     Codex,
-    CodexDesktop,
     Claude,
-    ClaudeDesktop,
     OpenCode,
     Pi,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) enum DesktopAgent {
+    // The existing code identity still refers to the ChatGPT application.
+    Codex,
+    Claude,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(target_os = "windows", derive(serde::Deserialize))]
 pub(crate) struct AgentInfo {
     pub path: PathBuf,
     // CLI detection always supplies a version; desktop bundles may lack one.
@@ -32,8 +38,6 @@ pub(crate) struct AgentInfo {
 /// Must run inside a Tokio blocking worker.
 pub(super) fn detect(agent: Agent, last_found: Option<&Path>) -> AgentDetection<AgentInfo> {
     let command = match agent {
-        Agent::CodexDesktop => return detect_desktop("ChatGPT.app", last_found),
-        Agent::ClaudeDesktop => return detect_desktop("Claude.app", last_found),
         Agent::Codex => "codex",
         Agent::Claude => "claude",
         Agent::OpenCode => "opencode",
@@ -58,7 +62,6 @@ pub(super) fn detect(agent: Agent, last_found: Option<&Path>) -> AgentDetection<
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             paths.push("~/.pi/agent/bin");
         }
-        Agent::CodexDesktop | Agent::ClaudeDesktop => {}
     }
 
     let paths = paths.into_iter().map(PathBuf::from).collect();
@@ -104,9 +107,6 @@ fn cli_version(agent: Agent, path: &Path) -> Result<String> {
         Agent::Codex => text.strip_prefix("codex-cli "),
         Agent::Claude => text.strip_suffix(" (Claude Code)"),
         Agent::OpenCode | Agent::Pi => (text.split_whitespace().count() == 1).then_some(text),
-        Agent::CodexDesktop | Agent::ClaudeDesktop => {
-            anyhow::bail!("{agent:?} is not a CLI agent");
-        }
     };
     version
         .map(str::trim)
@@ -115,9 +115,17 @@ fn cli_version(agent: Agent, path: &Path) -> Result<String> {
         .with_context(|| format!("unexpected {agent:?} version output: {text}"))
 }
 
-fn detect_desktop(app_name: &str, last_found: Option<&Path>) -> AgentDetection<AgentInfo> {
+/// Must run inside a Tokio blocking worker. Never launches the desktop application.
+pub(super) fn detect_desktop(
+    agent: DesktopAgent,
+    last_found: Option<&Path>,
+) -> AgentDetection<AgentInfo> {
     #[cfg(target_os = "macos")]
     {
+        let app_name = match agent {
+            DesktopAgent::Codex => "ChatGPT.app",
+            DesktopAgent::Claude => "Claude.app",
+        };
         let mut candidates: Vec<PathBuf> = last_found.into_iter().map(Path::to_owned).collect();
         candidates.push(PathBuf::from("/Applications").join(app_name));
         if let Some(home) = env_var_not_empty("HOME") {
@@ -137,9 +145,85 @@ fn detect_desktop(app_name: &str, last_found: Option<&Path>) -> AgentDetection<A
         }
         AgentDetection::NotFound
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
-        let _ = (app_name, last_found);
-        AgentDetection::Error("not supported".to_owned())
+        let command = match agent {
+            DesktopAgent::Claude => "claude-desktop",
+            DesktopAgent::Codex => "chatgpt",
+        };
+        // Never start the desktop app with --version: it can open a window instead.
+        let path = match find_executable(command, vec![], last_found) {
+            Ok(Some(path)) => path,
+            Ok(None) => return AgentDetection::NotFound,
+            Err(error) => return AgentDetection::Error(format!("{error:#}")),
+        };
+        AgentDetection::Found(AgentInfo {
+            path,
+            version: None,
+        })
     }
+    #[cfg(target_os = "windows")]
+    {
+        let (package, executable) = match agent {
+            DesktopAgent::Claude => ("Claude", "Claude.exe"),
+            DesktopAgent::Codex => ("OpenAI.ChatGPT-Desktop", "ChatGPT.exe"),
+        };
+        let info = match detect_desktop_windows(package, executable, last_found) {
+            Ok(Some(info)) => info,
+            Ok(None) => return AgentDetection::NotFound,
+            Err(error) => return AgentDetection::Error(format!("{error:#}")),
+        };
+        AgentDetection::Found(info)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn detect_desktop_windows(
+    package: &str,
+    executable: &str,
+    last_found: Option<&Path>,
+) -> Result<Option<AgentInfo>> {
+    // Read installation/version metadata only. Pass the saved path through the
+    // environment, not PowerShell source, and never launch the application.
+    let script = r"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+function Write-Agent($path) {
+    $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($path).ProductVersion
+    if ([string]::IsNullOrWhiteSpace($version)) { $version = $null }
+    @{ path = [System.IO.Path]::GetFullPath($path); version = $version } | ConvertTo-Json -Compress
+}
+if ($env:WIZARD_DESKTOP_PATH -and (Test-Path -LiteralPath $env:WIZARD_DESKTOP_PATH -PathType Leaf)) {
+    Write-Agent $env:WIZARD_DESKTOP_PATH
+    exit 0
+}
+foreach ($package in (Get-AppxPackage -Name $env:WIZARD_DESKTOP_PACKAGE | Sort-Object Version -Descending)) {
+    $manifest = $package | Get-AppxPackageManifest
+    foreach ($application in $manifest.Package.Applications.Application) {
+        $relative = [string]$application.Executable
+        if ([System.IO.Path]::GetFileName($relative) -ine $env:WIZARD_DESKTOP_EXECUTABLE) { continue }
+        $path = Join-Path $package.InstallLocation $relative
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Write-Agent $path
+            exit 0
+        }
+    }
+}
+'null'
+";
+    let mut command = tokio::process::Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("WIZARD_DESKTOP_PACKAGE", package)
+        .env("WIZARD_DESKTOP_EXECUTABLE", executable)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(path) = last_found {
+        command.env("WIZARD_DESKTOP_PATH", path);
+    } else {
+        command.env_remove("WIZARD_DESKTOP_PATH");
+    }
+    let output = command_output(command, Duration::from_secs(15))?;
+    anyhow::ensure!(output.status.success(), "desktop installation query failed");
+    serde_json::from_slice(&output.stdout).context("invalid desktop installation query response")
 }

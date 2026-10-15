@@ -1,6 +1,6 @@
 use super::{
     AgentDetection,
-    detection::{self, Agent, AgentInfo},
+    detection::{self, AgentInfo, DesktopAgent},
 };
 use crate::settings::Settings;
 use serde::Serialize;
@@ -12,8 +12,8 @@ pub(crate) struct CodexDesktop {
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<CodexDesktop> {
-    let info = match detection::detect(
-        Agent::CodexDesktop,
+    let info = match detection::detect_desktop(
+        DesktopAgent::Codex,
         settings.codex_desktop_path_last.as_deref(),
     ) {
         AgentDetection::Found(info) => info,

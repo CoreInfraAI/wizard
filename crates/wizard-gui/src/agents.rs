@@ -5,7 +5,8 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 use wizard_core::agents::{
-    AgentStates, Backup, BackupAgent, claude, codex, collect_agent_state, opencode, pi,
+    AgentStates, Backup, BackupAgent, claude, claude_desktop, codex, collect_agent_state, opencode,
+    pi,
 };
 use wizard_core::prepared_plan::{PreparedPlan, PreparedStepInfo};
 use wizard_core::validate_token;
@@ -72,6 +73,7 @@ pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>,
 pub(crate) enum AgentChange {
     CodexSetProxy(codex::ProxyMode),
     ClaudeSetProxy(claude::ProxyMode),
+    SetClaudeDesktopHub(bool),
     SetPiHub(bool),
     SetOpenCodeHub(bool),
 }
@@ -93,6 +95,7 @@ pub(crate) async fn prepare_agent_change(
     let (name, agent) = match &change {
         AgentChange::CodexSetProxy(_) => ("CodexSetProxy", "codex"),
         AgentChange::ClaudeSetProxy(_) => ("ClaudeSetProxy", "claude"),
+        AgentChange::SetClaudeDesktopHub(_) => ("SetClaudeDesktopHub", "claude_desktop"),
         AgentChange::SetPiHub(_) => ("SetPiHub", "pi"),
         AgentChange::SetOpenCodeHub(_) => ("SetOpenCodeHub", "opencode"),
     };
@@ -104,6 +107,9 @@ pub(crate) async fn prepare_agent_change(
     let plan = tauri::async_runtime::spawn_blocking(move || match change {
         AgentChange::CodexSetProxy(mode) => codex::prepare_proxy(mode, &settings),
         AgentChange::ClaudeSetProxy(mode) => claude::prepare_proxy(mode, &settings),
+        AgentChange::SetClaudeDesktopHub(install) => {
+            claude_desktop::prepare_hub(install, &settings)
+        }
         AgentChange::SetPiHub(install) => pi::prepare_hub(install, &settings),
         AgentChange::SetOpenCodeHub(install) => opencode::prepare_hub(install, &settings),
     })

@@ -19,7 +19,7 @@ const proxyOptions = [
 ] as const;
 
 function HubProxy({ agent, installed, disabled, onPrepare }: {
-  agent: "Pi" | "OpenCode";
+  agent: "Pi" | "OpenCode" | "Claude Desktop";
   installed: boolean;
   disabled: boolean;
   onPrepare: (change: AgentChange) => void;
@@ -27,6 +27,14 @@ function HubProxy({ agent, installed, disabled, onPrepare }: {
   const { settings, error: settingsError } = useSettings();
   const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
   const [selected, setSelected] = useState(installed);
+
+  function prepare() {
+    switch (agent) {
+      case "Pi": onPrepare({ SetPiHub: selected }); break;
+      case "OpenCode": onPrepare({ SetOpenCodeHub: selected }); break;
+      case "Claude Desktop": onPrepare({ SetClaudeDesktopHub: selected }); break;
+    }
+  }
 
   return (
     <>
@@ -49,9 +57,7 @@ function HubProxy({ agent, installed, disabled, onPrepare }: {
           <Label>CoreInfra Hub</Label>
         </RadioField>
       </RadioGroup>
-      <Button outline type="button" disabled={disabled || (selected && !hasToken)} onClick={() => onPrepare(agent === "Pi"
-        ? { SetPiHub: selected }
-        : { SetOpenCodeHub: selected })}>
+      <Button outline type="button" disabled={disabled || (selected && !hasToken)} onClick={prepare}>
         Применить
       </Button>
     </>
@@ -195,7 +201,11 @@ export function AgentList({ agents }: { agents: AgentStates }) {
           <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
-      {/*<Installation name="Claude Desktop" detection={agents.claude_desktop} />*/}
+      <Installation name="Claude Desktop" detection={agents.claude_desktop}>
+        {agents.claude_desktop.status === "found" && (
+          <HubProxy agent="Claude Desktop" installed={agents.claude_desktop.data.proxy_installed} disabled={isChangeInProgress} onPrepare={prepare} />
+        )}
+      </Installation>
       <Installation name="OpenCode" detection={agents.opencode}>
         {agents.opencode.status === "found" && (
           <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} disabled={isChangeInProgress} onPrepare={prepare} />

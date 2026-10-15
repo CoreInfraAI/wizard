@@ -8,6 +8,7 @@ use wizard_core::{
     agents::{
         self,
         claude::{self, ProxyMode as ClaudeMode},
+        claude_desktop,
         codex::{self, ProxyMode as CodexMode},
         opencode, pi,
     },
@@ -44,6 +45,11 @@ enum Command {
         #[command(subcommand)]
         command: ProxyCommand,
     },
+    /// Manage the Claude Desktop Hub connection. Restart Claude after applying.
+    ClaudeDesktop {
+        #[command(subcommand)]
+        command: HubCommand,
+    },
     /// Manage the Pi Hub plugin.
     Pi {
         #[command(subcommand)]
@@ -68,9 +74,9 @@ enum ProxyCommand {
 
 #[derive(Subcommand)]
 enum HubCommand {
-    /// Install the latest plugin and use the token saved in Wizard settings.
+    /// Configure Hub with the saved token, installing a plugin when required.
     Hub,
-    /// Remove the plugin configuration and its saved token.
+    /// Remove the `CoreInfra` Hub configuration and its saved token.
     None,
 }
 
@@ -126,6 +132,15 @@ fn run(cli: Cli) -> Result<()> {
                 };
                 claude::prepare_proxy(mode, &settings)
             })?;
+        }
+        Command::ClaudeDesktop { command } => {
+            let settings = settings::load_from_file()?;
+            let install = matches!(command, HubCommand::Hub);
+
+            run_plan(&runtime, cli.yes, move || {
+                claude_desktop::prepare_hub(install, &settings)
+            })?;
+            eprintln!("Полностью закройте и заново откройте Claude Desktop.");
         }
         Command::Pi { command } => {
             let settings = settings::load_from_file()?;

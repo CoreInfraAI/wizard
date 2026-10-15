@@ -5,6 +5,7 @@ import { reportError, debug } from "../logs/log";
 export type AgentChange =
   | { CodexSetProxy: ProxyMode }
   | { ClaudeSetProxy: ProxyMode }
+  | { SetClaudeDesktopHub: boolean }
   | { SetPiHub: boolean }
   | { SetOpenCodeHub: boolean };
 
@@ -15,7 +16,7 @@ export type PreparedStepInfo = {
   description: string;
 };
 
-export type AgentId = "codex" | "claude" | "pi" | "opencode";
+export type AgentId = "codex" | "claude" | "claude_desktop" | "pi" | "opencode";
 
 export type PreparedAgentChange = {
   change: AgentChange;
@@ -82,6 +83,7 @@ export type Claude = {
 export type ClaudeDesktop = {
   path: string;
   version: string | null;
+  proxy_installed: boolean;
 };
 
 export type OpenCode = {

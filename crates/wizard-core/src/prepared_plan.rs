@@ -4,7 +4,7 @@
 //! External commands have no rollback; `@latest` does not pin a package version.
 
 use crate::{
-    agents::{claude, codex, opencode, pi},
+    agents::{claude, claude_desktop, codex, opencode, pi},
     config_files::{
         backups::{AgentKind, BackupManager},
         changes::{FileChange, FileSnapshot},
@@ -19,6 +19,7 @@ use std::{path::PathBuf, sync::MutexGuard};
 pub(crate) enum PreparedAgent {
     Codex,
     Claude,
+    ClaudeDesktop,
     Pi,
     OpenCode,
 }
@@ -28,6 +29,7 @@ impl PreparedAgent {
         let mutex = match self {
             Self::Codex => &codex::PROXY_LOCK,
             Self::Claude => &claude::PROXY_LOCK,
+            Self::ClaudeDesktop => &claude_desktop::HUB_LOCK,
             Self::Pi => &pi::HUB_LOCK,
             Self::OpenCode => &opencode::HUB_LOCK,
         };
@@ -109,7 +111,7 @@ impl PreparedPlan {
         let backup_agent = match self.agent {
             PreparedAgent::Codex => Some(AgentKind::Codex),
             PreparedAgent::Claude => Some(AgentKind::Claude),
-            PreparedAgent::Pi | PreparedAgent::OpenCode => None,
+            PreparedAgent::ClaudeDesktop | PreparedAgent::Pi | PreparedAgent::OpenCode => None,
         };
         let backup = backup_agent.map(|agent| {
             let changes: Vec<_> = self
