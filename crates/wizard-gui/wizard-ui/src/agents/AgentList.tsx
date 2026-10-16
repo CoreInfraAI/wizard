@@ -106,9 +106,10 @@ function Installation({ name, detection, children, actions }: {
   );
 }
 
-function InstallationStatus({ name, detection }: {
+function InstallationStatus({ name, detection, children }: {
   name: string;
   detection?: AgentDetection<{ path: string; version: string | null }>;
+  children?: ReactNode;
 }) {
   return (
     <div>
@@ -119,6 +120,7 @@ function InstallationStatus({ name, detection }: {
             ? detection.data.version ? `v${detection.data.version}` : "Версия неизвестна"
             : detection?.status === "not_found" ? "Не найден" : "Статус неизвестен"}
         </span>
+        {children}
       </div>
       {detection?.status === "error" && <ErrorText>{detection.data}</ErrorText>}
     </div>
@@ -136,16 +138,22 @@ function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boole
   );
 }
 
-function ProxyStatus() {
+function ProxyStatus({ codex }: { codex?: AgentStates["codex"] }) {
   const { proxy, error } = useProxy();
 
   if (error !== undefined) return <Badge color="amber" title={error}>Прокси: состояние недоступно</Badge>;
   if (proxy === undefined) return <Badge color="zinc">Прокси: загрузка…</Badge>;
 
   return (
-    <Badge color={proxy.running ? "green" : "zinc"}>
-      {proxy.running ? "Прокси работает" : "Прокси остановлен"}
-    </Badge>
+    <>
+      <Badge color={proxy.running ? "green" : "zinc"}>
+        {proxy.running ? "Прокси работает" : "Прокси остановлен"}
+      </Badge>
+      {!proxy.running && codex?.status === "found" && codex.data.desktop.status === "found"
+        && codex.data.proxy_mode !== "disabled" && (
+          <ErrorText>Прокси для ChatGPT не запущен, нажмите применить</ErrorText>
+        )}
+    </>
   );
 }
 
@@ -235,7 +243,9 @@ export function AgentList({ agents }: { agents: AgentStates }) {
             <InstallationStatus name="Codex" detection={agents.codex.status === "found"
               ? agents.codex.data.cli : agents.codex.status === "not_found" ? agents.codex : undefined} />
             <InstallationStatus name="ChatGPT" detection={agents.codex.status === "found"
-              ? agents.codex.data.desktop : agents.codex.status === "not_found" ? agents.codex : undefined} />
+              ? agents.codex.data.desktop : agents.codex.status === "not_found" ? agents.codex : undefined}>
+              <ProxyStatus codex={agents.codex} />
+            </InstallationStatus>
           </div>
           <div className="max-w-1/2 shrink-0"><BackupButton agent="codex" disabled={isChangeInProgress} /></div>
         </div>

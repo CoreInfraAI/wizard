@@ -9,6 +9,7 @@ use std::{fs, io::Write as _, path::PathBuf};
 #[serde(default)]
 pub struct Settings {
     pub claude_proxy_enable: bool,
+    pub codex_proxy_enable: bool,
     #[serde(rename = "coreinfra_api_key", skip_serializing_if = "String::is_empty")]
     pub coreinfra_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -23,6 +24,13 @@ pub struct Settings {
     pub opencode_path_last: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pi_path_last: Option<PathBuf>,
+}
+
+impl Settings {
+    #[must_use]
+    pub fn local_proxy_enabled(&self) -> bool {
+        self.claude_proxy_enable || self.codex_proxy_enable
+    }
 }
 
 fn settings_path() -> Result<PathBuf> {

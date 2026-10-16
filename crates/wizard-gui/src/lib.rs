@@ -72,12 +72,12 @@ pub fn run_application() -> Result<()> {
             tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let tray_enabled = {
-                let claude_proxy_enable = settings::get_state(app.handle())?.claude_proxy_enable;
+                let proxy_enabled = settings::get_state(app.handle())?.local_proxy_enabled();
                 autostart::initialize(app.handle())?;
-                autostart::set_enabled(app.handle(), claude_proxy_enable)?;
+                autostart::set_enabled(app.handle(), proxy_enabled)?;
 
                 app.on_menu_event(|app, event| tray::on_menu_event(app, &event));
-                tray::set_enabled(app.handle(), claude_proxy_enable)?;
+                tray::set_enabled(app.handle(), proxy_enabled)?;
                 tray::is_enabled(app.handle())
             };
             #[cfg(target_os = "linux")]

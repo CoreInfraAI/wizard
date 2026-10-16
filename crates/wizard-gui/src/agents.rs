@@ -105,7 +105,7 @@ pub(crate) async fn prepare_agent_change(
 
     // Plans contain credentials: never log the returned value.
     let plan = tauri::async_runtime::spawn_blocking(move || match change {
-        AgentChange::CodexSetProxy(mode) => codex::prepare_proxy(mode, &settings),
+        AgentChange::CodexSetProxy(mode) => codex::prepare_proxy_for_gui(mode, &settings),
         AgentChange::ClaudeSetProxy(mode) => claude::prepare_proxy(mode, &settings),
         AgentChange::ClaudeDesktopSetProxy(mode) => claude_desktop::prepare_proxy(mode, &settings),
         AgentChange::SetPiHub(install) => pi::prepare_hub(install, &settings),
@@ -141,11 +141,24 @@ pub(crate) async fn apply_agent_plan(
 
     let proxy_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        plan.apply_with_claude_proxy(|enabled| {
-            tauri::async_runtime::block_on(settings::update_state(&proxy_app, move |settings| {
-                settings.claude_proxy_enable = enabled;
-            }))
-        })
+        plan.apply_with_proxies(
+            |enabled| {
+                tauri::async_runtime::block_on(settings::update_state(
+                    &proxy_app,
+                    move |settings| {
+                        settings.claude_proxy_enable = enabled;
+                    },
+                ))
+            },
+            |enabled| {
+                tauri::async_runtime::block_on(settings::update_state(
+                    &proxy_app,
+                    move |settings| {
+                        settings.codex_proxy_enable = enabled;
+                    },
+                ))
+            },
+        )
     })
     .await
     .context("agent plan application task failed")

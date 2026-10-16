@@ -184,6 +184,73 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
     ))
 }
 
+/// Add GUI-owned proxy demand and, on macOS, `ChatGPT` profile configuration.
+pub fn prepare_proxy_for_gui(mode: ProxyMode, settings: &Settings) -> Result<PreparedPlan> {
+    let mut plan = prepare_proxy(mode, settings)?;
+    let enabled = if mode == ProxyMode::Disabled {
+        false
+    } else {
+        match detection::detect_desktop(
+            DesktopAgent::Codex,
+            settings.codex_desktop_path_last.as_deref(),
+        ) {
+            AgentDetection::Found(_) => true,
+            AgentDetection::NotFound => return Ok(plan),
+            AgentDetection::Error(error) => {
+                anyhow::bail!("failed to detect ChatGPT for local proxy: {error}")
+            }
+        }
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let change = prepare_desktop_proxy(enabled)?;
+        plan.steps.insert(0, PreparedStep::ChangeFile { change });
+    }
+    plan.steps
+        .push(PreparedStep::SetCodexProxyEnabled { enabled });
+    Ok(plan)
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_desktop_proxy(enabled: bool) -> Result<FileChange> {
+    use crate::config_files::{changes::FileSnapshot, json};
+    use serde_json::json;
+
+    let home = dirs::home_dir().context("failed to resolve home directory")?;
+    let path = home.join("Library/Application Support/Codex/Default/Preferences");
+    let mut change = FileChange::read(std::path::absolute(path)?)?;
+    if matches!(change.after, FileSnapshot::Missing) {
+        log::info!("ChatGPT proxy configuration skipped: profile Preferences file is missing");
+        return Ok(change);
+    }
+
+    let proxy = json!({
+        "mode": "fixed_servers",
+        "server": format!("http://{}", wizard_proxy::LISTEN_ADDRESS),
+    });
+    json::update(&mut change.after, |config| {
+        if let Some(current) = config.get("proxy")
+            && current != &proxy
+        {
+            log::warn!(
+                "ChatGPT proxy configuration skipped: existing proxy is not managed by Wizard"
+            );
+            return Ok(());
+        }
+
+        if enabled {
+            config["proxy"] = proxy;
+        } else {
+            config
+                .as_object_mut()
+                .context("ChatGPT Preferences must contain an object")?
+                .remove("proxy");
+        }
+        Ok(())
+    })?;
+    Ok(change)
+}
+
 /// Prefer the standalone CLI; only discover the desktop app when it is absent.
 fn daemon_executable(settings: &Settings) -> Result<PathBuf> {
     #[cfg(target_os = "windows")]

@@ -43,7 +43,7 @@ pub(crate) async fn sync(app: &tauri::AppHandle) -> Result<()> {
     let mut proxy = state.0.lock().await;
     let settings = settings::get_state(app)?;
 
-    if settings.claude_proxy_enable {
+    if settings.local_proxy_enabled() {
         if proxy.is_none() {
             // TODO: Retry failed starts without requiring a toggle or application restart.
             let handle = wizard_proxy::start(&settings.coreinfra_token)

@@ -94,6 +94,13 @@ impl PreparedPlan {
                 PreparedStep::OpenCodeVerifyPlugin { .. } => PreparedStepInfo {
                     description: "Убедиться, что плагин CoreInfra добавлен в конфигурацию OpenCode.".to_owned(),
                 },
+                PreparedStep::SetCodexProxyEnabled { enabled } => PreparedStepInfo {
+                    description: if *enabled {
+                        "Включить локальный прокси ChatGPT в Wizard."
+                    } else {
+                        "Выключить локальный прокси ChatGPT в Wizard."
+                    }.to_owned(),
+                },
                 PreparedStep::SetClaudeProxyEnabled { enabled } => PreparedStepInfo {
                     description: if *enabled {
                         "Включить локальный прокси Claude Desktop в Wizard."
@@ -114,20 +121,25 @@ impl PreparedPlan {
     /// Codex/Claude backups cover the entire plan; there is no rollback on failure.
     pub fn apply(self) -> Result<()> {
         anyhow::ensure!(
-            !self
-                .steps
-                .iter()
-                .any(|step| matches!(step, PreparedStep::SetClaudeProxyEnabled { .. })),
-            "Claude Desktop proxy plans can only be applied in the GUI"
+            !self.steps.iter().any(|step| matches!(
+                step,
+                PreparedStep::SetClaudeProxyEnabled { .. }
+                    | PreparedStep::SetCodexProxyEnabled { .. }
+            )),
+            "Desktop proxy plans can only be applied in the GUI"
         );
-        self.apply_with_claude_proxy(|_| anyhow::bail!("Claude Desktop proxy requires the GUI"))
+        self.apply_with_proxies(
+            |_| anyhow::bail!("Claude Desktop proxy requires the GUI"),
+            |_| anyhow::bail!("ChatGPT proxy requires the GUI"),
+        )
     }
 
     /// Apply with the GUI-owned settings/runtime operation, under the agent lock.
     /// The callback must not acquire the agent lock or trigger agent discovery.
-    pub fn apply_with_claude_proxy(
+    pub fn apply_with_proxies(
         self,
-        mut set_enabled: impl FnMut(bool) -> Result<()>,
+        mut set_claude_enabled: impl FnMut(bool) -> Result<()>,
+        mut set_codex_enabled: impl FnMut(bool) -> Result<()>,
     ) -> Result<()> {
         let _guard = self.agent.lock()?;
 
@@ -167,8 +179,12 @@ impl PreparedPlan {
                     "failed to apply prepared files; earlier steps may already be applied",
                 )?;
             } else if let PreparedStep::SetClaudeProxyEnabled { enabled } = step {
-                set_enabled(enabled).context(
+                set_claude_enabled(enabled).context(
                     "failed to update Claude Desktop proxy; earlier steps may already be applied",
+                )?;
+            } else if let PreparedStep::SetCodexProxyEnabled { enabled } = step {
+                set_codex_enabled(enabled).context(
+                    "failed to update ChatGPT proxy; earlier steps may already be applied",
                 )?;
             } else {
                 step.apply().context(
@@ -189,6 +205,9 @@ impl PreparedPlan {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreparedStep {
+    SetCodexProxyEnabled {
+        enabled: bool,
+    },
     SetClaudeProxyEnabled {
         enabled: bool,
     },
@@ -231,8 +250,8 @@ impl PreparedStep {
     // Use PreparedPlan::apply to retain grouped file writes and the agent mutex.
     fn apply(self) -> Result<()> {
         match self {
-            Self::SetClaudeProxyEnabled { .. } => {
-                anyhow::bail!("Claude Desktop proxy requires the GUI")
+            Self::SetClaudeProxyEnabled { .. } | Self::SetCodexProxyEnabled { .. } => {
+                anyhow::bail!("Desktop proxy requires the GUI")
             }
             Self::ChangeFile { change } => FileChange::apply_all(&[change]),
             Self::PiInstallPlugin {
