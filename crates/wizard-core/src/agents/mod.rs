@@ -8,7 +8,6 @@ pub use crate::config_files::backups::{AgentKind as BackupAgent, Backup};
 pub mod claude;
 pub mod claude_desktop;
 pub mod codex;
-pub mod codex_desktop;
 mod detection;
 pub mod opencode;
 pub mod pi;
@@ -16,7 +15,6 @@ pub mod pi;
 #[derive(Clone, Debug, Serialize)]
 pub struct AgentStates {
     codex: AgentDetection<codex::Codex>,
-    codex_desktop: AgentDetection<codex_desktop::CodexDesktop>,
     claude: AgentDetection<claude::Claude>,
     claude_desktop: AgentDetection<claude_desktop::ClaudeDesktop>,
     opencode: AgentDetection<opencode::OpenCode>,
@@ -26,10 +24,12 @@ pub struct AgentStates {
 impl AgentStates {
     pub fn update_settings_paths(&self, settings: &mut Settings) {
         if let AgentDetection::Found(agent) = &self.codex {
-            settings.codex_path_last = Some(agent.info.path.clone());
-        }
-        if let AgentDetection::Found(agent) = &self.codex_desktop {
-            settings.codex_desktop_path_last = Some(agent.info.path.clone());
+            if let AgentDetection::Found(cli) = &agent.cli {
+                settings.codex_path_last = Some(cli.path.clone());
+            }
+            if let AgentDetection::Found(desktop) = &agent.desktop {
+                settings.codex_desktop_path_last = Some(desktop.path.clone());
+            }
         }
         if let AgentDetection::Found(agent) = &self.claude {
             settings.claude_path_last = Some(agent.info.path.clone());
@@ -87,7 +87,6 @@ pub async fn collect_agent_state(settings: &Settings) -> AgentStates {
 
     // Start all detectors before awaiting their results so they can run concurrently.
     let codex = spawn_detection(settings, codex::detect);
-    let codex_desktop = spawn_detection(settings, codex_desktop::detect);
     let claude = spawn_detection(settings, claude::detect);
     let claude_desktop = spawn_detection(settings, claude_desktop::detect);
     let opencode = spawn_detection(settings, opencode::detect);
@@ -95,10 +94,82 @@ pub async fn collect_agent_state(settings: &Settings) -> AgentStates {
 
     AgentStates {
         codex: collect("Codex", codex).await,
-        codex_desktop: collect("Codex Desktop", codex_desktop).await,
         claude: collect("Claude Code", claude).await,
         claude_desktop: collect("Claude Desktop", claude_desktop).await,
         opencode: collect("OpenCode", opencode).await,
         pi: collect("pi", pi).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentDetection, AgentStates, codex, detection::AgentInfo};
+    use crate::settings::Settings;
+    use std::path::PathBuf;
+
+    fn codex_state(
+        cli: AgentDetection<AgentInfo>,
+        desktop: AgentDetection<AgentInfo>,
+    ) -> AgentStates {
+        AgentStates {
+            codex: AgentDetection::Found(codex::Codex {
+                cli,
+                desktop,
+                proxy_mode: codex::ProxyMode::ProxyHub,
+            }),
+            claude: AgentDetection::NotFound,
+            claude_desktop: AgentDetection::NotFound,
+            opencode: AgentDetection::NotFound,
+            pi: AgentDetection::NotFound,
+        }
+    }
+
+    fn installation(path: &str) -> AgentDetection<AgentInfo> {
+        AgentDetection::Found(AgentInfo {
+            path: PathBuf::from(path),
+            version: None,
+        })
+    }
+
+    #[test]
+    fn shared_codex_state_serializes_one_plain_proxy_mode() {
+        let state = codex_state(AgentDetection::NotFound, installation("ChatGPT.app"));
+        let value = serde_json::to_value(state).expect("serialize state");
+        assert!(value.get("codex_desktop").is_none());
+        assert_eq!(value["codex"]["status"], "found");
+        let codex = &value["codex"]["data"];
+        assert_eq!(codex["proxy_mode"], "proxy_hub");
+        assert_eq!(codex["cli"]["status"], "not_found");
+        assert_eq!(codex["desktop"]["status"], "found");
+    }
+
+    #[test]
+    fn remembers_both_installation_paths() {
+        let state = codex_state(installation("codex"), installation("ChatGPT.app"));
+        let mut settings = Settings::default();
+        state.update_settings_paths(&mut settings);
+        assert_eq!(settings.codex_path_last, Some(PathBuf::from("codex")));
+        assert_eq!(
+            settings.codex_desktop_path_last,
+            Some(PathBuf::from("ChatGPT.app"))
+        );
+    }
+
+    #[test]
+    fn desktop_only_preserves_last_known_cli_path() {
+        let state = codex_state(AgentDetection::NotFound, installation("ChatGPT.app"));
+        let mut settings = Settings {
+            codex_path_last: Some(PathBuf::from("previous-codex")),
+            ..Settings::default()
+        };
+        state.update_settings_paths(&mut settings);
+        assert_eq!(
+            settings.codex_path_last,
+            Some(PathBuf::from("previous-codex"))
+        );
+        assert_eq!(
+            settings.codex_desktop_path_last,
+            Some(PathBuf::from("ChatGPT.app"))
+        );
     }
 }

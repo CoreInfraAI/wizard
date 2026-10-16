@@ -148,7 +148,7 @@ pub(crate) fn find_executable(
     Ok(None)
 }
 
-fn is_executable(path: &Path) -> Result<bool> {
+pub(crate) fn is_executable(path: &Path) -> Result<bool> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),

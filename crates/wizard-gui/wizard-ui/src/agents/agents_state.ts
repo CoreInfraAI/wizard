@@ -63,14 +63,9 @@ export type AgentDetection<T> =
 export type ProxyMode = "disabled" | "proxy_hub" | "proxy_api";
 
 export type Codex = {
-  path: string;
-  version: string;
+  cli: AgentDetection<{ path: string; version: string | null }>;
+  desktop: AgentDetection<{ path: string; version: string | null }>;
   proxy_mode: ProxyMode;
-};
-
-export type CodexDesktop = {
-  path: string;
-  version: string | null;
 };
 
 export type Claude = {
@@ -99,7 +94,6 @@ export type Pi = {
 
 export type AgentStates = {
   codex: AgentDetection<Codex>;
-  codex_desktop: AgentDetection<CodexDesktop>;
   claude: AgentDetection<Claude>;
   claude_desktop: AgentDetection<ClaudeDesktop>;
   opencode: AgentDetection<OpenCode>;

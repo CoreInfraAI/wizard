@@ -106,6 +106,25 @@ function Installation({ name, detection, children, actions }: {
   );
 }
 
+function InstallationStatus({ name, detection }: {
+  name: string;
+  detection?: AgentDetection<{ path: string; version: string | null }>;
+}) {
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <Heading level={2}>{name}</Heading>
+        <span className="text-sm text-zinc-500 dark:text-zinc-400">
+          {detection?.status === "found"
+            ? detection.data.version ? `v${detection.data.version}` : "Версия неизвестна"
+            : detection?.status === "not_found" ? "Не найден" : "Статус неизвестен"}
+        </span>
+      </div>
+      {detection?.status === "error" && <ErrorText>{detection.data}</ErrorText>}
+    </div>
+  );
+}
+
 function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boolean }) {
   const [open, setOpen] = useState(false);
 
@@ -210,12 +229,26 @@ export function AgentList({ agents }: { agents: AgentStates }) {
 
   return (
     <>
-      <Installation name="Codex" detection={agents.codex} actions={<BackupButton agent="codex" disabled={isChangeInProgress} />}>
+      <section className="flex min-w-0 flex-col gap-3 rounded-lg border border-zinc-200 bg-white p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <InstallationStatus name="Codex" detection={agents.codex.status === "found"
+              ? agents.codex.data.cli : agents.codex.status === "not_found" ? agents.codex : undefined} />
+            <InstallationStatus name="ChatGPT" detection={agents.codex.status === "found"
+              ? agents.codex.data.desktop : agents.codex.status === "not_found" ? agents.codex : undefined} />
+          </div>
+          <div className="max-w-1/2 shrink-0"><BackupButton agent="codex" disabled={isChangeInProgress} /></div>
+        </div>
+        <Text>Настройка общая для Codex и ChatGPT.</Text>
         {agents.codex.status === "found" && (
-          <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+          <div className="space-y-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+            <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+          </div>
         )}
-      </Installation>
-      {/*<Installation name="ChatGPT" detection={agents.codex_desktop} />*/}
+        {agents.codex.status === "error" && (
+          <ErrorText>Не удалось получить состояние Codex / ChatGPT: {agents.codex.data}</ErrorText>
+        )}
+      </section>
       <Installation name="Claude Code" detection={agents.claude} actions={<BackupButton agent="claude" disabled={isChangeInProgress} />}>
         {agents.claude.status === "found" && (
           <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />

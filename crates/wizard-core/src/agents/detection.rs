@@ -166,7 +166,7 @@ pub(super) fn detect_desktop(
     {
         let (package, executable) = match agent {
             DesktopAgent::Claude => ("Claude", "Claude.exe"),
-            DesktopAgent::Codex => ("OpenAI.ChatGPT-Desktop", "ChatGPT.exe"),
+            DesktopAgent::Codex => ("OpenAI.Codex", "ChatGPT.exe"),
         };
         let info = match detect_desktop_windows(package, executable, last_found) {
             Ok(Some(info)) => info,

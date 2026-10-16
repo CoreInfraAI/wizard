@@ -1,6 +1,6 @@
 use super::{
     AgentDetection,
-    detection::{self, Agent, AgentInfo},
+    detection::{self, Agent, AgentInfo, DesktopAgent},
 };
 use crate::{
     config_files::{
@@ -8,7 +8,7 @@ use crate::{
         backups::{AgentKind, BackupManager},
         changes::{FileChange, FileSnapshot},
     },
-    platform::{command_output, env_var_not_empty, find_executable},
+    platform::{command_output, env_var_not_empty, find_executable, is_executable},
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
     settings::Settings,
 };
@@ -34,22 +34,40 @@ pub enum ProxyMode {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Codex {
-    #[serde(flatten)]
-    pub info: AgentInfo,
+    pub cli: AgentDetection<AgentInfo>,
+    pub desktop: AgentDetection<AgentInfo>,
     pub proxy_mode: ProxyMode,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
-    let info = match detection::detect(Agent::Codex, settings.codex_path_last.as_deref()) {
-        AgentDetection::Found(info) => info,
-        AgentDetection::NotFound => return AgentDetection::NotFound,
-        AgentDetection::Error(error) => return AgentDetection::Error(error),
-    };
+    let cli = detection::detect(Agent::Codex, settings.codex_path_last.as_deref());
+    let desktop = detection::detect_desktop(
+        DesktopAgent::Codex,
+        settings.codex_desktop_path_last.as_deref(),
+    );
+    if !matches!(cli, AgentDetection::Found(_)) && !matches!(desktop, AgentDetection::Found(_)) {
+        let mut errors = Vec::new();
+        if let AgentDetection::Error(error) = cli {
+            errors.push(format!("Codex CLI: {error}"));
+        }
+        if let AgentDetection::Error(error) = desktop {
+            errors.push(format!("ChatGPT: {error}"));
+        }
+        return if errors.is_empty() {
+            AgentDetection::NotFound
+        } else {
+            AgentDetection::Error(errors.join("; "))
+        };
+    }
     let proxy_mode = match proxy_mode() {
         Ok(proxy_mode) => proxy_mode,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(Codex { info, proxy_mode })
+    AgentDetection::Found(Codex {
+        cli,
+        desktop,
+        proxy_mode,
+    })
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -145,23 +163,67 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
     remove_inactive_proxy_env(&mut dotenv.after, current_mode, mode)?;
     write_proxy_env(&mut dotenv.after, mode, &settings.coreinfra_token)?;
 
-    let mut steps: Vec<_> = [config, dotenv]
-        .into_iter()
-        .map(|change| PreparedStep::ChangeFile { change })
-        .collect();
+    Ok(PreparedPlan::new(
+        PreparedAgent::Codex,
+        vec![
+            PreparedStep::ChangeFile { change: config },
+            PreparedStep::ChangeFile { change: dotenv },
+            PreparedStep::CodexRestartDaemon {
+                executable: daemon_executable(settings)?,
+                codex_home,
+            },
+        ],
+    ))
+}
 
+/// Prefer the standalone CLI; only discover the desktop app when it is absent.
+fn daemon_executable(settings: &Settings) -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     let extra = vec![PathBuf::from("%LOCALAPPDATA%/Programs/OpenAI/Codex/bin")];
     #[cfg(not(target_os = "windows"))]
     let extra = vec![];
-    let executable = find_executable("codex", extra, settings.codex_path_last.as_deref())?
-        .context("Codex executable not found")?;
+    if let Some(executable) = find_executable("codex", extra, settings.codex_path_last.as_deref())?
+    {
+        return Ok(executable);
+    }
 
-    steps.push(PreparedStep::CodexRestartDaemon {
-        executable,
-        codex_home,
-    });
-    Ok(PreparedPlan::new(PreparedAgent::Codex, steps))
+    let desktop = match detection::detect_desktop(
+        DesktopAgent::Codex,
+        settings.codex_desktop_path_last.as_deref(),
+    ) {
+        AgentDetection::Found(desktop) => desktop.path,
+        AgentDetection::NotFound => anyhow::bail!("Codex CLI and ChatGPT not found"),
+        AgentDetection::Error(error) => {
+            anyhow::bail!("failed to find ChatGPT for daemon restart: {error}")
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let resources = desktop.join("Contents/Resources");
+    #[cfg(not(target_os = "macos"))]
+    let resources = {
+        // Linux launchers may be symlinks into the installation directory.
+        let executable = std::fs::canonicalize(&desktop)
+            .with_context(|| format!("failed to resolve {}", desktop.display()))?;
+        executable
+            .parent()
+            .context("desktop executable has no parent")?
+            .join("resources")
+    };
+    #[cfg(target_os = "windows")]
+    let candidates = ["codex-cli/bin/codex.exe", "codex.exe"];
+    #[cfg(not(target_os = "windows"))]
+    let candidates = ["codex-cli/bin/codex", "codex"];
+
+    for relative in candidates {
+        let path = resources.join(relative);
+        if is_executable(&path)? {
+            return std::path::absolute(path).context("failed to resolve bundled Codex executable");
+        }
+    }
+    anyhow::bail!(
+        "bundled Codex executable not found in {}",
+        resources.display()
+    )
 }
 
 const API_FILTERS: &[&str] = &[
