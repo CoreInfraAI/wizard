@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection,
+    AgentDetection, HubMode,
     detection::{self, Agent, AgentInfo},
 };
 use crate::{
@@ -20,13 +20,13 @@ use std::{
 
 const PACKAGE: &str = "@coreinfra/opencode-plugin";
 const INSTALL_SOURCE: &str = "@coreinfra/opencode-plugin@latest";
-pub(crate) static HUB_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct OpenCode {
     #[serde(flatten)]
     pub info: AgentInfo,
-    pub proxy_installed: bool,
+    pub routing_mode: HubMode,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<OpenCode> {
@@ -35,14 +35,11 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<OpenCode> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let proxy_installed = match proxy_installed() {
-        Ok(installed) => installed,
+    let routing_mode = match routing_mode() {
+        Ok(mode) => mode,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(OpenCode {
-        info,
-        proxy_installed,
-    })
+    AgentDetection::Found(OpenCode { info, routing_mode })
 }
 
 // OpenCode uses XDG directories on all platforms, including macOS and Windows.
@@ -103,17 +100,19 @@ fn has_hub_plugin(config: &Value) -> bool {
         .is_some_and(|plugins| plugins.iter().any(is_hub_plugin))
 }
 
-fn proxy_installed() -> Result<bool> {
-    let _guard = HUB_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("OpenCode Hub lock poisoned"))?;
+fn routing_mode() -> Result<HubMode> {
+    let _guard = PreparedAgent::OpenCode.lock()?;
     let dir = config_dir()?;
     let (_, installed) = read_configs(&dir)?;
-    Ok(installed)
+    Ok(if installed {
+        HubMode::Hub
+    } else {
+        HubMode::Disabled
+    })
 }
 
 /// Prepare global configuration changes without running the installer or writing files.
-pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
+pub fn prepare_hub(mode: HubMode, settings: &Settings) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::OpenCode.lock()?;
 
     let dir = config_dir()?;
@@ -125,7 +124,7 @@ pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
         let credentials = auth
             .as_object_mut()
             .context("OpenCode auth must be an object")?;
-        if install {
+        if mode == HubMode::Hub {
             credentials.insert(
                 "coreinfra".into(),
                 json!({"type": "api", "key": settings.coreinfra_token}),
@@ -137,7 +136,7 @@ pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
     })?;
 
     let mut steps = Vec::new();
-    if install {
+    if mode == HubMode::Hub {
         let executable = find_executable(
             "opencode",
             vec![PathBuf::from("~/.opencode/bin")],

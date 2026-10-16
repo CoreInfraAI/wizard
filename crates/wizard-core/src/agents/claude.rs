@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection,
+    AgentDetection, RoutingMode,
     detection::{self, Agent, AgentInfo},
 };
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
     settings::Settings,
 };
 use anyhow::{Context as _, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -23,21 +23,13 @@ use std::{
 const HUB_URL: &str = "https://hub.coreinfra.ai/claude/api";
 const API_URL: &str = "https://hub.coreinfra.ai/anthropic/subscription/api";
 const NO_PROXY_SCRIPT: &str = "#!/bin/sh\n\nunset HTTPS_PROXY NO_PROXY\n";
-pub(crate) static PROXY_LOCK: Mutex<()> = Mutex::new(());
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxyMode {
-    Disabled,
-    ProxyHub,
-    ProxyApi,
-}
+pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Claude {
     #[serde(flatten)]
     pub info: AgentInfo,
-    pub proxy_mode: ProxyMode,
+    pub routing_mode: RoutingMode,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
@@ -46,11 +38,11 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let proxy_mode = match proxy_mode() {
+    let routing_mode = match routing_mode() {
         Ok(mode) => mode,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(Claude { info, proxy_mode })
+    AgentDetection::Found(Claude { info, routing_mode })
 }
 
 fn config_dir() -> Result<PathBuf> {
@@ -72,19 +64,17 @@ fn global_config_path() -> Result<PathBuf> {
         .join(".claude.json"))
 }
 
-fn proxy_mode() -> Result<ProxyMode> {
-    let _guard = PROXY_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Claude proxy lock poisoned"))?;
+fn routing_mode() -> Result<RoutingMode> {
+    let _guard = PreparedAgent::Claude.lock()?;
     let settings = config_files::json::read(&config_dir()?.join("settings.json"))?;
     Ok(mode_from_config(&settings))
 }
 
-fn mode_from_config(settings: &Value) -> ProxyMode {
+fn mode_from_config(settings: &Value) -> RoutingMode {
     match settings["env"]["ANTHROPIC_BASE_URL"].as_str() {
-        Some(HUB_URL) => ProxyMode::ProxyHub,
-        Some(API_URL) => ProxyMode::ProxyApi,
-        _ => ProxyMode::Disabled,
+        Some(HUB_URL) => RoutingMode::Hub,
+        Some(API_URL) => RoutingMode::Sub,
+        _ => RoutingMode::Disabled,
     }
 }
 
@@ -93,13 +83,11 @@ pub fn get_backups() -> Result<Vec<super::Backup>> {
 }
 
 pub fn restore_backup(id: u32) -> Result<()> {
-    let _guard = PROXY_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Claude proxy lock poisoned"))?;
+    let _guard = PreparedAgent::Claude.lock()?;
     BackupManager::load_backup(AgentKind::Claude, id)
 }
 
-pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPlan> {
+pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Claude.lock()?;
 
     let token = &settings.coreinfra_token;
@@ -111,7 +99,7 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
     let mut script = FileChange::read(script_path.clone())?;
 
     let current_mode = mode_from_config(&config_files::json::parse(&settings.after)?);
-    if !(mode == ProxyMode::Disabled && current_mode == ProxyMode::Disabled) {
+    if !(mode == RoutingMode::Disabled && current_mode == RoutingMode::Disabled) {
         config_files::json::update(&mut settings.after, |settings| {
             let env = settings
                 .as_object_mut()
@@ -120,24 +108,24 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
                 .or_insert_with(|| json!({}))
                 .as_object_mut()
                 .context("Claude env must be an object")?;
-            remove_inactive_proxy_settings(env, current_mode);
-            write_proxy_settings(env, mode, token, &script_path)
+            remove_inactive_routing_settings(env, current_mode);
+            write_routing_settings(env, mode, token, &script_path)
         })?;
     }
-    if mode == ProxyMode::ProxyHub {
+    if mode == RoutingMode::Hub {
         // The saved token is ASCII; Claude approves its last 20 characters.
         let suffix = token.get(token.len().saturating_sub(20)..).unwrap_or(token);
         approve_key(&mut global.after, suffix)?;
     }
-    if mode == ProxyMode::ProxyApi {
+    if mode == RoutingMode::Sub {
         script.after = FileSnapshot::new(NO_PROXY_SCRIPT.to_owned(), 0o700);
     }
-    if mode != ProxyMode::ProxyApi && current_mode == ProxyMode::ProxyApi {
+    if mode != RoutingMode::Sub && current_mode == RoutingMode::Sub {
         script.after = FileSnapshot::Missing;
     }
 
     // Keep preparation files before activation, and script deletion after it.
-    let changes = if mode == ProxyMode::ProxyApi {
+    let changes = if mode == RoutingMode::Sub {
         [global, script, settings]
     } else {
         [global, settings, script]
@@ -153,16 +141,16 @@ fn prepare_plan(changes: Vec<FileChange>) -> PreparedPlan {
     PreparedPlan::new(PreparedAgent::Claude, steps)
 }
 
-fn remove_inactive_proxy_settings(env: &mut Map<String, Value>, current_mode: ProxyMode) {
+fn remove_inactive_routing_settings(env: &mut Map<String, Value>, current_mode: RoutingMode) {
     // Only clean up fields owned by the previously selected CoreInfra mode.
     let previous_keys: &[&str] = match current_mode {
-        ProxyMode::Disabled => &[],
-        ProxyMode::ProxyHub => &[
+        RoutingMode::Disabled => &[],
+        RoutingMode::Hub => &[
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_API_KEY",
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
         ],
-        ProxyMode::ProxyApi => &[
+        RoutingMode::Sub => &[
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_CUSTOM_HEADERS",
             "HTTPS_PROXY",
@@ -175,15 +163,15 @@ fn remove_inactive_proxy_settings(env: &mut Map<String, Value>, current_mode: Pr
     }
 }
 
-fn write_proxy_settings(
+fn write_routing_settings(
     env: &mut Map<String, Value>,
-    mode: ProxyMode,
+    mode: RoutingMode,
     token: &str,
     script_path: &Path,
 ) -> Result<()> {
     match mode {
-        ProxyMode::Disabled => {}
-        ProxyMode::ProxyHub => {
+        RoutingMode::Disabled => {}
+        RoutingMode::Hub => {
             env.insert("ANTHROPIC_BASE_URL".into(), json!(HUB_URL));
             env.insert("ANTHROPIC_API_KEY".into(), json!(token));
             env.insert(
@@ -191,7 +179,7 @@ fn write_proxy_settings(
                 json!("1"),
             );
         }
-        ProxyMode::ProxyApi => {
+        RoutingMode::Sub => {
             // Encode the password component; the header keeps the literal token.
             let password: String = token
                 .bytes()

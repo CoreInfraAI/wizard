@@ -3,11 +3,11 @@ import { useEffect, useState } from "react";
 import { reportError, debug } from "../logs/log";
 
 export type AgentChange =
-  | { CodexSetProxy: ProxyMode }
-  | { ClaudeSetProxy: ProxyMode }
-  | { ClaudeDesktopSetProxy: ProxyMode }
-  | { SetPiHub: boolean }
-  | { SetOpenCodeHub: boolean };
+  | { CodexSetRouting: RoutingMode }
+  | { ClaudeSetRouting: RoutingMode }
+  | { ClaudeDesktopSetRouting: RoutingMode }
+  | { SetPiHub: HubMode }
+  | { SetOpenCodeHub: HubMode };
 
 // Opaque backend payload: may contain credentials. Do not log, modify or persist it.
 export type PreparedPlan = unknown;
@@ -60,36 +60,37 @@ export type AgentDetection<T> =
   | { status: "not_found" }
   | { status: "error"; data: string };
 
-export type ProxyMode = "disabled" | "proxy_hub" | "proxy_api";
+export type RoutingMode = "disabled" | "sub" | "hub";
+export type HubMode = "disabled" | "hub";
 
 export type Codex = {
   cli: AgentDetection<{ path: string; version: string | null }>;
   desktop: AgentDetection<{ path: string; version: string | null }>;
-  proxy_mode: ProxyMode;
+  routing_mode: RoutingMode;
 };
 
 export type Claude = {
   path: string;
   version: string;
-  proxy_mode: ProxyMode;
+  routing_mode: RoutingMode;
 };
 
 export type ClaudeDesktop = {
   path: string;
   version: string | null;
-  proxy_mode: ProxyMode;
+  routing_mode: RoutingMode;
 };
 
 export type OpenCode = {
   path: string;
   version: string;
-  proxy_installed: boolean;
+  routing_mode: HubMode;
 };
 
 export type Pi = {
   path: string;
   version: string;
-  proxy_installed: boolean;
+  routing_mode: HubMode;
 };
 
 export type AgentStates = {

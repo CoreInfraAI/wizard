@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection,
+    AgentDetection, RoutingMode,
     detection::{self, AgentInfo, DesktopAgent},
 };
 use crate::{
@@ -8,7 +8,7 @@ use crate::{
     settings::Settings,
 };
 use anyhow::{Context as _, Result, ensure};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Mutex};
 
@@ -20,21 +20,13 @@ const CONNECTION_KEYS: [&str; 5] = [
     "inferenceGatewayApiKey",
     "inferenceGatewayAuthScheme",
 ];
-pub(crate) static HUB_LOCK: Mutex<()> = Mutex::new(());
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxyMode {
-    Disabled,
-    ProxyHub,
-    ProxyApi,
-}
+pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct ClaudeDesktop {
     #[serde(flatten)]
     pub info: AgentInfo,
-    pub proxy_mode: ProxyMode,
+    pub routing_mode: RoutingMode,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
@@ -47,11 +39,11 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
 
-    let proxy_mode = match proxy_mode() {
+    let routing_mode = match routing_mode() {
         Ok(mode) => mode,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(ClaudeDesktop { info, proxy_mode })
+    AgentDetection::Found(ClaudeDesktop { info, routing_mode })
 }
 
 fn config_library() -> Result<PathBuf> {
@@ -95,13 +87,13 @@ fn has_hub_connection(config: &Value) -> bool {
             .is_some_and(|url| url.trim_end_matches('/') == HUB_URL)
 }
 
-fn proxy_mode() -> Result<ProxyMode> {
+fn routing_mode() -> Result<RoutingMode> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
     let dir = config_library()?;
     let meta = json::read(&dir.join("_meta.json"))?;
     let Some(id) = applied_id(&meta)? else {
-        return Ok(ProxyMode::Disabled);
+        return Ok(RoutingMode::Disabled);
     };
 
     let config = json::read(&dir.join(format!("{id}.json")))?;
@@ -112,16 +104,16 @@ fn proxy_mode() -> Result<ProxyMode> {
         && config["egressProxyUrl"] == proxy_url
         && config.get("egressProxyPacUrl").is_none()
     {
-        Ok(ProxyMode::ProxyApi)
+        Ok(RoutingMode::Sub)
     } else if preferences["deploymentMode"] != "1p" && has_hub_connection(&config) {
-        Ok(ProxyMode::ProxyHub)
+        Ok(RoutingMode::Hub)
     } else {
-        Ok(ProxyMode::Disabled)
+        Ok(RoutingMode::Disabled)
     }
 }
 
 /// Prepare a local profile update without writing files or restarting Claude.
-pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPlan> {
+pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
     let dir = config_library()?;
@@ -138,7 +130,7 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
         "new Claude Desktop profile already exists; prepare again"
     );
 
-    if selected.is_none() && mode != ProxyMode::Disabled {
+    if selected.is_none() && mode != RoutingMode::Disabled {
         json::update(&mut meta.after, |meta| {
             let entries = meta
                 .as_object_mut()
@@ -160,14 +152,14 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
 
     let proxy_url = format!("http://{}", wizard_proxy::LISTEN_ADDRESS);
     json::update(&mut config.after, |config| {
-        let remove = mode != ProxyMode::ProxyHub && has_hub_connection(config);
-        let remove_proxy = mode == ProxyMode::Disabled && config["egressProxyUrl"] == proxy_url;
+        let remove = mode != RoutingMode::Hub && has_hub_connection(config);
+        let remove_proxy = mode == RoutingMode::Disabled && config["egressProxyUrl"] == proxy_url;
 
         let object = config
             .as_object_mut()
             .context("Claude Desktop configuration must be an object")?;
 
-        if mode == ProxyMode::ProxyHub {
+        if mode == RoutingMode::Hub {
             object.insert("inferenceProvider".into(), json!("gateway"));
             object.insert("inferenceCredentialKind".into(), json!("static"));
             object.insert("inferenceGatewayBaseUrl".into(), json!(HUB_URL));
@@ -182,11 +174,11 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
             }
         }
 
-        if mode == ProxyMode::ProxyApi {
+        if mode == RoutingMode::Sub {
             object.insert("disableAutoUpdates".into(), json!(true));
         }
 
-        if mode != ProxyMode::Disabled {
+        if mode != RoutingMode::Disabled {
             object.insert("egressProxyUrl".into(), json!(proxy_url));
             object.remove("egressProxyPacUrl");
         } else if remove_proxy {
@@ -195,13 +187,10 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
         Ok(())
     })?;
 
-    if mode != ProxyMode::Disabled {
+    if mode != RoutingMode::Disabled {
         json::update(&mut preferences.after, |preferences| {
-            preferences["deploymentMode"] = json!(if mode == ProxyMode::ProxyApi {
-                "1p"
-            } else {
-                "3p"
-            });
+            preferences["deploymentMode"] =
+                json!(if mode == RoutingMode::Sub { "1p" } else { "3p" });
             Ok(())
         })?;
     }
@@ -216,7 +205,7 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
                 change: preferences,
             },
             PreparedStep::SetClaudeProxyEnabled {
-                enabled: mode != ProxyMode::Disabled,
+                enabled: mode != RoutingMode::Disabled,
             },
         ],
     ))

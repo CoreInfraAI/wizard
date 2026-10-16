@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { type AgentChange, type AgentDetection, type AgentStates, type BackupAgent, type PreparedAgentChange, type ProxyMode, prepareAgentChange } from "./agents_state";
+import { type AgentChange, type AgentDetection, type AgentStates, type BackupAgent, type HubMode, type PreparedAgentChange, type RoutingMode, prepareAgentChange } from "./agents_state";
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { useSettings } from "../settings/settings";
@@ -13,21 +13,21 @@ import { Radio, RadioField, RadioGroup } from "../components/catalyst/radio";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 
-const proxyOptions = [
+const routingOptions = [
   { mode: "disabled", label: "Без CoreInfra" },
-  { mode: "proxy_hub", label: "CoreInfra Hub" },
-  { mode: "proxy_api", label: "CoreInfra API" },
+  { mode: "hub", label: "CoreInfra Hub" },
+  { mode: "sub", label: "CoreInfra Hub" },
 ] as const;
 
-function HubProxy({ agent, installed, disabled, onPrepare }: {
+function HubRoutingSelector({ agent, mode, disabled, onPrepare }: {
   agent: "Pi" | "OpenCode";
-  installed: boolean;
+  mode: HubMode;
   disabled: boolean;
   onPrepare: (change: AgentChange) => void;
 }) {
   const { settings, error: settingsError } = useSettings();
   const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
-  const [selected, setSelected] = useState(installed);
+  const [selected, setSelected] = useState<HubMode>(mode);
 
   function prepare() {
     switch (agent) {
@@ -39,17 +39,17 @@ function HubProxy({ agent, installed, disabled, onPrepare }: {
   return (
     <>
       <div>
-        <Badge color={installed ? "green" : "zinc"}>
-          {installed ? "CoreInfra Hub · активно" : "Без CoreInfra"}
+        <Badge color={mode === "hub" ? "green" : "zinc"}>
+          {mode === "hub" ? "CoreInfra Hub · активно" : "Без CoreInfra"}
         </Badge>
       </div>
       <RadioGroup
-        value={selected ? "hub" : "none"}
+        value={selected}
         disabled={disabled}
-        onChange={(value) => setSelected(value === "hub")}
+        onChange={(value) => setSelected(value as HubMode)}
       >
         <RadioField>
-          <Radio value="none" />
+          <Radio value="disabled" />
           <Label>Без CoreInfra</Label>
         </RadioField>
         <RadioField>
@@ -57,7 +57,7 @@ function HubProxy({ agent, installed, disabled, onPrepare }: {
           <Label>CoreInfra Hub</Label>
         </RadioField>
       </RadioGroup>
-      <Button outline type="button" disabled={disabled || (selected && !hasToken)} onClick={prepare}>
+      <Button outline type="button" disabled={disabled || (selected === "hub" && !hasToken)} onClick={prepare}>
         Применить
       </Button>
     </>
@@ -150,29 +150,29 @@ function ProxyStatus({ codex }: { codex?: AgentStates["codex"] }) {
         {proxy.running ? "Прокси работает" : "Прокси остановлен"}
       </Badge>
       {!proxy.running && codex?.status === "found" && codex.data.desktop.status === "found"
-        && codex.data.proxy_mode !== "disabled" && (
+        && codex.data.routing_mode !== "disabled" && (
           <ErrorText>Прокси для ChatGPT не запущен, нажмите применить</ErrorText>
         )}
     </>
   );
 }
 
-function AgentProxy({ agent, mode, disabled, onPrepare }: {
+function RoutingSelector({ agent, mode, disabled, onPrepare }: {
   agent: "codex" | "claude" | "claude_desktop";
-  mode: ProxyMode;
+  mode: RoutingMode;
   disabled: boolean;
   onPrepare: (change: AgentChange) => void;
 }) {
   const { settings, error: settingsError } = useSettings();
   const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
-  const [draft, setDraft] = useState<ProxyMode>();
+  const [draft, setDraft] = useState<RoutingMode>();
   const selected = draft ?? mode;
 
   function prepare() {
     switch (agent) {
-      case "codex": onPrepare({ CodexSetProxy: selected }); break;
-      case "claude": onPrepare({ ClaudeSetProxy: selected }); break;
-      case "claude_desktop": onPrepare({ ClaudeDesktopSetProxy: selected }); break;
+      case "codex": onPrepare({ CodexSetRouting: selected }); break;
+      case "claude": onPrepare({ ClaudeSetRouting: selected }); break;
+      case "claude_desktop": onPrepare({ ClaudeDesktopSetRouting: selected }); break;
     }
   }
 
@@ -184,7 +184,7 @@ function AgentProxy({ agent, mode, disabled, onPrepare }: {
     <>
       <div className="flex flex-wrap items-center gap-2">
         <Badge color={mode === "disabled" ? "zinc" : "green"}>
-          {proxyOptions.find((option) => option.mode === mode)?.label}
+          {routingOptions.find((option) => option.mode === mode)?.label}
           {mode !== "disabled" && " · активно"}
         </Badge>
         {agent === "claude_desktop" && <ProxyStatus />}
@@ -192,13 +192,13 @@ function AgentProxy({ agent, mode, disabled, onPrepare }: {
       <RadioGroup
         value={selected}
         disabled={disabled}
-        onChange={(value) => setDraft(value as ProxyMode)}
+        onChange={(value) => setDraft(value as RoutingMode)}
       >
-        {proxyOptions.map((option) => (
+        {routingOptions.map((option) => (
           <RadioField key={option.mode}>
             <Radio value={option.mode} />
             <Label>
-              {option.label}{option.mode === "proxy_api"
+              {option.label}{option.mode === "sub"
                 ? ` — через вашу подписку ${agent === "codex" ? "ChatGPT" : "Claude"}`
                 : ""}
             </Label>
@@ -252,7 +252,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
         <Text>Настройка общая для Codex и ChatGPT.</Text>
         {agents.codex.status === "found" && (
           <div className="space-y-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
-            <AgentProxy agent="codex" mode={agents.codex.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+            <RoutingSelector agent="codex" mode={agents.codex.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
           </div>
         )}
         {agents.codex.status === "error" && (
@@ -261,23 +261,23 @@ export function AgentList({ agents }: { agents: AgentStates }) {
       </section>
       <Installation name="Claude Code" detection={agents.claude} actions={<BackupButton agent="claude" disabled={isChangeInProgress} />}>
         {agents.claude.status === "found" && (
-          <AgentProxy agent="claude" mode={agents.claude.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+          <RoutingSelector agent="claude" mode={agents.claude.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       <Installation name="Claude Desktop" detection={agents.claude_desktop}>
         {agents.claude_desktop.status === "found" && (
-          <AgentProxy agent="claude_desktop" mode={agents.claude_desktop.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+          <RoutingSelector agent="claude_desktop" mode={agents.claude_desktop.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
         <Text>Для входа в аккаунт включите VPN и примените режим «Без CoreInfra» в Wizard.</Text>
       </Installation>
       <Installation name="OpenCode" detection={agents.opencode}>
         {agents.opencode.status === "found" && (
-          <HubProxy agent="OpenCode" installed={agents.opencode.data.proxy_installed} disabled={isChangeInProgress} onPrepare={prepare} />
+          <HubRoutingSelector agent="OpenCode" mode={agents.opencode.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       <Installation name="Pi" detection={agents.pi}>
         {agents.pi.status === "found" && (
-          <HubProxy agent="Pi" installed={agents.pi.data.proxy_installed} disabled={isChangeInProgress} onPrepare={prepare} />
+          <HubRoutingSelector agent="Pi" mode={agents.pi.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       {error && <div className="col-span-full"><ErrorText>{error}</ErrorText></div>}

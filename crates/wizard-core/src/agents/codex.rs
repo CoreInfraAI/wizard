@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection,
+    AgentDetection, RoutingMode,
     detection::{self, Agent, AgentInfo, DesktopAgent},
 };
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 };
 use anyhow::{Context as _, Result, ensure};
 use core::time::Duration;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -22,21 +22,13 @@ use std::{
 };
 use toml_edit::DocumentMut;
 
-pub(crate) static PROXY_LOCK: Mutex<()> = Mutex::new(());
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxyMode {
-    Disabled,
-    ProxyHub,
-    ProxyApi,
-}
+pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Codex {
     pub cli: AgentDetection<AgentInfo>,
     pub desktop: AgentDetection<AgentInfo>,
-    pub proxy_mode: ProxyMode,
+    pub routing_mode: RoutingMode,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
@@ -59,14 +51,14 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
             AgentDetection::Error(errors.join("; "))
         };
     }
-    let proxy_mode = match proxy_mode() {
-        Ok(proxy_mode) => proxy_mode,
+    let routing_mode = match routing_mode() {
+        Ok(routing_mode) => routing_mode,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
     AgentDetection::Found(Codex {
         cli,
         desktop,
-        proxy_mode,
+        routing_mode,
     })
 }
 
@@ -78,19 +70,17 @@ fn config_path() -> Result<PathBuf> {
     Ok(home.join(".codex/config.toml"))
 }
 
-fn proxy_mode() -> Result<ProxyMode> {
-    let _guard = PROXY_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Codex proxy lock poisoned"))?;
+fn routing_mode() -> Result<RoutingMode> {
+    let _guard = PreparedAgent::Codex.lock()?;
     let doc = config_files::toml::read(&config_path()?)?;
     Ok(mode_from_config(&doc))
 }
 
-fn mode_from_config(doc: &DocumentMut) -> ProxyMode {
+fn mode_from_config(doc: &DocumentMut) -> RoutingMode {
     match config_files::toml::get_string(doc, &["model_provider"]) {
-        Some("coreinfra") => ProxyMode::ProxyHub,
-        Some("coreinfra-subscription") => ProxyMode::ProxyApi,
-        _ => ProxyMode::Disabled,
+        Some("coreinfra") => RoutingMode::Hub,
+        Some("coreinfra-subscription") => RoutingMode::Sub,
+        _ => RoutingMode::Disabled,
     }
 }
 
@@ -99,14 +89,12 @@ pub fn get_backups() -> Result<Vec<super::Backup>> {
 }
 
 pub fn restore_backup(id: u32) -> Result<()> {
-    let _guard = PROXY_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Codex proxy lock poisoned"))?;
+    let _guard = PreparedAgent::Codex.lock()?;
     BackupManager::load_backup(AgentKind::Codex, id)
 }
 
 /// Call from a Tokio blocking worker. Restart only if the version probe succeeds.
-/// A restart may interrupt active work; this does not change proxy configuration.
+/// A restart may interrupt active work; this does not change routing configuration.
 pub fn restart_daemon(executable: &Path, codex_home: &Path) -> Result<()> {
     let mut probe = tokio::process::Command::new(executable);
     probe
@@ -149,7 +137,7 @@ pub fn restart_daemon(executable: &Path, codex_home: &Path) -> Result<()> {
 }
 
 /// Prepare without writing files or probing the daemon.
-pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPlan> {
+pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Codex.lock()?;
 
     let path = std::path::absolute(config_path()?)?;
@@ -161,15 +149,15 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
     let mut config = FileChange::read(path.clone())?;
     let mut dotenv = FileChange::read(path.with_file_name(".env"))?;
 
-    let mut current_mode = ProxyMode::Disabled;
+    let mut current_mode = RoutingMode::Disabled;
     config_files::toml::update(&mut config.after, |doc| {
         current_mode = mode_from_config(doc);
-        remove_inactive_proxy_settings(doc, current_mode)?;
-        write_proxy_settings(doc, mode)
+        remove_inactive_routing_settings(doc, current_mode)?;
+        write_routing_settings(doc, mode)
     })?;
 
-    remove_inactive_proxy_env(&mut dotenv.after, current_mode, mode)?;
-    write_proxy_env(&mut dotenv.after, mode, &settings.coreinfra_token)?;
+    remove_inactive_routing_env(&mut dotenv.after, current_mode, mode)?;
+    write_routing_env(&mut dotenv.after, mode, &settings.coreinfra_token)?;
 
     Ok(PreparedPlan::new(
         PreparedAgent::Codex,
@@ -185,9 +173,9 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
 }
 
 /// Add GUI-owned proxy demand and, on macOS, `ChatGPT` profile configuration.
-pub fn prepare_proxy_for_gui(mode: ProxyMode, settings: &Settings) -> Result<PreparedPlan> {
-    let mut plan = prepare_proxy(mode, settings)?;
-    let enabled = if mode == ProxyMode::Disabled {
+pub fn prepare_routing_for_gui(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
+    let mut plan = prepare_routing(mode, settings)?;
+    let enabled = if mode == RoutingMode::Disabled {
         false
     } else {
         match detection::detect_desktop(
@@ -308,18 +296,21 @@ const API_FILTERS: &[&str] = &[
     "NO_PROXY",
 ];
 
-fn remove_inactive_proxy_settings(doc: &mut DocumentMut, current_mode: ProxyMode) -> Result<()> {
-    if current_mode != ProxyMode::Disabled {
+fn remove_inactive_routing_settings(
+    doc: &mut DocumentMut,
+    current_mode: RoutingMode,
+) -> Result<()> {
+    if current_mode != RoutingMode::Disabled {
         config_files::toml::remove(doc, &["model_provider"])?;
     }
 
     config_files::toml::remove(doc, &["model_providers", "coreinfra"])?;
     config_files::toml::remove(doc, &["model_providers", "coreinfra-subscription"])?;
 
-    if current_mode == ProxyMode::ProxyHub {
+    if current_mode == RoutingMode::Hub {
         config_files::toml::remove(doc, &["features", "api_key_model_discovery"])?;
     }
-    if current_mode == ProxyMode::ProxyApi {
+    if current_mode == RoutingMode::Sub {
         config_files::toml::remove(doc, &["features", "shell_snapshot"])?;
         for key in API_FILTERS {
             config_files::toml::remove(doc, &["shell_environment_policy", "filters", key])?;
@@ -328,15 +319,15 @@ fn remove_inactive_proxy_settings(doc: &mut DocumentMut, current_mode: ProxyMode
     Ok(())
 }
 
-fn write_proxy_settings(doc: &mut DocumentMut, mode: ProxyMode) -> Result<()> {
+fn write_routing_settings(doc: &mut DocumentMut, mode: RoutingMode) -> Result<()> {
     let (provider, name, base_url) = match mode {
-        ProxyMode::Disabled => return Ok(()),
-        ProxyMode::ProxyHub => (
+        RoutingMode::Disabled => return Ok(()),
+        RoutingMode::Hub => (
             "coreinfra",
             "CoreInfra AI Hub",
             "https://hub.coreinfra.ai/codex/api/v1",
         ),
-        ProxyMode::ProxyApi => (
+        RoutingMode::Sub => (
             "coreinfra-subscription",
             "CoreInfra AI Hub | ChatGPT",
             "https://hub.coreinfra.ai/openai/subscription/api/v1",
@@ -352,7 +343,7 @@ fn write_proxy_settings(doc: &mut DocumentMut, mode: ProxyMode) -> Result<()> {
     }
 
     match mode {
-        ProxyMode::ProxyHub => {
+        RoutingMode::Hub => {
             config_files::toml::set_value(doc, &["features", "api_key_model_discovery"], true)?;
             config_files::toml::set_value(
                 doc,
@@ -365,7 +356,7 @@ fn write_proxy_settings(doc: &mut DocumentMut, mode: ProxyMode) -> Result<()> {
                 "https://hub.coreinfra.ai/codex/api/v1/models",
             )?;
         }
-        ProxyMode::ProxyApi => {
+        RoutingMode::Sub => {
             config_files::toml::set_value(doc, &["features", "shell_snapshot"], false)?;
             for key in API_FILTERS {
                 config_files::toml::set_value(
@@ -392,21 +383,21 @@ fn write_proxy_settings(doc: &mut DocumentMut, mode: ProxyMode) -> Result<()> {
                 true,
             )?;
         }
-        ProxyMode::Disabled => {}
+        RoutingMode::Disabled => {}
     }
     config_files::toml::implicit_table(doc, &["model_providers"])?;
     Ok(())
 }
 
-fn remove_inactive_proxy_env(
+fn remove_inactive_routing_env(
     after: &mut FileSnapshot,
-    current_mode: ProxyMode,
-    mode: ProxyMode,
+    current_mode: RoutingMode,
+    mode: RoutingMode,
 ) -> Result<()> {
-    if mode == ProxyMode::Disabled {
+    if mode == RoutingMode::Disabled {
         config_files::env::set_many(after, &[("COREINFRA_API_KEY", None)])?;
     }
-    if current_mode == ProxyMode::ProxyApi && mode != ProxyMode::ProxyApi {
+    if current_mode == RoutingMode::Sub && mode != RoutingMode::Sub {
         config_files::env::set_many(
             after,
             &[
@@ -419,13 +410,13 @@ fn remove_inactive_proxy_env(
     Ok(())
 }
 
-fn write_proxy_env(after: &mut FileSnapshot, mode: ProxyMode, token: &str) -> Result<()> {
+fn write_routing_env(after: &mut FileSnapshot, mode: RoutingMode, token: &str) -> Result<()> {
     match mode {
-        ProxyMode::Disabled => Ok(()),
-        ProxyMode::ProxyHub => {
+        RoutingMode::Disabled => Ok(()),
+        RoutingMode::Hub => {
             config_files::env::set_many(after, &[("COREINFRA_API_KEY", Some(token))])
         }
-        ProxyMode::ProxyApi => config_files::env::set_many(
+        RoutingMode::Sub => config_files::env::set_many(
             after,
             &[
                 ("COREINFRA_API_KEY", Some(token)),

@@ -5,8 +5,8 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 use wizard_core::agents::{
-    AgentStates, Backup, BackupAgent, claude, claude_desktop, codex, collect_agent_state, opencode,
-    pi,
+    AgentStates, Backup, BackupAgent, HubMode, RoutingMode, claude, claude_desktop, codex,
+    collect_agent_state, opencode, pi,
 };
 use wizard_core::prepared_plan::{PreparedPlan, PreparedStepInfo};
 use wizard_core::validate_token;
@@ -71,11 +71,11 @@ pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>,
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) enum AgentChange {
-    CodexSetProxy(codex::ProxyMode),
-    ClaudeSetProxy(claude::ProxyMode),
-    ClaudeDesktopSetProxy(claude_desktop::ProxyMode),
-    SetPiHub(bool),
-    SetOpenCodeHub(bool),
+    CodexSetRouting(RoutingMode),
+    ClaudeSetRouting(RoutingMode),
+    ClaudeDesktopSetRouting(RoutingMode),
+    SetPiHub(HubMode),
+    SetOpenCodeHub(HubMode),
 }
 
 // No Debug: the plan contains credentials; only info is intended for display.
@@ -93,9 +93,9 @@ pub(crate) async fn prepare_agent_change(
     app: tauri::AppHandle,
 ) -> Result<PreparedAgentChange, String> {
     let (name, agent) = match &change {
-        AgentChange::CodexSetProxy(_) => ("CodexSetProxy", "codex"),
-        AgentChange::ClaudeSetProxy(_) => ("ClaudeSetProxy", "claude"),
-        AgentChange::ClaudeDesktopSetProxy(_) => ("ClaudeDesktopSetProxy", "claude_desktop"),
+        AgentChange::CodexSetRouting(_) => ("CodexSetRouting", "codex"),
+        AgentChange::ClaudeSetRouting(_) => ("ClaudeSetRouting", "claude"),
+        AgentChange::ClaudeDesktopSetRouting(_) => ("ClaudeDesktopSetRouting", "claude_desktop"),
         AgentChange::SetPiHub(_) => ("SetPiHub", "pi"),
         AgentChange::SetOpenCodeHub(_) => ("SetOpenCodeHub", "opencode"),
     };
@@ -105,11 +105,13 @@ pub(crate) async fn prepare_agent_change(
 
     // Plans contain credentials: never log the returned value.
     let plan = tauri::async_runtime::spawn_blocking(move || match change {
-        AgentChange::CodexSetProxy(mode) => codex::prepare_proxy_for_gui(mode, &settings),
-        AgentChange::ClaudeSetProxy(mode) => claude::prepare_proxy(mode, &settings),
-        AgentChange::ClaudeDesktopSetProxy(mode) => claude_desktop::prepare_proxy(mode, &settings),
-        AgentChange::SetPiHub(install) => pi::prepare_hub(install, &settings),
-        AgentChange::SetOpenCodeHub(install) => opencode::prepare_hub(install, &settings),
+        AgentChange::CodexSetRouting(mode) => codex::prepare_routing_for_gui(mode, &settings),
+        AgentChange::ClaudeSetRouting(mode) => claude::prepare_routing(mode, &settings),
+        AgentChange::ClaudeDesktopSetRouting(mode) => {
+            claude_desktop::prepare_routing(mode, &settings)
+        }
+        AgentChange::SetPiHub(mode) => pi::prepare_hub(mode, &settings),
+        AgentChange::SetOpenCodeHub(mode) => opencode::prepare_hub(mode, &settings),
     })
     .await
     .context("agent change preparation task failed")

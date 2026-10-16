@@ -5,12 +5,7 @@ use std::{
     process::ExitCode,
 };
 use wizard_core::{
-    agents::{
-        self,
-        claude::{self, ProxyMode as ClaudeMode},
-        codex::{self, ProxyMode as CodexMode},
-        opencode, pi,
-    },
+    agents::{self, HubMode, RoutingMode, claude, codex, opencode, pi},
     prepared_plan::PreparedPlan,
     settings, validate_token,
 };
@@ -34,20 +29,20 @@ enum Command {
     Status,
     /// Read the token from stdin. Whitespace is trimmed; empty input clears it.
     SetToken,
-    /// Manage the Codex proxy configuration.
+    /// Manage the Codex routing configuration.
     Codex {
         #[command(subcommand)]
-        command: ProxyCommand,
+        command: RoutingCommand,
     },
-    /// Manage the Claude Code proxy configuration.
+    /// Manage the Claude Code routing configuration.
     Claude {
         #[command(subcommand)]
-        command: ProxyCommand,
+        command: RoutingCommand,
     },
     /// Claude Desktop configuration is available only in the GUI.
     ClaudeDesktop {
         #[command(subcommand)]
-        command: ProxyCommand,
+        command: RoutingCommand,
     },
     /// Manage the Pi Hub plugin.
     Pi {
@@ -62,12 +57,12 @@ enum Command {
 }
 
 #[derive(Subcommand)]
-enum ProxyCommand {
+enum RoutingCommand {
     /// Use `CoreInfra` Hub with the token saved in Wizard settings.
     Hub,
-    /// Use `CoreInfra` API with existing subscription authentication and the saved token.
-    Api,
-    /// Remove the `CoreInfra` proxy configuration.
+    /// Use `CoreInfra` Sub with existing subscription authentication and the saved token.
+    Sub,
+    /// Remove the `CoreInfra` routing configuration.
     None,
 }
 
@@ -113,11 +108,11 @@ fn run(cli: Cli) -> Result<()> {
 
             run_plan(&runtime, cli.yes, move || {
                 let mode = match command {
-                    ProxyCommand::Hub => CodexMode::ProxyHub,
-                    ProxyCommand::Api => CodexMode::ProxyApi,
-                    ProxyCommand::None => CodexMode::Disabled,
+                    RoutingCommand::Hub => RoutingMode::Hub,
+                    RoutingCommand::Sub => RoutingMode::Sub,
+                    RoutingCommand::None => RoutingMode::Disabled,
                 };
-                codex::prepare_proxy(mode, &settings)
+                codex::prepare_routing(mode, &settings)
             })?;
         }
         Command::Claude { command } => {
@@ -125,11 +120,11 @@ fn run(cli: Cli) -> Result<()> {
 
             run_plan(&runtime, cli.yes, move || {
                 let mode = match command {
-                    ProxyCommand::Hub => ClaudeMode::ProxyHub,
-                    ProxyCommand::Api => ClaudeMode::ProxyApi,
-                    ProxyCommand::None => ClaudeMode::Disabled,
+                    RoutingCommand::Hub => RoutingMode::Hub,
+                    RoutingCommand::Sub => RoutingMode::Sub,
+                    RoutingCommand::None => RoutingMode::Disabled,
                 };
-                claude::prepare_proxy(mode, &settings)
+                claude::prepare_routing(mode, &settings)
             })?;
         }
         Command::ClaudeDesktop { .. } => {
@@ -139,18 +134,22 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Pi { command } => {
             let settings = settings::load_from_file()?;
-            let install = matches!(command, HubCommand::Hub);
+            let mode = match command {
+                HubCommand::Hub => HubMode::Hub,
+                HubCommand::None => HubMode::Disabled,
+            };
 
-            run_plan(&runtime, cli.yes, move || {
-                pi::prepare_hub(install, &settings)
-            })?;
+            run_plan(&runtime, cli.yes, move || pi::prepare_hub(mode, &settings))?;
         }
         Command::Opencode { command } => {
             let settings = settings::load_from_file()?;
-            let install = matches!(command, HubCommand::Hub);
+            let mode = match command {
+                HubCommand::Hub => HubMode::Hub,
+                HubCommand::None => HubMode::Disabled,
+            };
 
             run_plan(&runtime, cli.yes, move || {
-                opencode::prepare_hub(install, &settings)
+                opencode::prepare_hub(mode, &settings)
             })?;
         }
     }

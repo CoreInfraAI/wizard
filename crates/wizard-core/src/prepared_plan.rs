@@ -27,11 +27,11 @@ pub(crate) enum PreparedAgent {
 impl PreparedAgent {
     pub(crate) fn lock(self) -> Result<MutexGuard<'static, ()>> {
         let mutex = match self {
-            Self::Codex => &codex::PROXY_LOCK,
-            Self::Claude => &claude::PROXY_LOCK,
-            Self::ClaudeDesktop => &claude_desktop::HUB_LOCK,
-            Self::Pi => &pi::HUB_LOCK,
-            Self::OpenCode => &opencode::HUB_LOCK,
+            Self::Codex => &codex::CONFIG_LOCK,
+            Self::Claude => &claude::CONFIG_LOCK,
+            Self::ClaudeDesktop => &claude_desktop::CONFIG_LOCK,
+            Self::Pi => &pi::CONFIG_LOCK,
+            Self::OpenCode => &opencode::CONFIG_LOCK,
         };
         mutex
             .lock()

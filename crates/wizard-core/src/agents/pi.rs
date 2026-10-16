@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection,
+    AgentDetection, HubMode,
     detection::{self, Agent, AgentInfo},
 };
 use crate::{
@@ -20,13 +20,13 @@ use std::{
 
 const PACKAGE: &str = "npm:@coreinfra/pi-plugin";
 const INSTALL_SOURCE: &str = "npm:@coreinfra/pi-plugin@latest";
-pub(crate) static HUB_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct Pi {
     #[serde(flatten)]
     pub info: AgentInfo,
-    pub proxy_installed: bool,
+    pub routing_mode: HubMode,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Pi> {
@@ -35,14 +35,11 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Pi> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let proxy_installed = match proxy_installed() {
-        Ok(installed) => installed,
+    let routing_mode = match routing_mode() {
+        Ok(mode) => mode,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(Pi {
-        info,
-        proxy_installed,
-    })
+    AgentDetection::Found(Pi { info, routing_mode })
 }
 
 fn agent_dir() -> Result<PathBuf> {
@@ -60,13 +57,15 @@ fn agent_dir() -> Result<PathBuf> {
         .join(".pi/agent"))
 }
 
-fn proxy_installed() -> Result<bool> {
-    let _guard = HUB_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Pi Hub lock poisoned"))?;
+fn routing_mode() -> Result<HubMode> {
+    let _guard = PreparedAgent::Pi.lock()?;
     let dir = agent_dir()?;
     let settings = config_files::json::read(&dir.join("settings.json"))?;
-    has_hub_package(&settings)
+    Ok(if has_hub_package(&settings)? {
+        HubMode::Hub
+    } else {
+        HubMode::Disabled
+    })
 }
 
 fn has_hub_package(settings: &Value) -> Result<bool> {
@@ -94,7 +93,7 @@ fn has_hub_package(settings: &Value) -> Result<bool> {
 }
 
 /// Prepare without running the package manager or writing authentication.
-pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
+pub fn prepare_hub(mode: HubMode, settings: &Settings) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Pi.lock()?;
 
     let dir = std::path::absolute(agent_dir()?)?;
@@ -105,7 +104,7 @@ pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
     let installed = has_hub_package(&pi_settings)?;
     config_files::json::update(&mut auth.after, |auth| {
         let object = auth.as_object_mut().context("Pi auth must be an object")?;
-        if install {
+        if mode == HubMode::Hub {
             object.insert(
                 "coreinfra".to_owned(),
                 json!({"type": "api_key", "key": settings.coreinfra_token}),
@@ -122,7 +121,7 @@ pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
     );
 
     let mut steps = Vec::new();
-    if install || installed {
+    if mode == HubMode::Hub || installed {
         let executable = find_executable(
             "pi",
             vec![PathBuf::from("~/.pi/agent/bin")],
@@ -130,7 +129,7 @@ pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
         )?
         .context("Pi executable not found")?;
 
-        steps.push(if install {
+        steps.push(if mode == HubMode::Hub {
             PreparedStep::PiInstallPlugin {
                 executable,
                 agent_dir: dir.clone(),
