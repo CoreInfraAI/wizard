@@ -94,6 +94,13 @@ impl PreparedPlan {
                 PreparedStep::OpenCodeVerifyPlugin { .. } => PreparedStepInfo {
                     description: "Убедиться, что плагин CoreInfra добавлен в конфигурацию OpenCode.".to_owned(),
                 },
+                PreparedStep::SetClaudeProxyEnabled { enabled } => PreparedStepInfo {
+                    description: if *enabled {
+                        "Включить локальный прокси Claude Desktop в Wizard."
+                    } else {
+                        "Выключить локальный прокси Claude Desktop в Wizard."
+                    }.to_owned(),
+                },
                 PreparedStep::CodexRestartDaemon { .. } => PreparedStepInfo {
                     description: "Перезапустить фоновую службу Codex, если она запущена. Это может прервать текущую работу.".to_owned(),
                 },
@@ -106,6 +113,22 @@ impl PreparedPlan {
     /// Call from a Tokio blocking worker. Adjacent file changes are applied as a group.
     /// Codex/Claude backups cover the entire plan; there is no rollback on failure.
     pub fn apply(self) -> Result<()> {
+        anyhow::ensure!(
+            !self
+                .steps
+                .iter()
+                .any(|step| matches!(step, PreparedStep::SetClaudeProxyEnabled { .. })),
+            "Claude Desktop proxy plans can only be applied in the GUI"
+        );
+        self.apply_with_claude_proxy(|_| anyhow::bail!("Claude Desktop proxy requires the GUI"))
+    }
+
+    /// Apply with the GUI-owned settings/runtime operation, under the agent lock.
+    /// The callback must not acquire the agent lock or trigger agent discovery.
+    pub fn apply_with_claude_proxy(
+        self,
+        mut set_enabled: impl FnMut(bool) -> Result<()>,
+    ) -> Result<()> {
         let _guard = self.agent.lock()?;
 
         let backup_agent = match self.agent {
@@ -143,6 +166,10 @@ impl PreparedPlan {
                 FileChange::apply_all(&changes).context(
                     "failed to apply prepared files; earlier steps may already be applied",
                 )?;
+            } else if let PreparedStep::SetClaudeProxyEnabled { enabled } = step {
+                set_enabled(enabled).context(
+                    "failed to update Claude Desktop proxy; earlier steps may already be applied",
+                )?;
             } else {
                 step.apply().context(
                     "failed to apply prepared step; earlier steps may already be applied",
@@ -162,6 +189,9 @@ impl PreparedPlan {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreparedStep {
+    SetClaudeProxyEnabled {
+        enabled: bool,
+    },
     ChangeFile {
         change: FileChange,
     },
@@ -201,6 +231,9 @@ impl PreparedStep {
     // Use PreparedPlan::apply to retain grouped file writes and the agent mutex.
     fn apply(self) -> Result<()> {
         match self {
+            Self::SetClaudeProxyEnabled { .. } => {
+                anyhow::bail!("Claude Desktop proxy requires the GUI")
+            }
             Self::ChangeFile { change } => FileChange::apply_all(&[change]),
             Self::PiInstallPlugin {
                 executable,

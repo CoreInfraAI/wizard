@@ -5,7 +5,7 @@ import { reportError, debug } from "../logs/log";
 export type AgentChange =
   | { CodexSetProxy: ProxyMode }
   | { ClaudeSetProxy: ProxyMode }
-  | { SetClaudeDesktopHub: boolean }
+  | { ClaudeDesktopSetProxy: ProxyMode }
   | { SetPiHub: boolean }
   | { SetOpenCodeHub: boolean };
 
@@ -49,7 +49,6 @@ export function getAgentBackups(agent: BackupAgent): Promise<Backup[]> {
 
 export type DirectChange =
   | { SetCoreInfraToken: string }
-  | { SetProxyEnabled: boolean }
   | { RestoreBackup: { agent: BackupAgent; id: number } };
 
 export function applyDirectChange(change: DirectChange): Promise<void> {
@@ -83,7 +82,7 @@ export type Claude = {
 export type ClaudeDesktop = {
   path: string;
   version: string | null;
-  proxy_installed: boolean;
+  proxy_mode: ProxyMode;
 };
 
 export type OpenCode = {

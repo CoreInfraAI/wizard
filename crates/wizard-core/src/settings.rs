@@ -8,7 +8,7 @@ use std::{fs, io::Write as _, path::PathBuf};
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Settings {
-    pub proxy_enabled: bool,
+    pub claude_proxy_enable: bool,
     #[serde(rename = "coreinfra_api_key", skip_serializing_if = "String::is_empty")]
     pub coreinfra_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]

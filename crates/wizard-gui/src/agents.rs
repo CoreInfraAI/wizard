@@ -73,7 +73,7 @@ pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>,
 pub(crate) enum AgentChange {
     CodexSetProxy(codex::ProxyMode),
     ClaudeSetProxy(claude::ProxyMode),
-    SetClaudeDesktopHub(bool),
+    ClaudeDesktopSetProxy(claude_desktop::ProxyMode),
     SetPiHub(bool),
     SetOpenCodeHub(bool),
 }
@@ -95,7 +95,7 @@ pub(crate) async fn prepare_agent_change(
     let (name, agent) = match &change {
         AgentChange::CodexSetProxy(_) => ("CodexSetProxy", "codex"),
         AgentChange::ClaudeSetProxy(_) => ("ClaudeSetProxy", "claude"),
-        AgentChange::SetClaudeDesktopHub(_) => ("SetClaudeDesktopHub", "claude_desktop"),
+        AgentChange::ClaudeDesktopSetProxy(_) => ("ClaudeDesktopSetProxy", "claude_desktop"),
         AgentChange::SetPiHub(_) => ("SetPiHub", "pi"),
         AgentChange::SetOpenCodeHub(_) => ("SetOpenCodeHub", "opencode"),
     };
@@ -107,9 +107,7 @@ pub(crate) async fn prepare_agent_change(
     let plan = tauri::async_runtime::spawn_blocking(move || match change {
         AgentChange::CodexSetProxy(mode) => codex::prepare_proxy(mode, &settings),
         AgentChange::ClaudeSetProxy(mode) => claude::prepare_proxy(mode, &settings),
-        AgentChange::SetClaudeDesktopHub(install) => {
-            claude_desktop::prepare_hub(install, &settings)
-        }
+        AgentChange::ClaudeDesktopSetProxy(mode) => claude_desktop::prepare_proxy(mode, &settings),
         AgentChange::SetPiHub(install) => pi::prepare_hub(install, &settings),
         AgentChange::SetOpenCodeHub(install) => opencode::prepare_hub(install, &settings),
     })
@@ -141,10 +139,17 @@ pub(crate) async fn apply_agent_plan(
     // Do not log the plan or recompute it from current settings.
     log::info!("applying agent plan");
 
-    let result = tauri::async_runtime::spawn_blocking(move || plan.apply())
-        .await
-        .context("agent plan application task failed")
-        .flatten();
+    let proxy_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        plan.apply_with_claude_proxy(|enabled| {
+            tauri::async_runtime::block_on(settings::update_state(&proxy_app, move |settings| {
+                settings.claude_proxy_enable = enabled;
+            }))
+        })
+    })
+    .await
+    .context("agent plan application task failed")
+    .flatten();
 
     // A failed application may have changed files before the failing step.
     app.state::<RevisionSignal<AgentRevisionState>>()
@@ -163,7 +168,6 @@ pub(crate) async fn apply_agent_plan(
 #[derive(Deserialize)]
 pub(crate) enum DirectChange {
     SetCoreInfraToken(String),
-    SetProxyEnabled(bool),
     RestoreBackup { agent: BackupAgent, id: u32 },
 }
 
@@ -174,7 +178,6 @@ pub(crate) async fn apply_direct_change(
 ) -> Result<(), String> {
     let name = match &change {
         DirectChange::SetCoreInfraToken(_) => "SetCoreInfraToken",
-        DirectChange::SetProxyEnabled(_) => "SetProxyEnabled",
         DirectChange::RestoreBackup { .. } => "RestoreBackup",
     };
     log::info!("received direct change: {name}");
@@ -183,9 +186,6 @@ pub(crate) async fn apply_direct_change(
         DirectChange::SetCoreInfraToken(token) => {
             validate_token(&token).map_err(|error| format!("{error:#}"))?;
             settings::update_state(&app, move |settings| settings.coreinfra_token = token).await
-        }
-        DirectChange::SetProxyEnabled(enabled) => {
-            settings::update_state(&app, move |settings| settings.proxy_enabled = enabled).await
         }
         DirectChange::RestoreBackup { agent, id } => {
             let result = tauri::async_runtime::spawn_blocking(move || match agent {

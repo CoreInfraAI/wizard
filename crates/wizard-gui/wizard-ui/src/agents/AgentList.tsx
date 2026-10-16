@@ -19,7 +19,7 @@ const proxyOptions = [
 ] as const;
 
 function HubProxy({ agent, installed, disabled, onPrepare }: {
-  agent: "Pi" | "OpenCode" | "Claude Desktop";
+  agent: "Pi" | "OpenCode";
   installed: boolean;
   disabled: boolean;
   onPrepare: (change: AgentChange) => void;
@@ -32,7 +32,6 @@ function HubProxy({ agent, installed, disabled, onPrepare }: {
     switch (agent) {
       case "Pi": onPrepare({ SetPiHub: selected }); break;
       case "OpenCode": onPrepare({ SetOpenCodeHub: selected }); break;
-      case "Claude Desktop": onPrepare({ SetClaudeDesktopHub: selected }); break;
     }
   }
 
@@ -118,7 +117,7 @@ function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boole
 }
 
 function AgentProxy({ agent, mode, disabled, onPrepare }: {
-  agent: BackupAgent;
+  agent: "codex" | "claude" | "claude_desktop";
   mode: ProxyMode;
   disabled: boolean;
   onPrepare: (change: AgentChange) => void;
@@ -127,6 +126,14 @@ function AgentProxy({ agent, mode, disabled, onPrepare }: {
   const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
   const [draft, setDraft] = useState<ProxyMode>();
   const selected = draft ?? mode;
+
+  function prepare() {
+    switch (agent) {
+      case "codex": onPrepare({ CodexSetProxy: selected }); break;
+      case "claude": onPrepare({ ClaudeSetProxy: selected }); break;
+      case "claude_desktop": onPrepare({ ClaudeDesktopSetProxy: selected }); break;
+    }
+  }
 
   useEffect(() => {
     if (draft !== undefined && draft === mode) setDraft(undefined);
@@ -156,9 +163,7 @@ function AgentProxy({ agent, mode, disabled, onPrepare }: {
           </RadioField>
         ))}
       </RadioGroup>
-      <Button outline type="button" disabled={disabled || (selected !== "disabled" && !hasToken)} onClick={() => onPrepare(agent === "codex"
-        ? { CodexSetProxy: selected }
-        : { ClaudeSetProxy: selected })}>
+      <Button outline type="button" disabled={disabled || (selected !== "disabled" && !hasToken)} onClick={prepare}>
         Применить
       </Button>
     </>
@@ -203,7 +208,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
       </Installation>
       <Installation name="Claude Desktop" detection={agents.claude_desktop}>
         {agents.claude_desktop.status === "found" && (
-          <HubProxy agent="Claude Desktop" installed={agents.claude_desktop.data.proxy_installed} disabled={isChangeInProgress} onPrepare={prepare} />
+          <AgentProxy agent="claude_desktop" mode={agents.claude_desktop.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       <Installation name="OpenCode" detection={agents.opencode}>

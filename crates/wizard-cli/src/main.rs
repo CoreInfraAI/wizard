@@ -8,7 +8,6 @@ use wizard_core::{
     agents::{
         self,
         claude::{self, ProxyMode as ClaudeMode},
-        claude_desktop,
         codex::{self, ProxyMode as CodexMode},
         opencode, pi,
     },
@@ -45,10 +44,10 @@ enum Command {
         #[command(subcommand)]
         command: ProxyCommand,
     },
-    /// Manage the Claude Desktop Hub connection. Restart Claude after applying.
+    /// Claude Desktop configuration is available only in the GUI.
     ClaudeDesktop {
         #[command(subcommand)]
-        command: HubCommand,
+        command: ProxyCommand,
     },
     /// Manage the Pi Hub plugin.
     Pi {
@@ -133,14 +132,10 @@ fn run(cli: Cli) -> Result<()> {
                 claude::prepare_proxy(mode, &settings)
             })?;
         }
-        Command::ClaudeDesktop { command } => {
-            let settings = settings::load_from_file()?;
-            let install = matches!(command, HubCommand::Hub);
-
-            run_plan(&runtime, cli.yes, move || {
-                claude_desktop::prepare_hub(install, &settings)
-            })?;
-            eprintln!("Полностью закройте и заново откройте Claude Desktop.");
+        Command::ClaudeDesktop { .. } => {
+            anyhow::bail!(
+                "Настройка Claude Desktop доступна только в GUI: прокси-сервер запускается только в GUI."
+            );
         }
         Command::Pi { command } => {
             let settings = settings::load_from_file()?;

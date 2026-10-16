@@ -8,7 +8,7 @@ use crate::{
     settings::Settings,
 };
 use anyhow::{Context as _, Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Mutex};
 
@@ -22,11 +22,19 @@ const CONNECTION_KEYS: [&str; 5] = [
 ];
 pub(crate) static HUB_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyMode {
+    Disabled,
+    ProxyHub,
+    ProxyApi,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct ClaudeDesktop {
     #[serde(flatten)]
     pub info: AgentInfo,
-    pub proxy_installed: bool,
+    pub proxy_mode: ProxyMode,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
@@ -38,14 +46,12 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let proxy_installed = match proxy_installed() {
-        Ok(installed) => installed,
+
+    let proxy_mode = match proxy_mode() {
+        Ok(mode) => mode,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(ClaudeDesktop {
-        info,
-        proxy_installed,
-    })
+    AgentDetection::Found(ClaudeDesktop { info, proxy_mode })
 }
 
 fn config_library() -> Result<PathBuf> {
@@ -55,6 +61,7 @@ fn config_library() -> Result<PathBuf> {
     let directory = dirs::data_local_dir();
     #[cfg(target_os = "linux")]
     let directory = dirs::config_dir();
+
     std::path::absolute(
         directory
             .context("failed to resolve Claude Desktop configuration directory")?
@@ -68,11 +75,13 @@ fn applied_id(meta: &Value) -> Result<Option<&str>> {
         meta.get("hybridPointer").is_none_or(Value::is_null),
         "Claude Desktop uses an organization configuration; switch to a local profile first"
     );
+
     let id = match meta.get("appliedId") {
         None | Some(Value::Null) => return Ok(None),
         Some(Value::String(id)) => id,
         Some(_) => anyhow::bail!("invalid Claude Desktop applied profile identifier"),
     };
+
     // Match the canonical IDs used by Claude; never interpret an ID as a path.
     let valid = uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id);
     ensure!(valid, "invalid Claude Desktop applied profile identifier");
@@ -86,37 +95,50 @@ fn has_hub_connection(config: &Value) -> bool {
             .is_some_and(|url| url.trim_end_matches('/') == HUB_URL)
 }
 
-fn proxy_installed() -> Result<bool> {
+fn proxy_mode() -> Result<ProxyMode> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
+
     let dir = config_library()?;
     let meta = json::read(&dir.join("_meta.json"))?;
     let Some(id) = applied_id(&meta)? else {
-        return Ok(false);
+        return Ok(ProxyMode::Disabled);
     };
+
     let config = json::read(&dir.join(format!("{id}.json")))?;
-    Ok(has_hub_connection(&config))
+    let preferences = json::read(&dir.with_file_name("claude_desktop_config.json"))?;
+    let proxy_url = format!("http://{}", wizard_proxy::LISTEN_ADDRESS);
+
+    if preferences["deploymentMode"] == "1p"
+        && config["egressProxyUrl"] == proxy_url
+        && config.get("egressProxyPacUrl").is_none()
+    {
+        Ok(ProxyMode::ProxyApi)
+    } else if preferences["deploymentMode"] != "1p" && has_hub_connection(&config) {
+        Ok(ProxyMode::ProxyHub)
+    } else {
+        Ok(ProxyMode::Disabled)
+    }
 }
 
 /// Prepare a local profile update without writing files or restarting Claude.
-pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
+pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
+
     let dir = config_library()?;
     let mut meta = FileChange::read(dir.join("_meta.json"))?;
     let metadata = json::parse(&meta.after)?;
     let selected = applied_id(&metadata)?;
-    if !install && selected.is_none() {
-        return Ok(PreparedPlan::new(
-            PreparedAgent::ClaudeDesktop,
-            vec![PreparedStep::ChangeFile { change: meta }],
-        ));
-    }
+
     let id = selected.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
     let mut config = FileChange::read(dir.join(format!("{id}.json")))?;
-    if selected.is_none() {
-        ensure!(
-            config.before().content().is_none(),
-            "new Claude Desktop profile already exists; prepare again"
-        );
+    let mut preferences = FileChange::read(dir.with_file_name("claude_desktop_config.json"))?;
+
+    ensure!(
+        selected.is_some() || config.before().content().is_none(),
+        "new Claude Desktop profile already exists; prepare again"
+    );
+
+    if selected.is_none() && mode != ProxyMode::Disabled {
         json::update(&mut meta.after, |meta| {
             let entries = meta
                 .as_object_mut()
@@ -129,18 +151,23 @@ pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
                 !entries.iter().any(|entry| entry["id"] == id),
                 "new Claude Desktop profile identifier already exists; prepare again"
             );
+
             entries.push(json!({"id": id, "name": "CoreInfra"}));
             meta["appliedId"] = json!(id);
             Ok(())
         })?;
     }
 
+    let proxy_url = format!("http://{}", wizard_proxy::LISTEN_ADDRESS);
     json::update(&mut config.after, |config| {
-        let remove = !install && has_hub_connection(config);
+        let remove = mode != ProxyMode::ProxyHub && has_hub_connection(config);
+        let remove_proxy = mode != ProxyMode::ProxyApi && config["egressProxyUrl"] == proxy_url;
+
         let object = config
             .as_object_mut()
             .context("Claude Desktop configuration must be an object")?;
-        if install {
+
+        if mode == ProxyMode::ProxyHub {
             object.insert("inferenceProvider".into(), json!("gateway"));
             object.insert("inferenceCredentialKind".into(), json!("static"));
             object.insert("inferenceGatewayBaseUrl".into(), json!(HUB_URL));
@@ -154,8 +181,26 @@ pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
                 object.remove(key);
             }
         }
+
+        if mode == ProxyMode::ProxyApi {
+            object.insert("egressProxyUrl".into(), json!(proxy_url));
+            object.remove("egressProxyPacUrl");
+        } else if remove_proxy {
+            object.remove("egressProxyUrl");
+        }
         Ok(())
     })?;
+
+    if mode != ProxyMode::Disabled {
+        json::update(&mut preferences.after, |preferences| {
+            preferences["deploymentMode"] = json!(if mode == ProxyMode::ProxyApi {
+                "1p"
+            } else {
+                "3p"
+            });
+            Ok(())
+        })?;
+    }
 
     // Publish a newly created profile before selecting it. Keep unchanged steps too.
     Ok(PreparedPlan::new(
@@ -163,6 +208,12 @@ pub fn prepare_hub(install: bool, settings: &Settings) -> Result<PreparedPlan> {
         vec![
             PreparedStep::ChangeFile { change: config },
             PreparedStep::ChangeFile { change: meta },
+            PreparedStep::ChangeFile {
+                change: preferences,
+            },
+            PreparedStep::SetClaudeProxyEnabled {
+                enabled: mode == ProxyMode::ProxyApi,
+            },
         ],
     ))
 }

@@ -2,10 +2,8 @@ import { AgentList } from "./agents/AgentList";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
 import { CoreInfraToken } from "./settings/CoreInfraToken";
-import { Button } from "./components/catalyst/button";
-import { useSettings } from "./settings/settings";
 import { OpenLogsButton } from "./logs/OpenLogsButton";
-import { applyDirectChange, useAgentState } from "./agents/agents_state";
+import { useAgentState } from "./agents/agents_state";
 import { useUpdateState } from "./updates/update";
 import { UpdateScreen } from "./updates/UpdateScreen";
 import { UpdateTile } from "./updates/UpdateTile";
@@ -20,7 +18,6 @@ function AgentPanel() {
 }
 
 function App() {
-  const { settings } = useSettings();
   const update = useUpdateState();
   const state = update.state;
 
@@ -51,7 +48,6 @@ function App() {
         {updateTile}
         <AgentPanel />
       </div>
-      {settings && <Button outline onClick={() => applyDirectChange({ SetProxyEnabled: !settings.proxy_enabled })}>proxy_enabled: {String(settings.proxy_enabled)}</Button>}
       <div className="mt-auto shrink-0">
         <OpenLogsButton />
       </div>
