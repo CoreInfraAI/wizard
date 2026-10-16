@@ -161,7 +161,7 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
     let proxy_url = format!("http://{}", wizard_proxy::LISTEN_ADDRESS);
     json::update(&mut config.after, |config| {
         let remove = mode != ProxyMode::ProxyHub && has_hub_connection(config);
-        let remove_proxy = mode != ProxyMode::ProxyApi && config["egressProxyUrl"] == proxy_url;
+        let remove_proxy = mode == ProxyMode::Disabled && config["egressProxyUrl"] == proxy_url;
 
         let object = config
             .as_object_mut()
@@ -184,6 +184,9 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
 
         if mode == ProxyMode::ProxyApi {
             object.insert("disableAutoUpdates".into(), json!(true));
+        }
+
+        if mode != ProxyMode::Disabled {
             object.insert("egressProxyUrl".into(), json!(proxy_url));
             object.remove("egressProxyPacUrl");
         } else if remove_proxy {
@@ -213,7 +216,7 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
                 change: preferences,
             },
             PreparedStep::SetClaudeProxyEnabled {
-                enabled: mode == ProxyMode::ProxyApi,
+                enabled: mode != ProxyMode::Disabled,
             },
         ],
     ))

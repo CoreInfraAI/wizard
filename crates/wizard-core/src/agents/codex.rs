@@ -119,9 +119,11 @@ pub fn restart_daemon(executable: &Path, codex_home: &Path) -> Result<()> {
     // For now, spawn errors, timeouts and nonzero exit statuses all mean "no daemon".
     if !matches!(command_output(probe, Duration::from_secs(15)), Ok(output) if output.status.success())
     {
+        log::info!("Codex daemon restart skipped: version probe did not succeed");
         return Ok(());
     }
 
+    log::info!("Restarting Codex daemon");
     let mut command = tokio::process::Command::new(executable);
     command
         .args(["app-server", "daemon", "restart"])
@@ -131,12 +133,18 @@ pub fn restart_daemon(executable: &Path, codex_home: &Path) -> Result<()> {
         .stderr(Stdio::null());
 
     // Allow the daemon's maximum five-minute graceful shutdown, plus startup time.
-    let output = command_output(command, Duration::from_secs(360))?;
+    let output = command_output(command, Duration::from_secs(360)).inspect_err(|_| {
+        log::error!("Codex daemon restart failed: command could not complete");
+    })?;
+    if !output.status.success() {
+        log::error!("Codex daemon restart failed with {}", output.status);
+    }
     ensure!(
         output.status.success(),
         "Codex daemon restart failed with {}; run the command manually for diagnostics",
         output.status
     );
+    log::info!("Codex daemon restarted successfully");
     Ok(())
 }
 

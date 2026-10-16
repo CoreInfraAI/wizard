@@ -258,6 +258,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
         {agents.claude_desktop.status === "found" && (
           <AgentProxy agent="claude_desktop" mode={agents.claude_desktop.data.proxy_mode} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
+        <Text>Для входа в аккаунт включите VPN и примените режим «Без CoreInfra» в Wizard.</Text>
       </Installation>
       <Installation name="OpenCode" detection={agents.opencode}>
         {agents.opencode.status === "found" && (
