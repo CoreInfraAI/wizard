@@ -183,6 +183,7 @@ pub fn prepare_proxy(mode: ProxyMode, settings: &Settings) -> Result<PreparedPla
         }
 
         if mode == ProxyMode::ProxyApi {
+            object.insert("disableAutoUpdates".into(), json!(true));
             object.insert("egressProxyUrl".into(), json!(proxy_url));
             object.remove("egressProxyPacUrl");
         } else if remove_proxy {
