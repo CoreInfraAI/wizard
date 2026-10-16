@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use std::io;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 mod http;
@@ -18,9 +18,19 @@ pub const LISTEN_ADDRESS: &str = "127.0.0.1:33787";
 pub struct Proxy {
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<io::Result<()>>,
+    stopped: watch::Receiver<()>,
 }
 
 impl Proxy {
+    /// Wait for the listener task to finish, including failure, panic or cancellation.
+    /// The returned future does not borrow the handle and can be observed independently.
+    pub fn stopped(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
+        let mut stopped = self.stopped.clone();
+        async move {
+            let _ = stopped.changed().await;
+        }
+    }
+
     /// Stop accepting requests, cancel active connections, and wait for their cleanup.
     pub async fn stop(self) -> io::Result<()> {
         drop(self.shutdown);
@@ -46,8 +56,17 @@ pub async fn start(token: &str) -> io::Result<Proxy> {
     let upstream = Arc::new(upstream::Upstream::new(tls, authorization));
     let listener = TcpListener::bind(LISTEN_ADDRESS).await?;
     let (shutdown, receiver) = oneshot::channel();
-    let task = tokio::spawn(serve(listener, upstream, receiver));
-    Ok(Proxy { shutdown, task })
+    let (finished, stopped) = watch::channel(());
+    let task = tokio::spawn(async move {
+        // Dropping the only sender wakes observers on every task-exit path.
+        let _finished = finished;
+        serve(listener, upstream, receiver).await
+    });
+    Ok(Proxy {
+        shutdown,
+        task,
+        stopped,
+    })
 }
 
 async fn serve(

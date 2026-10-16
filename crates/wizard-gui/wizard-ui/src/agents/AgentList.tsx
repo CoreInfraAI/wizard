@@ -3,6 +3,7 @@ import { type AgentChange, type AgentDetection, type AgentStates, type BackupAge
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { useSettings } from "../settings/settings";
+import { useProxy } from "./proxy";
 import { reportError } from "../logs/log";
 import { Button } from "../components/catalyst/button";
 import { Badge } from "../components/catalyst/badge";
@@ -116,6 +117,19 @@ function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boole
   );
 }
 
+function ProxyStatus() {
+  const { proxy, error } = useProxy();
+
+  if (error !== undefined) return <Badge color="amber" title={error}>Прокси: состояние недоступно</Badge>;
+  if (proxy === undefined) return <Badge color="zinc">Прокси: загрузка…</Badge>;
+
+  return (
+    <Badge color={proxy.running ? "green" : "zinc"}>
+      {proxy.running ? "Прокси работает" : "Прокси остановлен"}
+    </Badge>
+  );
+}
+
 function AgentProxy({ agent, mode, disabled, onPrepare }: {
   agent: "codex" | "claude" | "claude_desktop";
   mode: ProxyMode;
@@ -141,11 +155,12 @@ function AgentProxy({ agent, mode, disabled, onPrepare }: {
 
   return (
     <>
-      <div>
+      <div className="flex flex-wrap items-center gap-2">
         <Badge color={mode === "disabled" ? "zinc" : "green"}>
           {proxyOptions.find((option) => option.mode === mode)?.label}
           {mode !== "disabled" && " · активно"}
         </Badge>
+        {agent === "claude_desktop" && <ProxyStatus />}
       </div>
       <RadioGroup
         value={selected}

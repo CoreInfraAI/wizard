@@ -59,6 +59,7 @@ pub fn run_application() -> Result<()> {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(proxy::ProxyState::default())
+        .manage(revision_signal::RevisionSignal::new(proxy::Proxy::default()))
         .manage(Arc::new(revision_signal::RevisionSignal::new(
             updater::UpdateState::Checking,
         )))
@@ -99,6 +100,7 @@ pub fn run_application() -> Result<()> {
             updater::request_update,
             updater::retry_update_check,
             settings::get_settings_state,
+            proxy::get_proxy_state,
             agents::get_agent_state,
             agents::get_agent_backups,
             agents::prepare_agent_change,
