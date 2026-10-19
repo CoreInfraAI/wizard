@@ -172,7 +172,7 @@ pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<Prepare
     ))
 }
 
-/// Add GUI-owned proxy demand and, on macOS, `ChatGPT` profile configuration.
+/// Add GUI-owned proxy demand and `ChatGPT` profile configuration.
 pub fn prepare_routing_for_gui(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
     let mut plan = prepare_routing(mode, settings)?;
     let enabled = if mode == RoutingMode::Disabled {
@@ -189,23 +189,53 @@ pub fn prepare_routing_for_gui(mode: RoutingMode, settings: &Settings) -> Result
             }
         }
     };
-    #[cfg(target_os = "macos")]
-    {
-        let change = prepare_desktop_proxy(enabled)?;
-        plan.steps.insert(0, PreparedStep::ChangeFile { change });
-    }
+    let path = desktop_preferences_path()?.context("ChatGPT profile location is unavailable")?;
+    let change = prepare_desktop_proxy(path, enabled)?;
+    plan.steps.insert(0, PreparedStep::ChangeFile { change });
     plan.steps
         .push(PreparedStep::SetCodexProxyEnabled { enabled });
     Ok(plan)
 }
 
-#[cfg(target_os = "macos")]
-fn prepare_desktop_proxy(enabled: bool) -> Result<FileChange> {
+fn desktop_preferences_path() -> Result<Option<PathBuf>> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let config =
+            dirs::config_dir().context("failed to resolve ChatGPT configuration directory")?;
+        Ok(Some(config.join("Codex/Default/Preferences")))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // MSIX redirects roaming app data into the current user's package directory.
+        // Query metadata only; do not launch the app or read its profile here.
+        let script = r"
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
+if ($null -eq $package) { 'null'; exit 0 }
+$root = Join-Path (Join-Path $env:LOCALAPPDATA 'Packages') $package.PackageFamilyName
+Join-Path $root 'LocalCache\Roaming\Codex\web\Codex\Default\Preferences' | ConvertTo-Json -Compress
+";
+        let mut command = tokio::process::Command::new("powershell.exe");
+        command
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = command_output(command, Duration::from_secs(15))?;
+        ensure!(
+            output.status.success(),
+            "ChatGPT profile location query failed"
+        );
+        serde_json::from_slice(&output.stdout).context("invalid ChatGPT profile location response")
+    }
+}
+
+fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
     use crate::config_files::{changes::FileSnapshot, json};
     use serde_json::json;
 
-    let home = dirs::home_dir().context("failed to resolve home directory")?;
-    let path = home.join("Library/Application Support/Codex/Default/Preferences");
     let mut change = FileChange::read(std::path::absolute(path)?)?;
     if matches!(change.after, FileSnapshot::Missing) {
         log::info!("ChatGPT proxy configuration skipped: profile Preferences file is missing");
