@@ -4,6 +4,7 @@ use std::{path::PathBuf, sync::LazyLock};
 
 pub mod agents;
 mod config_files;
+pub mod hub;
 mod platform;
 pub mod prepared_plan;
 pub mod settings;

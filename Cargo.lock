@@ -5392,14 +5392,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "cookie",
  "dirs 6.0.0",
  "log",
  "plist",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "toml_edit 0.25.15+spec-1.1.0",
  "uuid",
  "wizard-proxy",
@@ -5411,7 +5414,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "log",
- "reqwest",
  "serde",
  "serde_json",
  "tauri",
@@ -5421,7 +5423,6 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tokio",
- "tokio-rustls",
  "wizard-core",
  "wizard-proxy",
 ]

@@ -11,6 +11,7 @@ mod agents;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod autostart;
 mod hub_auth;
+mod hub_tokens;
 mod logs;
 mod proxy;
 mod revision_signal;
@@ -36,10 +37,8 @@ pub fn run_application() -> Result<()> {
         }
     };
 
-    // reqwest uses rustls without a bundled provider; install ring before any HTTP client exists.
-    tokio_rustls::rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|_| anyhow!("rustls crypto provider already installed"))?;
+    // Install ring before any HTTP client exists.
+    wizard_core::hub::install_crypto_provider()?;
 
     let minimized = std::env::args_os().skip(1).any(|arg| arg == "--minimized");
 
@@ -81,7 +80,8 @@ pub fn run_application() -> Result<()> {
             log::info!("----------");
             log::info!("starting CoreInfra Wizard {}", app.package_info().version);
             tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
-            hub_auth::initialize(app.handle())?;
+            hub_auth::initialize(app.handle());
+            hub_tokens::HubTokensManager::initialize(app.handle())?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let tray_enabled = {
                 let proxy_enabled = settings::get_state(app.handle())?.local_proxy_enabled();
@@ -115,6 +115,8 @@ pub fn run_application() -> Result<()> {
             hub_auth::get_hub_account_state,
             hub_auth::login_hub_account,
             hub_auth::logout_hub_account,
+            hub_tokens::get_hub_tokens_state,
+            hub_tokens::refresh_hub_tokens,
             proxy::get_proxy_state,
             agents::get_agent_state,
             agents::get_agent_backups,

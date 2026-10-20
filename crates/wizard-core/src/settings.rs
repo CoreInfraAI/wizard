@@ -33,12 +33,15 @@ pub struct Settings {
     pub hub_profile: Option<HubProfile>,
 }
 
-/// Displayable Hub account details. Deserializing a profile response keeps only these fields.
+/// Non-secret Hub account details. Deserializing a profile response keeps only these fields.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HubProfile {
     pub username: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_email: Option<String>,
+    /// Hub whose agent tokens Wizard lists. Empty in profiles saved before it was stored.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub personal_hub_id: String,
 }
 
 impl Settings {
