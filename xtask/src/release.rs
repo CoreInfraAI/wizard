@@ -2,7 +2,7 @@ use crate::utils::{
     Paths, clean_build_command, gh_api_bytes, gh_api_json, gh_release_upload, remove_path,
     require_success, required_env, stable_version,
 };
-use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY, dev_tag};
+use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY, apple, dev_tag};
 use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use core::fmt::Write as _;
@@ -179,6 +179,7 @@ pub(crate) fn build(
     version: Option<&str>,
     target: &str,
     output: &Path,
+    apple_sign: bool,
 ) -> Result<()> {
     // RELEASE_TARGETS: update when adding a release target.
     let platform = match target {
@@ -190,6 +191,14 @@ pub(crate) fn build(
 
     // Validate this before the expensive build, but never pass it to the build process.
     drop(required_env("TAURI_SIGNING_PRIVATE_KEY")?);
+    let apple_credentials = if apple_sign {
+        if platform != "darwin" {
+            bail!("--apple-sign is only supported for macOS targets");
+        }
+        Some(apple::Credentials::from_env()?)
+    } else {
+        None
+    };
 
     let version = release_version(paths, dev, version)?;
     let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
@@ -253,6 +262,7 @@ pub(crate) fn build(
         .env_remove("TAURI_PRIVATE_KEY_PASSWORD")
         .env_remove("TAURI_PRIVATE_KEY_PATH")
         .current_dir(&paths.wizard);
+    apple::remove_env(&mut build_command);
     require_success(build_command.status()?, "tauri build")?;
 
     let mut bundle_command = clean_build_command("node");
@@ -262,6 +272,11 @@ pub(crate) fn build(
         .args(bundles)
         .args(["--config", &build_config])
         .current_dir(&paths.wizard);
+    // Without --apple-sign, the bundle keeps the ad-hoc signature from tauri.conf.json.
+    apple::remove_env(&mut bundle_command);
+    if let Some(credentials) = &apple_credentials {
+        credentials.apply(&mut bundle_command);
+    }
     if platform == "darwin" {
         // better looking .dmg
         bundle_command.env("TAURI_BUNDLER_DMG_IGNORE_CI", "true");
@@ -286,6 +301,21 @@ pub(crate) fn build(
         _ => bail!("unsupported release target: {target}"),
     };
     verify_updater_signature(&updater_artifact, updater_public_key)?;
+
+    if let Some(credentials) = &apple_credentials {
+        // Tauri notarizes only the app, so notarize the disk image that users download.
+        // RELEASE_TARGETS: update when adding a release target.
+        let dmg = bundle_dir
+            .join("dmg")
+            .join(format!("{product_name}_{version}_aarch64.dmg"));
+        apple::notarize(credentials, &dmg)?;
+        apple::verify(
+            credentials,
+            &dmg,
+            &updater_artifact,
+            &format!("{product_name}.app"),
+        )?;
+    }
 
     fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
     let release_name = format!("{}-{version}", product_name.replace(' ', "-"));

@@ -36,6 +36,7 @@ jobs:
     name: Build (${{ matrix.name }})
     needs: create-release
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       # RELEASE_TARGETS: update when adding a release target.
@@ -49,6 +50,7 @@ jobs:
             os: macos-latest
             target: aarch64-apple-darwin
             xtask: ./target/debug/xtask
+            apple_sign: true
           - name: Windows x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -92,8 +94,16 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple credentials are exposed only to targets that use Apple signing.
+          APPLE_TEAM_ID: ${{ matrix.apple_sign && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_DEVELOPER_ID_CERT_P12: ${{ matrix.apple_sign && secrets.APPLE_DEVELOPER_ID_CERT_P12 || '' }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ matrix.apple_sign && secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD || '' }}
+          APPLE_NOTARY_API_ISSUER_ID: ${{ matrix.apple_sign && secrets.APPLE_NOTARY_API_ISSUER_ID || '' }}
+          APPLE_NOTARY_API_KEY: ${{ matrix.apple_sign && secrets.APPLE_NOTARY_API_KEY || '' }}
+          APPLE_NOTARY_API_KEY_ID: ${{ matrix.apple_sign && secrets.APPLE_NOTARY_API_KEY_ID || '' }}
         run: >-
           "${{ matrix.xtask }}" release-build
+          ${{ matrix.apple_sign && '--apple-sign' || '' }}
           --target ${{ matrix.target }}
           --output release-assets
 

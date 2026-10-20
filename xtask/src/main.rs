@@ -3,6 +3,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::Command};
 
+mod apple;
 mod dev;
 mod dev_tag;
 mod release;
@@ -63,6 +64,9 @@ enum Commands {
         /// Directory in which to stage files for upload.
         #[arg(long)]
         output: PathBuf,
+        /// Sign and notarize macOS bundles with the Apple Developer ID certificate.
+        #[arg(long)]
+        apple_sign: bool,
     },
     /// Generate and upload Tauri updater metadata for a GitHub draft release.
     LatestJson {
@@ -110,7 +114,15 @@ fn main() -> Result<()> {
             version,
             target,
             output,
-        } => release::build(&paths, dev, version.as_deref(), &target, &output),
+            apple_sign,
+        } => release::build(
+            &paths,
+            dev,
+            version.as_deref(),
+            &target,
+            &output,
+            apple_sign,
+        ),
         Commands::LatestJson {
             dev,
             repository,

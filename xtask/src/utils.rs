@@ -94,8 +94,14 @@ pub(crate) fn require_success(status: ExitStatus, action: &str) -> Result<()> {
     }
 }
 
+/// Reads a variable that must be set and non-empty; GitHub Actions passes unset secrets as
+/// empty strings.
 pub(crate) fn required_env(name: &str) -> Result<String> {
-    env::var(name).with_context(|| format!("{name} must be set"))
+    let value = env::var(name).with_context(|| format!("{name} must be set"))?;
+    if value.is_empty() {
+        bail!("{name} must not be empty");
+    }
+    Ok(value)
 }
 
 pub(crate) fn gh_api_json(endpoint: &str) -> Result<Value> {
