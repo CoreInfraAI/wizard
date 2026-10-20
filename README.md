@@ -57,3 +57,9 @@ The generated files are located at these paths relative to the repository root:
 | `rpm` | `target/release/bundle/rpm/*.rpm` |
 
 `*` represents the filename, which depends on the application version and architecture.
+
+## License
+
+CoreInfra Wizard is licensed under the [Mozilla Public License, v. 2.0](LICENSE). If a copy of the MPL was not distributed with this project, you can obtain one at <https://mozilla.org/MPL/2.0/>.
+
+All versions of this project, including those released before the license file was added, are available under the same license.
