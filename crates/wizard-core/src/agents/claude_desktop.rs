@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection, RoutingMode,
+    AgentDetection, AgentToken, RoutingMode,
     detection::{self, AgentInfo, DesktopAgent},
 };
 use crate::{
@@ -27,6 +27,7 @@ pub(crate) struct ClaudeDesktop {
     #[serde(flatten)]
     pub info: AgentInfo,
     pub routing_mode: RoutingMode,
+    pub token: Option<AgentToken>,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
@@ -39,11 +40,15 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
 
-    let routing_mode = match routing_mode() {
-        Ok(mode) => mode,
+    let (routing_mode, token) = match read_routing() {
+        Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(ClaudeDesktop { info, routing_mode })
+    AgentDetection::Found(ClaudeDesktop {
+        info,
+        routing_mode,
+        token,
+    })
 }
 
 fn config_library() -> Result<PathBuf> {
@@ -87,13 +92,14 @@ fn has_hub_connection(config: &Value) -> bool {
             .is_some_and(|url| url.trim_end_matches('/') == HUB_URL)
 }
 
-fn routing_mode() -> Result<RoutingMode> {
+/// Sub mode authenticates through the local proxy, so only a Hub connection has a token.
+fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
     let dir = config_library()?;
     let meta = json::read(&dir.join("_meta.json"))?;
     let Some(id) = applied_id(&meta)? else {
-        return Ok(RoutingMode::Disabled);
+        return Ok((RoutingMode::Disabled, None));
     };
 
     let config = json::read(&dir.join(format!("{id}.json")))?;
@@ -104,11 +110,14 @@ fn routing_mode() -> Result<RoutingMode> {
         && config["egressProxyUrl"] == proxy_url
         && config.get("egressProxyPacUrl").is_none()
     {
-        Ok(RoutingMode::Sub)
+        Ok((RoutingMode::Sub, None))
     } else if preferences["deploymentMode"] != "1p" && has_hub_connection(&config) {
-        Ok(RoutingMode::Hub)
+        let token = config["inferenceGatewayApiKey"]
+            .as_str()
+            .and_then(|token| AgentToken::new(token.to_owned()));
+        Ok((RoutingMode::Hub, token))
     } else {
-        Ok(RoutingMode::Disabled)
+        Ok((RoutingMode::Disabled, None))
     }
 }
 

@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection, RoutingMode,
+    AgentDetection, AgentToken, RoutingMode,
     detection::{self, Agent, AgentInfo, DesktopAgent},
 };
 use crate::{
@@ -29,6 +29,7 @@ pub(crate) struct Codex {
     pub cli: AgentDetection<AgentInfo>,
     pub desktop: AgentDetection<AgentInfo>,
     pub routing_mode: RoutingMode,
+    pub token: Option<AgentToken>,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
@@ -51,14 +52,15 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
             AgentDetection::Error(errors.join("; "))
         };
     }
-    let routing_mode = match routing_mode() {
-        Ok(routing_mode) => routing_mode,
+    let (routing_mode, token) = match read_routing() {
+        Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
     AgentDetection::Found(Codex {
         cli,
         desktop,
         routing_mode,
+        token,
     })
 }
 
@@ -70,10 +72,15 @@ fn config_path() -> Result<PathBuf> {
     Ok(home.join(".codex/config.toml"))
 }
 
-fn routing_mode() -> Result<RoutingMode> {
+fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::Codex.lock()?;
-    let doc = config_files::toml::read(&config_path()?)?;
-    Ok(mode_from_config(&doc))
+    let path = config_path()?;
+    let doc = config_files::toml::read(&path)?;
+    let dotenv = FileSnapshot::read(&path.with_file_name(".env"))?;
+    let token = config_files::env::get(&dotenv, "COREINFRA_API_KEY")
+        .context("failed to read Codex .env")?
+        .and_then(AgentToken::new);
+    Ok((mode_from_config(&doc), token))
 }
 
 fn mode_from_config(doc: &DocumentMut) -> RoutingMode {

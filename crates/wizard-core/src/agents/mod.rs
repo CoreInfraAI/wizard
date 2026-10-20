@@ -27,6 +27,30 @@ pub enum HubMode {
     Hub,
 }
 
+/// `CoreInfra` token found in an agent's configuration, without `${...}` interpolation.
+/// Serialized only for the trusted GUI; Debug never shows the value.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct AgentToken(String);
+
+impl AgentToken {
+    fn new(token: String) -> Option<Self> {
+        (!token.is_empty()).then_some(Self(token))
+    }
+}
+
+impl core::fmt::Debug for AgentToken {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+/// Pi and `OpenCode` keep the Hub key in their auth file as `coreinfra.key`.
+fn auth_token(auth: &serde_json::Value) -> Option<AgentToken> {
+    let token = auth["coreinfra"]["key"].as_str()?;
+    AgentToken::new(token.to_owned())
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct AgentStates {
     codex: AgentDetection<codex::Codex>,
@@ -37,6 +61,31 @@ pub struct AgentStates {
 }
 
 impl AgentStates {
+    /// Replaces token values for output outside the trusted GUI.
+    pub fn redact_tokens(&mut self) {
+        fn redact(token: &mut Option<AgentToken>) {
+            if let Some(token) = token {
+                token.0 = "<redacted>".into();
+            }
+        }
+
+        if let AgentDetection::Found(agent) = &mut self.codex {
+            redact(&mut agent.token);
+        }
+        if let AgentDetection::Found(agent) = &mut self.claude {
+            redact(&mut agent.token);
+        }
+        if let AgentDetection::Found(agent) = &mut self.claude_desktop {
+            redact(&mut agent.token);
+        }
+        if let AgentDetection::Found(agent) = &mut self.opencode {
+            redact(&mut agent.token);
+        }
+        if let AgentDetection::Found(agent) = &mut self.pi {
+            redact(&mut agent.token);
+        }
+    }
+
     pub fn update_settings_paths(&self, settings: &mut Settings) {
         if let AgentDetection::Found(agent) = &self.codex {
             if let AgentDetection::Found(cli) = &agent.cli {

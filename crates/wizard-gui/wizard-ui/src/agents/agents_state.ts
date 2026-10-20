@@ -67,30 +67,40 @@ export type Codex = {
   cli: AgentDetection<{ path: string; version: string | null }>;
   desktop: AgentDetection<{ path: string; version: string | null }>;
   routing_mode: RoutingMode;
+  // CoreInfra token from the agent's configuration. Secret: never log or persist it.
+  token: string | null;
 };
 
 export type Claude = {
   path: string;
   version: string;
   routing_mode: RoutingMode;
+  // CoreInfra token from the agent's configuration. Secret: never log or persist it.
+  token: string | null;
 };
 
 export type ClaudeDesktop = {
   path: string;
   version: string | null;
   routing_mode: RoutingMode;
+  // CoreInfra token from the agent's configuration. Secret: never log or persist it.
+  token: string | null;
 };
 
 export type OpenCode = {
   path: string;
   version: string;
   routing_mode: HubMode;
+  // CoreInfra token from the agent's configuration. Secret: never log or persist it.
+  token: string | null;
 };
 
 export type Pi = {
   path: string;
   version: string;
   routing_mode: HubMode;
+  // CoreInfra token from the agent's configuration. Secret: never log or persist it.
+  token: string | null;
 };
 
 export type AgentStates = {

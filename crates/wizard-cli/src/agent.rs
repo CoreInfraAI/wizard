@@ -73,8 +73,9 @@ pub(crate) fn run(
     match command {
         AgentCommand::Status => {
             let settings = settings::load_from_file()?;
-            let state = runtime.block_on(agents::collect_agent_state(&settings));
+            let mut state = runtime.block_on(agents::collect_agent_state(&settings));
             settings::update_file(|settings| state.update_settings_paths(settings))?;
+            state.redact_tokens();
             println!("{}", serde_json::to_string_pretty(&state)?);
         }
         AgentCommand::SetToken => {

@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection, HubMode,
+    AgentDetection, AgentToken, HubMode, auth_token,
     detection::{self, Agent, AgentInfo},
 };
 use crate::{
@@ -27,6 +27,7 @@ pub(crate) struct OpenCode {
     #[serde(flatten)]
     pub info: AgentInfo,
     pub routing_mode: HubMode,
+    pub token: Option<AgentToken>,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<OpenCode> {
@@ -35,11 +36,15 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<OpenCode> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let routing_mode = match routing_mode() {
-        Ok(mode) => mode,
+    let (routing_mode, token) = match read_routing() {
+        Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(OpenCode { info, routing_mode })
+    AgentDetection::Found(OpenCode {
+        info,
+        routing_mode,
+        token,
+    })
 }
 
 // OpenCode uses XDG directories on all platforms, including macOS and Windows.
@@ -100,15 +105,17 @@ fn has_hub_plugin(config: &Value) -> bool {
         .is_some_and(|plugins| plugins.iter().any(is_hub_plugin))
 }
 
-fn routing_mode() -> Result<HubMode> {
+fn read_routing() -> Result<(HubMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::OpenCode.lock()?;
     let dir = config_dir()?;
     let (_, installed) = read_configs(&dir)?;
-    Ok(if installed {
+    let auth = config_files::json::read(&auth_path()?)?;
+    let mode = if installed {
         HubMode::Hub
     } else {
         HubMode::Disabled
-    })
+    };
+    Ok((mode, auth_token(&auth)))
 }
 
 /// Prepare global configuration changes without running the installer or writing files.

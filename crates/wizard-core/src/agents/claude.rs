@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection, RoutingMode,
+    AgentDetection, AgentToken, RoutingMode,
     detection::{self, Agent, AgentInfo},
 };
 use crate::{
@@ -23,6 +23,7 @@ use std::{
 const HUB_URL: &str = "https://hub.coreinfra.ai/claude/api";
 const API_URL: &str = "https://hub.coreinfra.ai/anthropic/subscription/api";
 const NO_PROXY_SCRIPT: &str = "#!/bin/sh\n\nunset HTTPS_PROXY NO_PROXY\n";
+const TOKEN_HEADER: &str = "X-CoreInfra-API-Key: ";
 pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub(crate) struct Claude {
     #[serde(flatten)]
     pub info: AgentInfo,
     pub routing_mode: RoutingMode,
+    pub token: Option<AgentToken>,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
@@ -38,11 +40,15 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let routing_mode = match routing_mode() {
-        Ok(mode) => mode,
+    let (routing_mode, token) = match read_routing() {
+        Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(Claude { info, routing_mode })
+    AgentDetection::Found(Claude {
+        info,
+        routing_mode,
+        token,
+    })
 }
 
 fn config_dir() -> Result<PathBuf> {
@@ -64,10 +70,25 @@ fn global_config_path() -> Result<PathBuf> {
         .join(".claude.json"))
 }
 
-fn routing_mode() -> Result<RoutingMode> {
+fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::Claude.lock()?;
     let settings = config_files::json::read(&config_dir()?.join("settings.json"))?;
-    Ok(mode_from_config(&settings))
+    let mode = mode_from_config(&settings);
+    Ok((mode, token_from_config(&settings, mode)))
+}
+
+/// Reads only keys owned by the active mode: a disabled API key may belong to the user.
+fn token_from_config(settings: &Value, mode: RoutingMode) -> Option<AgentToken> {
+    let env = &settings["env"];
+    let token = match mode {
+        RoutingMode::Disabled => return None,
+        RoutingMode::Hub => env["ANTHROPIC_API_KEY"].as_str()?,
+        RoutingMode::Sub => env["ANTHROPIC_CUSTOM_HEADERS"]
+            .as_str()?
+            .lines()
+            .find_map(|header| header.strip_prefix(TOKEN_HEADER))?,
+    };
+    AgentToken::new(token.to_owned())
 }
 
 fn mode_from_config(settings: &Value) -> RoutingMode {
@@ -194,7 +215,7 @@ fn write_routing_settings(
             env.insert("ANTHROPIC_BASE_URL".into(), json!(API_URL));
             env.insert(
                 "ANTHROPIC_CUSTOM_HEADERS".into(),
-                json!(format!("X-CoreInfra-API-Key: {token}")),
+                json!(format!("{TOKEN_HEADER}{token}")),
             );
             env.insert(
                 "HTTPS_PROXY".into(),

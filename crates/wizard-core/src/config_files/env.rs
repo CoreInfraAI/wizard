@@ -69,9 +69,26 @@ fn valid_key(key: &str) -> bool {
         })
 }
 
-/// Recognizes single-line assignments without evaluating or decoding their values.
-/// Unsupported/malformed records fail closed; errors never include file contents.
+/// Returns the first assignment of `key`, unquoted but without `${...}` interpolation.
+/// Never include parser errors or values in diagnostics.
+pub(crate) fn get(snapshot: &FileSnapshot, key: &str) -> Result<Option<String>> {
+    for line in snapshot.content().unwrap_or_default().split_inclusive('\n') {
+        if let Some((line_key, value)) = parse_line(line)?
+            && line_key == key
+        {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
 fn line_key(line: &str) -> Result<Option<&str>> {
+    Ok(parse_line(line)?.map(|(key, _)| key))
+}
+
+/// Recognizes single-line assignments and decodes quotes without evaluating interpolation.
+/// Unsupported/malformed records fail closed; errors never include file contents.
+fn parse_line(line: &str) -> Result<Option<(&str, String)>> {
     let line = line.strip_suffix('\n').unwrap_or(line);
     let line = line.strip_suffix('\r').unwrap_or(line).trim_start();
     if line.is_empty() || line.starts_with('#') {
@@ -87,8 +104,9 @@ fn line_key(line: &str) -> Result<Option<&str>> {
     ensure!(valid_key(key), "invalid env variable name");
     let value = value.trim_start();
     if value.starts_with('#') {
-        return Ok(Some(key));
+        return Ok(Some((key, String::new())));
     }
+    let mut decoded = String::new();
     let mut quote = None;
     let mut escaped = false;
     let mut trailing = false;
@@ -99,9 +117,16 @@ fn line_key(line: &str) -> Result<Option<&str>> {
         );
         if escaped {
             escaped = false;
+            decoded.push(if quote == Some('"') && ch == 'n' {
+                '\n'
+            } else {
+                ch
+            });
         } else if quote == Some('\'') {
             if ch == '\'' {
                 quote = None;
+            } else {
+                decoded.push(ch);
             }
         } else if trailing {
             if ch == '#' {
@@ -113,16 +138,49 @@ fn line_key(line: &str) -> Result<Option<&str>> {
         } else if quote == Some('"') {
             if ch == '"' {
                 quote = None;
+            } else {
+                decoded.push(ch);
             }
         } else if matches!(ch, '\'' | '"') {
             quote = Some(ch);
         } else if ch.is_whitespace() {
             trailing = true;
+        } else {
+            decoded.push(ch);
         }
     }
     ensure!(
         quote.is_none() && !escaped,
         "unterminated env value; multiline values are not supported"
     );
-    Ok(Some(key))
+    Ok(Some((key, decoded)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_decodes_written_values() {
+        let mut snapshot = FileSnapshot::Missing;
+        set_many(&mut snapshot, &[("KEY", Some("a \"b\" \\ ${C}"))]).expect("fixture value");
+        assert_eq!(
+            get(&snapshot, "KEY").expect("fixture env").as_deref(),
+            Some("a \"b\" \\ ${C}")
+        );
+
+        let snapshot = FileSnapshot::new(
+            "# KEY=comment\nexport KEY='x y' # note\nKEY=second\nOTHER=plain\n".into(),
+            0o600,
+        );
+        assert_eq!(
+            get(&snapshot, "KEY").expect("fixture env").as_deref(),
+            Some("x y")
+        );
+        assert_eq!(
+            get(&snapshot, "OTHER").expect("fixture env").as_deref(),
+            Some("plain")
+        );
+        assert_eq!(get(&snapshot, "MISSING").expect("fixture env"), None);
+    }
 }

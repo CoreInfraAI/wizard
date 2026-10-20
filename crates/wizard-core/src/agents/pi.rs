@@ -1,5 +1,5 @@
 use super::{
-    AgentDetection, HubMode,
+    AgentDetection, AgentToken, HubMode, auth_token,
     detection::{self, Agent, AgentInfo},
 };
 use crate::{
@@ -27,6 +27,7 @@ pub(crate) struct Pi {
     #[serde(flatten)]
     pub info: AgentInfo,
     pub routing_mode: HubMode,
+    pub token: Option<AgentToken>,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Pi> {
@@ -35,11 +36,15 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Pi> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let routing_mode = match routing_mode() {
-        Ok(mode) => mode,
+    let (routing_mode, token) = match read_routing() {
+        Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    AgentDetection::Found(Pi { info, routing_mode })
+    AgentDetection::Found(Pi {
+        info,
+        routing_mode,
+        token,
+    })
 }
 
 fn agent_dir() -> Result<PathBuf> {
@@ -57,15 +62,17 @@ fn agent_dir() -> Result<PathBuf> {
         .join(".pi/agent"))
 }
 
-fn routing_mode() -> Result<HubMode> {
+fn read_routing() -> Result<(HubMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::Pi.lock()?;
     let dir = agent_dir()?;
     let settings = config_files::json::read(&dir.join("settings.json"))?;
-    Ok(if has_hub_package(&settings)? {
+    let auth = config_files::json::read(&dir.join("auth.json"))?;
+    let mode = if has_hub_package(&settings)? {
         HubMode::Hub
     } else {
         HubMode::Disabled
-    })
+    };
+    Ok((mode, auth_token(&auth)))
 }
 
 fn has_hub_package(settings: &Value) -> Result<bool> {
