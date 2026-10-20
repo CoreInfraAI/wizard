@@ -5411,6 +5411,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "log",
+ "reqwest",
  "serde",
  "serde_json",
  "tauri",
@@ -5420,6 +5421,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tokio",
+ "tokio-rustls",
  "wizard-core",
  "wizard-proxy",
 ]

@@ -10,6 +10,7 @@ use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 mod agents;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod autostart;
+mod hub_auth;
 mod logs;
 mod proxy;
 mod revision_signal;
@@ -35,6 +36,11 @@ pub fn run_application() -> Result<()> {
         }
     };
 
+    // reqwest uses rustls without a bundled provider; install ring before any HTTP client exists.
+    tokio_rustls::rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow!("rustls crypto provider already installed"))?;
+
     let minimized = std::env::args_os().skip(1).any(|arg| arg == "--minimized");
 
     let app = tauri::Builder::default()
@@ -53,6 +59,11 @@ pub fn run_application() -> Result<()> {
                     }),
                 ])
                 .level(log_level)
+                // HTTP diagnostics can contain the account login URL or session headers.
+                .level_for("reqwest", LevelFilter::Off)
+                .level_for("hyper", LevelFilter::Off)
+                .level_for("hyper_util", LevelFilter::Off)
+                .level_for("h2", LevelFilter::Off)
                 .max_file_size(1024 * 1024)
                 .rotation_strategy(RotationStrategy::KeepSome(5))
                 .build(),
@@ -70,6 +81,7 @@ pub fn run_application() -> Result<()> {
             log::info!("----------");
             log::info!("starting CoreInfra Wizard {}", app.package_info().version);
             tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
+            hub_auth::initialize(app.handle())?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let tray_enabled = {
                 let proxy_enabled = settings::get_state(app.handle())?.local_proxy_enabled();
@@ -100,6 +112,9 @@ pub fn run_application() -> Result<()> {
             updater::request_update,
             updater::retry_update_check,
             settings::get_settings_state,
+            hub_auth::get_hub_account_state,
+            hub_auth::login_hub_account,
+            hub_auth::logout_hub_account,
             proxy::get_proxy_state,
             agents::get_agent_state,
             agents::get_agent_backups,

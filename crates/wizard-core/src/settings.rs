@@ -12,6 +12,9 @@ pub struct Settings {
     pub codex_proxy_enable: bool,
     #[serde(rename = "coreinfra_api_key", skip_serializing_if = "String::is_empty")]
     pub coreinfra_token: String,
+    /// Account session, independent of agent tokens. Never expose through IPC.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hub_session: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_path_last: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,6 +27,18 @@ pub struct Settings {
     pub opencode_path_last: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pi_path_last: Option<PathBuf>,
+    /// Account shown in the Hub tile, captured from `/hub/api/profile` at login.
+    /// Kept last: it serializes as a TOML table.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hub_profile: Option<HubProfile>,
+}
+
+/// Displayable Hub account details. Deserializing a profile response keeps only these fields.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubProfile {
+    pub username: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_email: Option<String>,
 }
 
 impl Settings {

@@ -25,10 +25,13 @@ pub(crate) async fn get_settings_state(
     last_revision: Option<u32>,
     signal: tauri::State<'_, RevisionSignal<Settings>>,
 ) -> Result<RevisionSnapshot<Settings>, String> {
-    signal
+    let mut snapshot = signal
         .wait(last_revision)
         .await
-        .map_err(|error| format!("{error:#}"))
+        .map_err(|error| format!("{error:#}"))?;
+    // Clear only the IPC copy; the persisted session remains backend-only.
+    snapshot.state.hub_session.clear();
+    Ok(snapshot)
 }
 
 /// TODO: maybe update state when file changes

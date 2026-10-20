@@ -2,6 +2,7 @@ import { AgentList } from "./agents/AgentList";
 import { Text } from "./components/catalyst/text";
 import { ErrorText } from "./components/ErrorText";
 import { CoreInfraToken } from "./settings/CoreInfraToken";
+import { HubAccount } from "./settings/HubAccount";
 import { OpenLogsButton } from "./logs/OpenLogsButton";
 import { useAgentState } from "./agents/agents_state";
 import { useUpdateState } from "./updates/update";
@@ -44,6 +45,7 @@ function App() {
   return (
     <main className="mx-auto flex min-h-dvh flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8">
       <div className="@container grid grid-cols-[repeat(auto-fit,minmax(350px,1fr))] gap-6">
+        <HubAccount className="@min-[724px]:col-span-2" />
         <CoreInfraToken className="@min-[724px]:col-span-2" />
         {updateTile}
         <AgentPanel />
