@@ -91,7 +91,7 @@ pub(crate) fn run(
             let mode = routing_mode(&command);
 
             run_plan(runtime, yes, move || {
-                codex::prepare_routing(mode, &settings)
+                codex::prepare_routing(mode, &settings.coreinfra_token, &settings)
             })?;
         }
         AgentCommand::Claude { command } => {
@@ -99,7 +99,7 @@ pub(crate) fn run(
             let mode = routing_mode(&command);
 
             run_plan(runtime, yes, move || {
-                claude::prepare_routing(mode, &settings)
+                claude::prepare_routing(mode, &settings.coreinfra_token)
             })?;
         }
         AgentCommand::ClaudeDesktop { .. } => {
@@ -111,13 +111,17 @@ pub(crate) fn run(
             let settings = settings::load_from_file()?;
             let mode = hub_mode(&command);
 
-            run_plan(runtime, yes, move || pi::prepare_hub(mode, &settings))?;
+            run_plan(runtime, yes, move || {
+                pi::prepare_hub(mode, &settings.coreinfra_token, &settings)
+            })?;
         }
         AgentCommand::Opencode { command } => {
             let settings = settings::load_from_file()?;
             let mode = hub_mode(&command);
 
-            run_plan(runtime, yes, move || opencode::prepare_hub(mode, &settings))?;
+            run_plan(runtime, yes, move || {
+                opencode::prepare_hub(mode, &settings.coreinfra_token, &settings)
+            })?;
         }
     }
     Ok(())

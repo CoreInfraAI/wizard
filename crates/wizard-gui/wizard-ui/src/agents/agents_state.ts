@@ -25,8 +25,12 @@ export type PreparedAgentChange = {
   info: PreparedStepInfo[];
 };
 
-export function prepareAgentChange(change: AgentChange): Promise<PreparedAgentChange> {
-  return invoke<PreparedAgentChange>("prepare_agent_change", { change });
+// Required for enabled modes. `create` makes the backend issue a Hub token named after the agent
+// before preparing; the token stays in Hub even if the plan is cancelled. Values are secrets.
+export type TokenChoice = { kind: "existing"; token: string } | { kind: "create" };
+
+export function prepareAgentChange(change: AgentChange, token: TokenChoice | null): Promise<PreparedAgentChange> {
+  return invoke<PreparedAgentChange>("prepare_agent_change", { change, token });
 }
 
 export function applyAgentPlan(plan: PreparedPlan): Promise<void> {

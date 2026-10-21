@@ -40,7 +40,7 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
 
-    let (routing_mode, token) = match read_routing() {
+    let (routing_mode, token) = match read_routing(settings) {
         Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
@@ -92,8 +92,8 @@ fn has_hub_connection(config: &Value) -> bool {
             .is_some_and(|url| url.trim_end_matches('/') == HUB_URL)
 }
 
-/// Sub mode authenticates through the local proxy, so only a Hub connection has a token.
-fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
+/// Hub reads the profile's key. Sub has none in the profile; its token is the proxy setting.
+fn read_routing(settings: &Settings) -> Result<(RoutingMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
     let dir = config_library()?;
@@ -110,7 +110,13 @@ fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
         && config["egressProxyUrl"] == proxy_url
         && config.get("egressProxyPacUrl").is_none()
     {
-        Ok((RoutingMode::Sub, None))
+        Ok((
+            RoutingMode::Sub,
+            settings
+                .claude_proxy_enabled
+                .clone()
+                .and_then(AgentToken::new),
+        ))
     } else if preferences["deploymentMode"] != "1p" && has_hub_connection(&config) {
         let token = config["inferenceGatewayApiKey"]
             .as_str()
@@ -121,8 +127,9 @@ fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
     }
 }
 
-/// Prepare a local profile update without writing files or restarting Claude.
-pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
+/// Prepare a local profile update without writing files or restarting Claude. Hub writes `token`
+/// to the profile; Hub and Sub save it as the proxy setting; Disabled ignores it.
+pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
     let dir = config_library()?;
@@ -172,10 +179,7 @@ pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<Prepare
             object.insert("inferenceProvider".into(), json!("gateway"));
             object.insert("inferenceCredentialKind".into(), json!("static"));
             object.insert("inferenceGatewayBaseUrl".into(), json!(HUB_URL));
-            object.insert(
-                "inferenceGatewayApiKey".into(),
-                json!(settings.coreinfra_token),
-            );
+            object.insert("inferenceGatewayApiKey".into(), json!(token));
             object.insert("inferenceGatewayAuthScheme".into(), json!("x-api-key"));
         } else if remove {
             for key in CONNECTION_KEYS {
@@ -214,7 +218,7 @@ pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<Prepare
                 change: preferences,
             },
             PreparedStep::SetClaudeProxyEnabled {
-                enabled: mode != RoutingMode::Disabled,
+                token: (mode != RoutingMode::Disabled).then(|| token.to_owned()),
             },
         ],
     ))

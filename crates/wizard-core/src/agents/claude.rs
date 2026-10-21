@@ -108,10 +108,10 @@ pub fn restore_backup(id: u32) -> Result<()> {
     BackupManager::load_backup(AgentKind::Claude, id)
 }
 
-pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
+/// `token` is ignored when disabled.
+pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Claude.lock()?;
 
-    let token = &settings.coreinfra_token;
     let dir = config_dir()?;
     let script_path = dir.join("no-proxy.sh");
 

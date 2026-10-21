@@ -37,16 +37,16 @@ fn publish(app: &tauri::AppHandle, running: bool) {
         .update(|current| (current.running != running).then_some(Proxy { running }));
 }
 
-/// Called at startup and after a persisted proxy flag change, not for token-only edits.
+/// Called at startup and after a change of combined proxy demand, not for token-only edits.
 pub(crate) async fn sync(app: &tauri::AppHandle) -> Result<()> {
     let state = app.state::<ProxyState>();
     let mut proxy = state.0.lock().await;
     let settings = settings::get_state(app)?;
 
-    if settings.local_proxy_enabled() {
+    if let Some(token) = settings.local_proxy_token() {
         if proxy.is_none() {
             // TODO: Retry failed starts without requiring a toggle or application restart.
-            let handle = wizard_proxy::start(&settings.coreinfra_token)
+            let handle = wizard_proxy::start(token)
                 .await
                 .context("failed to start local proxy")?;
             let stopped = handle.stopped();

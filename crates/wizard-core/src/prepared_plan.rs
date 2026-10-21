@@ -94,15 +94,15 @@ impl PreparedPlan {
                 PreparedStep::OpenCodeVerifyPlugin { .. } => PreparedStepInfo {
                     description: "Убедиться, что плагин CoreInfra добавлен в конфигурацию OpenCode.".to_owned(),
                 },
-                PreparedStep::SetCodexProxyEnabled { enabled } => PreparedStepInfo {
-                    description: if *enabled {
+                PreparedStep::SetCodexProxyEnabled { token } => PreparedStepInfo {
+                    description: if token.is_some() {
                         "Включить локальный прокси ChatGPT в Wizard."
                     } else {
                         "Выключить локальный прокси ChatGPT в Wizard."
                     }.to_owned(),
                 },
-                PreparedStep::SetClaudeProxyEnabled { enabled } => PreparedStepInfo {
-                    description: if *enabled {
+                PreparedStep::SetClaudeProxyEnabled { token } => PreparedStepInfo {
+                    description: if token.is_some() {
                         "Включить локальный прокси Claude Desktop в Wizard."
                     } else {
                         "Выключить локальный прокси Claude Desktop в Wizard."
@@ -136,10 +136,11 @@ impl PreparedPlan {
 
     /// Apply with the GUI-owned settings/runtime operation, under the agent lock.
     /// The callback must not acquire the agent lock or trigger agent discovery.
+    /// Callbacks receive the app's proxy token, or `None` to disable its proxy demand.
     pub fn apply_with_proxies(
         self,
-        mut set_claude_enabled: impl FnMut(bool) -> Result<()>,
-        mut set_codex_enabled: impl FnMut(bool) -> Result<()>,
+        mut set_claude_enabled: impl FnMut(Option<String>) -> Result<()>,
+        mut set_codex_enabled: impl FnMut(Option<String>) -> Result<()>,
     ) -> Result<()> {
         let _guard = self.agent.lock()?;
 
@@ -178,12 +179,12 @@ impl PreparedPlan {
                 FileChange::apply_all(&changes).context(
                     "failed to apply prepared files; earlier steps may already be applied",
                 )?;
-            } else if let PreparedStep::SetClaudeProxyEnabled { enabled } = step {
-                set_claude_enabled(enabled).context(
+            } else if let PreparedStep::SetClaudeProxyEnabled { token } = step {
+                set_claude_enabled(token).context(
                     "failed to update Claude Desktop proxy; earlier steps may already be applied",
                 )?;
-            } else if let PreparedStep::SetCodexProxyEnabled { enabled } = step {
-                set_codex_enabled(enabled).context(
+            } else if let PreparedStep::SetCodexProxyEnabled { token } = step {
+                set_codex_enabled(token).context(
                     "failed to update ChatGPT proxy; earlier steps may already be applied",
                 )?;
             } else {
@@ -205,11 +206,13 @@ impl PreparedPlan {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreparedStep {
+    /// Saves `codex_proxy_enabled`: the app's proxy token, or `None` to disable.
     SetCodexProxyEnabled {
-        enabled: bool,
+        token: Option<String>,
     },
+    /// Saves `claude_proxy_enabled`: the app's proxy token, or `None` to disable.
     SetClaudeProxyEnabled {
-        enabled: bool,
+        token: Option<String>,
     },
     ChangeFile {
         change: FileChange,

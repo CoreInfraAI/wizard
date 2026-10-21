@@ -119,7 +119,7 @@ fn read_routing() -> Result<(HubMode, Option<AgentToken>)> {
 }
 
 /// Prepare global configuration changes without running the installer or writing files.
-pub fn prepare_hub(mode: HubMode, settings: &Settings) -> Result<PreparedPlan> {
+pub fn prepare_hub(mode: HubMode, token: &str, settings: &Settings) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::OpenCode.lock()?;
 
     let dir = config_dir()?;
@@ -132,10 +132,7 @@ pub fn prepare_hub(mode: HubMode, settings: &Settings) -> Result<PreparedPlan> {
             .as_object_mut()
             .context("OpenCode auth must be an object")?;
         if mode == HubMode::Hub {
-            credentials.insert(
-                "coreinfra".into(),
-                json!({"type": "api", "key": settings.coreinfra_token}),
-            );
+            credentials.insert("coreinfra".into(), json!({"type": "api", "key": token}));
         } else {
             credentials.remove("coreinfra");
         }

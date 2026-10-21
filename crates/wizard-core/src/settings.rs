@@ -8,8 +8,12 @@ use std::{fs, io::Write as _, path::PathBuf};
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Settings {
-    pub claude_proxy_enable: bool,
-    pub codex_proxy_enable: bool,
+    /// Local proxy demand of Claude Desktop with its token; `None` means disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_proxy_enabled: Option<String>,
+    /// Local proxy demand of `ChatGPT` with its token; `None` means disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_proxy_enabled: Option<String>,
     #[serde(rename = "coreinfra_api_key", skip_serializing_if = "String::is_empty")]
     pub coreinfra_token: String,
     /// Account session, independent of agent tokens. Never expose through IPC.
@@ -47,7 +51,16 @@ pub struct HubProfile {
 impl Settings {
     #[must_use]
     pub fn local_proxy_enabled(&self) -> bool {
-        self.claude_proxy_enable || self.codex_proxy_enable
+        self.claude_proxy_enabled.is_some() || self.codex_proxy_enabled.is_some()
+    }
+
+    /// Token for the shared local proxy: Claude Desktop's, else `ChatGPT`'s.
+    // TODO: Route each desktop app with its own token.
+    #[must_use]
+    pub fn local_proxy_token(&self) -> Option<&str> {
+        self.claude_proxy_enabled
+            .as_deref()
+            .or(self.codex_proxy_enabled.as_deref())
     }
 }
 

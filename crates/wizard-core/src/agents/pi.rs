@@ -100,7 +100,7 @@ fn has_hub_package(settings: &Value) -> Result<bool> {
 }
 
 /// Prepare without running the package manager or writing authentication.
-pub fn prepare_hub(mode: HubMode, settings: &Settings) -> Result<PreparedPlan> {
+pub fn prepare_hub(mode: HubMode, token: &str, settings: &Settings) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Pi.lock()?;
 
     let dir = std::path::absolute(agent_dir()?)?;
@@ -114,7 +114,7 @@ pub fn prepare_hub(mode: HubMode, settings: &Settings) -> Result<PreparedPlan> {
         if mode == HubMode::Hub {
             object.insert(
                 "coreinfra".to_owned(),
-                json!({"type": "api_key", "key": settings.coreinfra_token}),
+                json!({"type": "api_key", "key": token}),
             );
         } else {
             object.remove("coreinfra");

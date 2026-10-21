@@ -1,6 +1,6 @@
 //! Tauri commands for agent discovery and configuration.
 
-use crate::{revision_signal::RevisionSignal, settings};
+use crate::{hub_tokens, revision_signal::RevisionSignal, settings};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
@@ -69,6 +69,15 @@ pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>,
     .map_err(|error| format!("{error:#}"))
 }
 
+/// Token for an enabled mode: an existing value, or a new Hub token named after the agent.
+// No Debug: the value is a credential.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum TokenChoice {
+    Existing { token: String },
+    Create,
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) enum AgentChange {
     CodexSetRouting(RoutingMode),
@@ -87,9 +96,36 @@ pub(crate) struct PreparedAgentChange {
     info: Vec<PreparedStepInfo>,
 }
 
+impl AgentChange {
+    const fn enabled(self) -> bool {
+        match self {
+            Self::CodexSetRouting(mode)
+            | Self::ClaudeSetRouting(mode)
+            | Self::ClaudeDesktopSetRouting(mode) => !matches!(mode, RoutingMode::Disabled),
+            Self::SetPiHub(mode) | Self::SetOpenCodeHub(mode) => !matches!(mode, HubMode::Disabled),
+        }
+    }
+
+    /// Name of a Hub token created for this agent.
+    /// Keep in sync with `createdTokenNames` in `wizard-ui/src/agents/AgentList.tsx`.
+    const fn token_name(self) -> &'static str {
+        match self {
+            Self::CodexSetRouting(_) => "agent-codex",
+            Self::ClaudeSetRouting(_) => "agent-claude-code",
+            Self::ClaudeDesktopSetRouting(_) => "agent-claude-desktop",
+            Self::SetPiHub(_) => "agent-pi",
+            Self::SetOpenCodeHub(_) => "agent-opencode",
+        }
+    }
+}
+
+/// Enabled modes require `token`; it is not validated. Never log it. `Create` issues the Hub
+/// token before preparation and is not part of the plan: cancelling or a failed preparation
+/// keeps the token, already published in the Hub token list.
 #[tauri::command]
 pub(crate) async fn prepare_agent_change(
     change: AgentChange,
+    token: Option<TokenChoice>,
     app: tauri::AppHandle,
 ) -> Result<PreparedAgentChange, String> {
     let (name, agent) = match &change {
@@ -103,15 +139,25 @@ pub(crate) async fn prepare_agent_change(
 
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
 
+    let token = if change.enabled() {
+        match token {
+            Some(TokenChoice::Existing { token }) if !token.is_empty() => token,
+            Some(TokenChoice::Create) => hub_tokens::issue(&app, change.token_name()).await?,
+            _ => return Err("Выберите токен CoreInfra Hub".into()),
+        }
+    } else {
+        String::new()
+    };
+
     // Plans contain credentials: never log the returned value.
     let plan = tauri::async_runtime::spawn_blocking(move || match change {
-        AgentChange::CodexSetRouting(mode) => codex::prepare_routing_for_gui(mode, &settings),
-        AgentChange::ClaudeSetRouting(mode) => claude::prepare_routing(mode, &settings),
-        AgentChange::ClaudeDesktopSetRouting(mode) => {
-            claude_desktop::prepare_routing(mode, &settings)
+        AgentChange::CodexSetRouting(mode) => {
+            codex::prepare_routing_for_gui(mode, &token, &settings)
         }
-        AgentChange::SetPiHub(mode) => pi::prepare_hub(mode, &settings),
-        AgentChange::SetOpenCodeHub(mode) => opencode::prepare_hub(mode, &settings),
+        AgentChange::ClaudeSetRouting(mode) => claude::prepare_routing(mode, &token),
+        AgentChange::ClaudeDesktopSetRouting(mode) => claude_desktop::prepare_routing(mode, &token),
+        AgentChange::SetPiHub(mode) => pi::prepare_hub(mode, &token, &settings),
+        AgentChange::SetOpenCodeHub(mode) => opencode::prepare_hub(mode, &token, &settings),
     })
     .await
     .context("agent change preparation task failed")
@@ -144,19 +190,19 @@ pub(crate) async fn apply_agent_plan(
     let proxy_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         plan.apply_with_proxies(
-            |enabled| {
+            |token| {
                 tauri::async_runtime::block_on(settings::update_state(
                     &proxy_app,
                     move |settings| {
-                        settings.claude_proxy_enable = enabled;
+                        settings.claude_proxy_enabled = token;
                     },
                 ))
             },
-            |enabled| {
+            |token| {
                 tauri::async_runtime::block_on(settings::update_state(
                     &proxy_app,
                     move |settings| {
-                        settings.codex_proxy_enable = enabled;
+                        settings.codex_proxy_enabled = token;
                     },
                 ))
             },

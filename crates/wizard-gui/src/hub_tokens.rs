@@ -16,7 +16,7 @@ pub(crate) struct HubTokens {
     tokens: AgentTokens,
     loading: bool,
     error: Option<String>,
-    /// Bumped by `clear`, so a refresh started for a previous session is discarded.
+    /// Bumped by `clear`, so a refresh or issue started for a previous session is discarded.
     #[serde(skip)]
     generation: u64,
 }
@@ -121,13 +121,45 @@ impl HubTokensManager {
     }
 }
 
-async fn fetch(app: &tauri::AppHandle) -> Result<AgentTokens, TokensError> {
-    let hub_id = settings::get_state(app)
+/// Creates a token named `name` in the personal hub, then reloads the list so the token shows
+/// with Hub's own data before its value is returned. A failed reload is published as the list
+/// error and does not fail the result. Never log the value.
+pub(crate) async fn issue(app: &tauri::AppHandle, name: &str) -> Result<String, String> {
+    let signal = app.state::<RevisionSignal<HubTokens>>();
+    let generation = signal.current().state.generation;
+    let hub_id = personal_hub_id(app).map_err(|error| error.message().to_owned())?;
+    let request_name = name.to_owned();
+    let result = with_session(app, |client, session| async move {
+        hub::issue_agent_token(&client, &session, &hub_id, &request_name).await
+    })
+    .await;
+    if let Err(error) = &result {
+        log::warn!("hub token '{name}' issue failed: {error:?}");
+    }
+    let token = result.map_err(|_| "Не удалось создать токен CoreInfra Hub".to_owned())?;
+    log::info!("hub token '{name}' issued");
+
+    // A cleared list belongs to a signed-out session: the token is not used there.
+    if signal.current().state.generation != generation {
+        log::warn!("hub token '{name}' issued for a cleared session");
+        return Err("Сессия CoreInfra Hub изменилась во время создания токена".into());
+    }
+
+    HubTokensManager::refresh(app).await;
+    Ok(token)
+}
+
+fn personal_hub_id(app: &tauri::AppHandle) -> Result<String, TokensError> {
+    settings::get_state(app)
         .ok()
         .and_then(|s| s.hub_profile)
         .map(|profile| profile.personal_hub_id)
         .filter(|id| !id.is_empty())
-        .ok_or(TokensError::NoHub)?;
+        .ok_or(TokensError::NoHub)
+}
+
+async fn fetch(app: &tauri::AppHandle) -> Result<AgentTokens, TokensError> {
+    let hub_id = personal_hub_id(app)?;
     with_session(app, |client, session| async move {
         hub::list_agent_tokens(&client, &session, &hub_id).await
     })

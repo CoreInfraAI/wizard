@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 const HUB_ORIGIN: &str = "https://hub.coreinfra.ai";
 const PROFILE_PATH: &str = "/hub/api/profile";
 const HUB_INFO_PATH: &str = "/hub/api/hub/info";
+const ISSUE_TOKEN_PATH: &str = "/hub/api/agent-token/issue";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Installs ring as the process-wide rustls provider; reqwest is built without one. Call once
@@ -189,6 +190,35 @@ pub async fn list_agent_tokens(
 
     let (update, info) = post::<HubInfo>(client, session, HUB_INFO_PATH, &Request { hub_id }).await;
     (update, info.map(|info| info.agent_tokens))
+}
+
+/// Issues a new agent token named `name` in `hub_id` and returns its value. Never log it.
+pub async fn issue_agent_token(
+    client: &Client,
+    session: &str,
+    hub_id: &str,
+    name: &str,
+) -> (SessionUpdate, Result<String, HubError>) {
+    #[derive(Serialize)]
+    struct Request<'a> {
+        hub_id: &'a str,
+        name: &'a str,
+    }
+    #[derive(Deserialize)]
+    struct Issued {
+        token: String,
+    }
+
+    let (update, issued) =
+        post::<Issued>(client, session, ISSUE_TOKEN_PATH, &Request { hub_id, name }).await;
+    let token = issued.and_then(|issued| {
+        if issued.token.is_empty() {
+            Err(HubError::Response)
+        } else {
+            Ok(issued.token)
+        }
+    });
+    (update, token)
 }
 
 /// The `session` value from `Set-Cookie` headers: `None` without one, `Err` for an empty or

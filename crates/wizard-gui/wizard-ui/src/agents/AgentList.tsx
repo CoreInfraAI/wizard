@@ -1,63 +1,178 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { type AgentChange, type AgentDetection, type AgentStates, type BackupAgent, type HubMode, type PreparedAgentChange, type RoutingMode, prepareAgentChange } from "./agents_state";
+import { type AgentChange, type AgentDetection, type AgentId, type AgentStates, type BackupAgent, type HubMode, type PreparedAgentChange, type RoutingMode, type TokenChoice, prepareAgentChange } from "./agents_state";
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
-import { useSettings } from "../settings/settings";
+import { type HubTokensState, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
+import { useHubAccount } from "../settings/hub_account";
 import { useProxy } from "./proxy";
 import { reportError } from "../logs/log";
 import { Button } from "../components/catalyst/button";
 import { Badge } from "../components/catalyst/badge";
 import { Heading } from "../components/catalyst/heading";
 import { Label } from "../components/catalyst/fieldset";
+import { Listbox, ListboxLabel, ListboxOption } from "../components/catalyst/listbox";
 import { Radio, RadioField, RadioGroup } from "../components/catalyst/radio";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 
-const routingOptions = [
+type ModeOption<M extends string> = { mode: M; label: string; detail?: string };
+
+function routingModes(subscription: string): ModeOption<RoutingMode>[] {
+  return [
+    { mode: "disabled", label: "Без CoreInfra" },
+    { mode: "hub", label: "CoreInfra Hub" },
+    { mode: "sub", label: "CoreInfra Hub", detail: ` — через вашу подписку ${subscription}` },
+  ];
+}
+
+const hubModes: ModeOption<HubMode>[] = [
   { mode: "disabled", label: "Без CoreInfra" },
   { mode: "hub", label: "CoreInfra Hub" },
-  { mode: "sub", label: "CoreInfra Hub" },
-] as const;
+];
 
-function HubRoutingSelector({ agent, mode, disabled, onPrepare }: {
-  agent: "Pi" | "OpenCode";
-  mode: HubMode;
-  disabled: boolean;
-  onPrepare: (change: AgentChange) => void;
-}) {
-  const { settings, error: settingsError } = useSettings();
-  const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
-  const [selected, setSelected] = useState<HubMode>(mode);
+// Hub access shared by all tiles. Token values are secrets: never log them.
+type Hub = HubTokensState & { signedIn: boolean };
 
-  function prepare() {
-    switch (agent) {
-      case "Pi": onPrepare({ SetPiHub: selected }); break;
-      case "OpenCode": onPrepare({ SetOpenCodeHub: selected }); break;
-    }
+// Names of Hub tokens created for agents, used for the default choice and the create button.
+// Keep in sync with `TokenAgent::token_name` in `crates/wizard-gui/src/hub_tokens.rs`.
+const createdTokenNames: Record<AgentId, string> = {
+  codex: "agent-codex",
+  claude: "agent-claude-code",
+  claude_desktop: "agent-claude-desktop",
+  opencode: "agent-opencode",
+  pi: "agent-pi",
+};
+
+// `token: null` is the option that creates the agent's Hub token.
+type TokenOption = { key: string; label: string; token: string | null };
+
+// Everything the token menu shows. Choosing an option only changes the local draft: creating
+// happens on «Применить», in the backend, before the plan is prepared.
+// Selected: the draft, else the agent's token, else the oldest Hub token with the created name,
+// else creating. Creating is offered only when the loaded list has no such token: an unknown list
+// must not suggest a duplicate. Once a created token is listed, it replaces a create draft
+// (not the agent's other token), so a retry after a failed preparation does not create another.
+function useTokenMenu(agent: AgentId, agentToken: string | null, hub: Hub) {
+  const [draft, setDraft] = useState<TokenChoice>();
+  const createdName = createdTokenNames[agent];
+
+  const options: TokenOption[] = [];
+  // The agent's own token comes first, even when Hub does not list it (another hub, signed out).
+  if (agentToken !== null) {
+    options.push({ key: agentToken, label: `${tokenLabel(agentToken, hub.tokens)} (Текущий)`, token: agentToken });
   }
+  // Other Hub tokens, without the current one and tokens Wizard created for other agents;
+  // this agent's created tokens come first.
+  const otherNames = Object.values(createdTokenNames).filter((name) => name !== createdName);
+  const visible = hub.tokens
+    .filter((token) => token.token !== agentToken && !otherNames.includes(token.name))
+    .sort((a, b) => Number(b.name === createdName) - Number(a.name === createdName));
+  for (const token of visible) {
+    options.push({ key: token.token, label: token.name || tokenPrefix(token.token), token: token.token });
+  }
+  const listed = (token: string | null | undefined): token is string =>
+    options.some((option) => option.token !== null && option.token === token);
+
+  const named = hub.tokens
+    .filter((token) => token.name === createdName)
+    .sort((a, b) => a.issued_at - b.issued_at)[0]?.token;
+  const canCreate = hub.signedIn && hub.status === "ready" && named === undefined;
+  if (canCreate) {
+    options.splice(1, 0, { key: "create", label: `Создать ${createdName}`, token: null });
+  }
+
+  let selected: TokenChoice | undefined;
+  if (draft?.kind === "create") {
+    selected = named === undefined ? draft : { kind: "existing", token: named };
+  } else {
+    const token = [draft?.token, agentToken, named].find(listed);
+    selected = token !== undefined ? { kind: "existing", token } : canCreate ? { kind: "create" } : undefined;
+  }
+  const ready = hub.signedIn && hub.status === "ready" && selected !== undefined
+    && (selected.kind === "create" ? canCreate : listed(selected.token));
+  const selectedOption = options.find((option) =>
+    selected?.kind === "create" ? option.token === null : option.token === selected?.token);
+
+  // An applied change replaces the agent token; show it instead of the old draft.
+  useEffect(() => setDraft(undefined), [agentToken]);
+
+  function choose(option: TokenOption) {
+    setDraft(option.token === null ? { kind: "create" } : { kind: "existing", token: option.token });
+  }
+
+  return { options, selected, selectedOption, choose, ready };
+}
+
+function TokenSelect({ options, value, disabled, onChange }: {
+  options: TokenOption[];
+  value: TokenOption | undefined;
+  disabled: boolean;
+  onChange: (option: TokenOption) => void;
+}) {
+  // The «Токен ·» prefix names the field on the closed menu only: options render in a portal
+  // outside the button.
+  return (
+    <Listbox value={value} by="key" aria-label="Токен CoreInfra Hub" placeholder="Выберите токен"
+      disabled={disabled} onChange={onChange}>
+      {options.map((option) => (
+        <ListboxOption key={option.key} value={option}>
+          <ListboxLabel>
+            <span className="hidden text-zinc-500 in-[button]:inline dark:text-zinc-400">Токен · </span>
+            {option.label}
+          </ListboxLabel>
+        </ListboxOption>
+      ))}
+    </Listbox>
+  );
+}
+
+// Mode and token of one agent. The saved mode wins until the user picks another one.
+function RoutingSelector<M extends string>({ agent, modes, mode, toChange, agentToken, hub, badges, disabled, onPrepare }: {
+  agent: AgentId;
+  modes: ModeOption<M>[];
+  mode: M;
+  toChange: (mode: M) => AgentChange;
+  agentToken: string | null;
+  hub: Hub;
+  badges?: ReactNode;
+  disabled: boolean;
+  onPrepare: (change: AgentChange, token: TokenChoice | null) => void;
+}) {
+  const [draft, setDraft] = useState<M>();
+  const selected = draft ?? mode;
+  const enabled = selected !== "disabled";
+  const token = useTokenMenu(agent, agentToken, hub);
+
+  useEffect(() => {
+    if (draft === mode) setDraft(undefined);
+  }, [draft, mode]);
 
   return (
     <>
-      <div>
-        <Badge color={mode === "hub" ? "green" : "zinc"}>
-          {mode === "hub" ? "CoreInfra Hub · активно" : "Без CoreInfra"}
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge color={mode === "disabled" ? "zinc" : "green"}>
+          {modes.find((option) => option.mode === mode)?.label}
+          {mode !== "disabled" && " · активно"}
+          {mode !== "disabled" && agentToken !== null && ` · ${tokenLabel(agentToken, hub.tokens)}`}
         </Badge>
+        {badges}
       </div>
-      <RadioGroup
-        value={selected}
-        disabled={disabled}
-        onChange={(value) => setSelected(value as HubMode)}
-      >
-        <RadioField>
-          <Radio value="disabled" />
-          <Label>Без CoreInfra</Label>
-        </RadioField>
-        <RadioField>
-          <Radio value="hub" />
-          <Label>CoreInfra Hub</Label>
-        </RadioField>
+      <RadioGroup value={selected} disabled={disabled} onChange={(value) => setDraft(value as M)}>
+        {modes.map((option) => (
+          <RadioField key={option.mode} disabled={option.mode !== "disabled" && !hub.signedIn}>
+            <Radio value={option.mode} />
+            <Label>{option.label}{option.detail}</Label>
+          </RadioField>
+        ))}
       </RadioGroup>
-      <Button outline type="button" disabled={disabled || (selected === "hub" && !hasToken)} onClick={prepare}>
+      {enabled && (
+        <div>
+          <TokenSelect options={token.options} value={token.selectedOption} disabled={disabled || !hub.signedIn} onChange={token.choose} />
+          {hub.status === "error" && <ErrorText>{hub.error}</ErrorText>}
+        </div>
+      )}
+      <Button outline type="button" disabled={disabled || (enabled && !token.ready)}
+        onClick={() => onPrepare(toChange(selected), enabled ? token.selected ?? null : null)}>
         Применить
       </Button>
     </>
@@ -138,77 +253,15 @@ function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boole
   );
 }
 
-function ProxyStatus({ codex }: { codex?: AgentStates["codex"] }) {
-  const { proxy, error } = useProxy();
-
+// State of the shared listener only; each tile decides what it means for its app.
+function ProxyStatus({ proxy: { proxy, error } }: { proxy: ReturnType<typeof useProxy> }) {
   if (error !== undefined) return <Badge color="amber" title={error}>Прокси: состояние недоступно</Badge>;
   if (proxy === undefined) return <Badge color="zinc">Прокси: загрузка…</Badge>;
 
   return (
-    <>
-      <Badge color={proxy.running ? "green" : "zinc"}>
-        {proxy.running ? "Прокси работает" : "Прокси остановлен"}
-      </Badge>
-      {!proxy.running && codex?.status === "found" && codex.data.desktop.status === "found"
-        && codex.data.routing_mode !== "disabled" && (
-          <ErrorText>Прокси для ChatGPT не запущен, нажмите применить</ErrorText>
-        )}
-    </>
-  );
-}
-
-function RoutingSelector({ agent, mode, disabled, onPrepare }: {
-  agent: "codex" | "claude" | "claude_desktop";
-  mode: RoutingMode;
-  disabled: boolean;
-  onPrepare: (change: AgentChange) => void;
-}) {
-  const { settings, error: settingsError } = useSettings();
-  const hasToken = (settings?.coreinfra_api_key ?? "") !== "" && settingsError === undefined;
-  const [draft, setDraft] = useState<RoutingMode>();
-  const selected = draft ?? mode;
-
-  function prepare() {
-    switch (agent) {
-      case "codex": onPrepare({ CodexSetRouting: selected }); break;
-      case "claude": onPrepare({ ClaudeSetRouting: selected }); break;
-      case "claude_desktop": onPrepare({ ClaudeDesktopSetRouting: selected }); break;
-    }
-  }
-
-  useEffect(() => {
-    if (draft !== undefined && draft === mode) setDraft(undefined);
-  }, [draft, mode]);
-
-  return (
-    <>
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge color={mode === "disabled" ? "zinc" : "green"}>
-          {routingOptions.find((option) => option.mode === mode)?.label}
-          {mode !== "disabled" && " · активно"}
-        </Badge>
-        {agent === "claude_desktop" && <ProxyStatus />}
-      </div>
-      <RadioGroup
-        value={selected}
-        disabled={disabled}
-        onChange={(value) => setDraft(value as RoutingMode)}
-      >
-        {routingOptions.map((option) => (
-          <RadioField key={option.mode}>
-            <Radio value={option.mode} />
-            <Label>
-              {option.label}{option.mode === "sub"
-                ? ` — через вашу подписку ${agent === "codex" ? "ChatGPT" : "Claude"}`
-                : ""}
-            </Label>
-          </RadioField>
-        ))}
-      </RadioGroup>
-      <Button outline type="button" disabled={disabled || (selected !== "disabled" && !hasToken)} onClick={prepare}>
-        Применить
-      </Button>
-    </>
+    <Badge color={proxy.running ? "green" : "zinc"}>
+      {proxy.running ? "Прокси работает" : "Прокси остановлен"}
+    </Badge>
   );
 }
 
@@ -217,15 +270,21 @@ export function AgentList({ agents }: { agents: AgentStates }) {
   const [isPreparingPlan, setIsPreparingPlan] = useState(false);
   const [error, setError] = useState<string>();
   const isChangeInProgress = isPreparingPlan || preparedChange !== undefined;
+  const { account } = useHubAccount();
+  const hub: Hub = { ...useHubTokens(), signedIn: account?.signed_in === true };
+  const proxy = useProxy();
+  const codex = agents.codex;
+  const chatGptProxyStopped = proxy.proxy?.running === false && codex.status === "found"
+    && codex.data.desktop.status === "found" && codex.data.routing_mode !== "disabled";
 
-  async function prepare(change: AgentChange) {
+  async function prepare(change: AgentChange, token: TokenChoice | null) {
     if (isChangeInProgress) return;
 
     setIsPreparingPlan(true);
     setError(undefined);
 
     try {
-      setPreparedChange(await prepareAgentChange(change));
+      setPreparedChange(await prepareAgentChange(change, token));
     } catch (cause: unknown) {
       const message = "Не удалось подготовить изменения";
       reportError(message, cause);
@@ -244,15 +303,18 @@ export function AgentList({ agents }: { agents: AgentStates }) {
               ? agents.codex.data.cli : agents.codex.status === "not_found" ? agents.codex : undefined} />
             <InstallationStatus name="ChatGPT" detection={agents.codex.status === "found"
               ? agents.codex.data.desktop : agents.codex.status === "not_found" ? agents.codex : undefined}>
-              <ProxyStatus codex={agents.codex} />
+              <ProxyStatus proxy={proxy} />
             </InstallationStatus>
+            {chatGptProxyStopped && <ErrorText>Прокси для ChatGPT не запущен, нажмите применить</ErrorText>}
           </div>
           <div className="max-w-1/2 shrink-0"><BackupButton agent="codex" disabled={isChangeInProgress} /></div>
         </div>
         <Text>Настройка общая для Codex и ChatGPT.</Text>
         {agents.codex.status === "found" && (
           <div className="space-y-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
-            <RoutingSelector agent="codex" mode={agents.codex.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+            <RoutingSelector agent="codex" modes={routingModes("ChatGPT")} mode={agents.codex.data.routing_mode}
+              toChange={(mode) => ({ CodexSetRouting: mode })} agentToken={agents.codex.data.token} hub={hub}
+              disabled={isChangeInProgress} onPrepare={prepare} />
           </div>
         )}
         {agents.codex.status === "error" && (
@@ -261,23 +323,31 @@ export function AgentList({ agents }: { agents: AgentStates }) {
       </section>
       <Installation name="Claude Code" detection={agents.claude} actions={<BackupButton agent="claude" disabled={isChangeInProgress} />}>
         {agents.claude.status === "found" && (
-          <RoutingSelector agent="claude" mode={agents.claude.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+          <RoutingSelector agent="claude" modes={routingModes("Claude")} mode={agents.claude.data.routing_mode}
+            toChange={(mode) => ({ ClaudeSetRouting: mode })} agentToken={agents.claude.data.token} hub={hub}
+            disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       <Installation name="Claude Desktop" detection={agents.claude_desktop}>
         {agents.claude_desktop.status === "found" && (
-          <RoutingSelector agent="claude_desktop" mode={agents.claude_desktop.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+          <RoutingSelector agent="claude_desktop" modes={routingModes("Claude")} mode={agents.claude_desktop.data.routing_mode}
+            toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })} agentToken={agents.claude_desktop.data.token} hub={hub}
+            badges={<ProxyStatus proxy={proxy} />} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
         <Text>Для входа в аккаунт включите VPN и примените режим «Без CoreInfra» в Wizard.</Text>
       </Installation>
       <Installation name="OpenCode" detection={agents.opencode}>
         {agents.opencode.status === "found" && (
-          <HubRoutingSelector agent="OpenCode" mode={agents.opencode.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+          <RoutingSelector agent="opencode" modes={hubModes} mode={agents.opencode.data.routing_mode}
+            toChange={(mode) => ({ SetOpenCodeHub: mode })} agentToken={agents.opencode.data.token} hub={hub}
+            disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       <Installation name="Pi" detection={agents.pi}>
         {agents.pi.status === "found" && (
-          <HubRoutingSelector agent="Pi" mode={agents.pi.data.routing_mode} disabled={isChangeInProgress} onPrepare={prepare} />
+          <RoutingSelector agent="pi" modes={hubModes} mode={agents.pi.data.routing_mode}
+            toChange={(mode) => ({ SetPiHub: mode })} agentToken={agents.pi.data.token} hub={hub}
+            disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
       {error && <div className="col-span-full"><ErrorText>{error}</ErrorText></div>}

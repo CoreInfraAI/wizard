@@ -143,8 +143,12 @@ pub fn restart_daemon(executable: &Path, codex_home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Prepare without writing files or probing the daemon.
-pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
+/// Prepare without writing files or probing the daemon. `token` is ignored when disabled.
+pub fn prepare_routing(
+    mode: RoutingMode,
+    token: &str,
+    settings: &Settings,
+) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Codex.lock()?;
 
     let path = std::path::absolute(config_path()?)?;
@@ -164,7 +168,7 @@ pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<Prepare
     })?;
 
     remove_inactive_routing_env(&mut dotenv.after, current_mode, mode)?;
-    write_routing_env(&mut dotenv.after, mode, &settings.coreinfra_token)?;
+    write_routing_env(&mut dotenv.after, mode, token)?;
 
     Ok(PreparedPlan::new(
         PreparedAgent::Codex,
@@ -180,8 +184,12 @@ pub fn prepare_routing(mode: RoutingMode, settings: &Settings) -> Result<Prepare
 }
 
 /// Add GUI-owned proxy demand and `ChatGPT` profile configuration.
-pub fn prepare_routing_for_gui(mode: RoutingMode, settings: &Settings) -> Result<PreparedPlan> {
-    let mut plan = prepare_routing(mode, settings)?;
+pub fn prepare_routing_for_gui(
+    mode: RoutingMode,
+    token: &str,
+    settings: &Settings,
+) -> Result<PreparedPlan> {
+    let mut plan = prepare_routing(mode, token, settings)?;
     let enabled = if mode == RoutingMode::Disabled {
         false
     } else {
@@ -199,8 +207,9 @@ pub fn prepare_routing_for_gui(mode: RoutingMode, settings: &Settings) -> Result
     let path = desktop_preferences_path()?.context("ChatGPT profile location is unavailable")?;
     let change = prepare_desktop_proxy(path, enabled)?;
     plan.steps.insert(0, PreparedStep::ChangeFile { change });
-    plan.steps
-        .push(PreparedStep::SetCodexProxyEnabled { enabled });
+    plan.steps.push(PreparedStep::SetCodexProxyEnabled {
+        token: enabled.then(|| token.to_owned()),
+    });
     Ok(plan)
 }
 
