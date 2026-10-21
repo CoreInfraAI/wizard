@@ -57,26 +57,29 @@ pub(crate) async fn update_state(
         if next == current {
             return Ok(());
         }
+        let proxy_changed = next.claude_proxy_enabled != current.claude_proxy_enabled
+            || next.codex_proxy_enabled != current.codex_proxy_enabled;
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let proxy_enabled = next.local_proxy_enabled();
 
         settings::save_to_file(&next)?;
         signal.notify(next);
 
-        if proxy_enabled != current.local_proxy_enabled() {
-            let proxy_result = tauri::async_runtime::block_on(crate::proxy::sync(&app));
-            if let Err(error) = &proxy_result {
-                log::error!("proxy update failed: {error:#}");
-            }
-
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            {
-                crate::tray::set_enabled(&app, proxy_enabled)?;
-                crate::autostart::set_enabled(&app, proxy_enabled)?;
-            }
-
-            proxy_result?;
+        if !proxy_changed {
+            return Ok(());
         }
-        Ok(())
+        let proxy_result = tauri::async_runtime::block_on(crate::proxy::sync(&app));
+        if let Err(error) = &proxy_result {
+            log::error!("proxy update failed: {error:#}");
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if proxy_enabled != current.local_proxy_enabled() {
+            crate::tray::set_enabled(&app, proxy_enabled)?;
+            crate::autostart::set_enabled(&app, proxy_enabled)?;
+        }
+
+        proxy_result
     })
     .await
     .context("settings save task failed")?

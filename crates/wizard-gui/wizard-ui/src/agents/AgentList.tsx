@@ -4,7 +4,7 @@ import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { type HubTokensState, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
 import { useHubAccount } from "../settings/hub_account";
-import { useProxy } from "./proxy";
+import { type Proxy, useProxy } from "./proxy";
 import { reportError } from "../logs/log";
 import { Button } from "../components/catalyst/button";
 import { Badge } from "../components/catalyst/badge";
@@ -253,14 +253,15 @@ function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boole
   );
 }
 
-// State of the shared listener only; each tile decides what it means for its app.
-function ProxyStatus({ proxy: { proxy, error } }: { proxy: ReturnType<typeof useProxy> }) {
+// State of the app's listener only; each tile decides what it means for its app.
+function ProxyStatus({ proxy: { proxy, error }, app }: { proxy: ReturnType<typeof useProxy>; app: keyof Proxy }) {
   if (error !== undefined) return <Badge color="amber" title={error}>Прокси: состояние недоступно</Badge>;
   if (proxy === undefined) return <Badge color="zinc">Прокси: загрузка…</Badge>;
 
+  const running = proxy[app];
   return (
-    <Badge color={proxy.running ? "green" : "zinc"}>
-      {proxy.running ? "Прокси работает" : "Прокси остановлен"}
+    <Badge color={running ? "green" : "zinc"}>
+      {running ? "Прокси работает" : "Прокси остановлен"}
     </Badge>
   );
 }
@@ -274,7 +275,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
   const hub: Hub = { ...useHubTokens(), signedIn: account?.signed_in === true };
   const proxy = useProxy();
   const codex = agents.codex;
-  const chatGptProxyStopped = proxy.proxy?.running === false && codex.status === "found"
+  const chatGptProxyStopped = proxy.proxy?.chatgpt === false && codex.status === "found"
     && codex.data.desktop.status === "found" && codex.data.routing_mode !== "disabled";
 
   async function prepare(change: AgentChange, token: TokenChoice | null) {
@@ -303,7 +304,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
               ? agents.codex.data.cli : agents.codex.status === "not_found" ? agents.codex : undefined} />
             <InstallationStatus name="ChatGPT" detection={agents.codex.status === "found"
               ? agents.codex.data.desktop : agents.codex.status === "not_found" ? agents.codex : undefined}>
-              <ProxyStatus proxy={proxy} />
+              <ProxyStatus proxy={proxy} app="chatgpt" />
             </InstallationStatus>
             {chatGptProxyStopped && <ErrorText>Прокси для ChatGPT не запущен, нажмите применить</ErrorText>}
           </div>
@@ -332,7 +333,7 @@ export function AgentList({ agents }: { agents: AgentStates }) {
         {agents.claude_desktop.status === "found" && (
           <RoutingSelector agent="claude_desktop" modes={routingModes("Claude")} mode={agents.claude_desktop.data.routing_mode}
             toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })} agentToken={agents.claude_desktop.data.token} hub={hub}
-            badges={<ProxyStatus proxy={proxy} />} disabled={isChangeInProgress} onPrepare={prepare} />
+            badges={<ProxyStatus proxy={proxy} app="claude_desktop" />} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
         <Text>Для входа в аккаунт включите VPN и примените режим «Без CoreInfra» в Wizard.</Text>
       </Installation>

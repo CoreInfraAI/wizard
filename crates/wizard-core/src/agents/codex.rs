@@ -265,20 +265,24 @@ fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
 
     let proxy = json!({
         "mode": "fixed_servers",
-        "server": format!("http://{}", wizard_proxy::LISTEN_ADDRESS),
+        "server": format!("http://{}", wizard_proxy::CHATGPT_ADDRESS),
+    });
+    // Written before ChatGPT had its own listener; replaced or removed like the current one.
+    let shared_proxy = json!({
+        "mode": "fixed_servers",
+        "server": "http://127.0.0.1:33787",
     });
     json::update(&mut change.after, |config| {
-        if let Some(current) = config.get("proxy")
-            && current != &proxy
-        {
-            log::warn!(
-                "ChatGPT proxy configuration skipped: existing proxy is not managed by Wizard"
-            );
-            return Ok(());
-        }
+        let current = config.get("proxy");
+        let foreign = current.is_some_and(|current| current != &proxy && current != &shared_proxy);
 
         if enabled {
+            if foreign {
+                log::warn!("ChatGPT proxy configuration replaces a proxy not managed by Wizard");
+            }
             config["proxy"] = proxy;
+        } else if foreign {
+            log::warn!("ChatGPT proxy removal skipped: existing proxy is not managed by Wizard");
         } else {
             config
                 .as_object_mut()

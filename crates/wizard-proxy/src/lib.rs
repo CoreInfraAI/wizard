@@ -12,7 +12,10 @@ use tokio::task::{JoinHandle, JoinSet};
 mod http;
 mod upstream;
 
-pub const LISTEN_ADDRESS: &str = "127.0.0.1:33787";
+/// Listener of Claude Desktop, with its own token.
+pub const CLAUDE_DESKTOP_ADDRESS: &str = "127.0.0.1:33787";
+/// Listener of `ChatGPT`, with its own token.
+pub const CHATGPT_ADDRESS: &str = "127.0.0.1:33788";
 
 /// Owns a running listener. No settings are read or watched by this crate.
 pub struct Proxy {
@@ -38,9 +41,9 @@ impl Proxy {
     }
 }
 
-/// Bind the fixed loopback address and start proxying with a snapshot of `token`.
+/// Bind `address` and start proxying with a snapshot of `token`.
 /// Upstream connectivity is checked per request, not during startup.
-pub async fn start(token: &str) -> io::Result<Proxy> {
+pub async fn start(address: &str, token: &str) -> io::Result<Proxy> {
     if token.is_empty() {
         // TODO: Decide the final behavior when the saved CoreInfra token is absent.
         return Err(io::Error::new(
@@ -54,7 +57,7 @@ pub async fn start(token: &str) -> io::Result<Proxy> {
         .await
         .map_err(io::Error::other)??;
     let upstream = Arc::new(upstream::Upstream::new(tls, authorization));
-    let listener = TcpListener::bind(LISTEN_ADDRESS).await?;
+    let listener = TcpListener::bind(address).await?;
     let (shutdown, receiver) = oneshot::channel();
     let (finished, stopped) = watch::channel(());
     let task = tokio::spawn(async move {

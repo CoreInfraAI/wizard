@@ -45,15 +45,6 @@ impl Settings {
     pub fn local_proxy_enabled(&self) -> bool {
         self.claude_proxy_enabled.is_some() || self.codex_proxy_enabled.is_some()
     }
-
-    /// Token for the shared local proxy: Claude Desktop's, else `ChatGPT`'s.
-    // TODO: Route each desktop app with its own token.
-    #[must_use]
-    pub fn local_proxy_token(&self) -> Option<&str> {
-        self.claude_proxy_enabled
-            .as_deref()
-            .or(self.codex_proxy_enabled.as_deref())
-    }
 }
 
 fn settings_path() -> Result<PathBuf> {

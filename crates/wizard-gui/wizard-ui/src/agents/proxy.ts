@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { reportError } from "../logs/log";
 
-export type Proxy = { running: boolean };
+export type Proxy = { claude_desktop: boolean; chatgpt: boolean };
 type ProxySnapshot = Proxy & { revision: number };
 
 export function useProxy(): { proxy: Proxy | undefined; error: string | undefined } {

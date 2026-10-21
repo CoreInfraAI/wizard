@@ -104,7 +104,7 @@ fn read_routing(settings: &Settings) -> Result<(RoutingMode, Option<AgentToken>)
 
     let config = json::read(&dir.join(format!("{id}.json")))?;
     let preferences = json::read(&dir.with_file_name("claude_desktop_config.json"))?;
-    let proxy_url = format!("http://{}", wizard_proxy::LISTEN_ADDRESS);
+    let proxy_url = format!("http://{}", wizard_proxy::CLAUDE_DESKTOP_ADDRESS);
 
     if preferences["deploymentMode"] == "1p"
         && config["egressProxyUrl"] == proxy_url
@@ -166,7 +166,7 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
         })?;
     }
 
-    let proxy_url = format!("http://{}", wizard_proxy::LISTEN_ADDRESS);
+    let proxy_url = format!("http://{}", wizard_proxy::CLAUDE_DESKTOP_ADDRESS);
     json::update(&mut config.after, |config| {
         let remove = mode != RoutingMode::Hub && has_hub_connection(config);
         let remove_proxy = mode == RoutingMode::Disabled && config["egressProxyUrl"] == proxy_url;
