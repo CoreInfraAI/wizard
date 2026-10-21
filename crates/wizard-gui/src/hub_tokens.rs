@@ -23,7 +23,7 @@ pub(crate) struct HubTokens {
 
 #[derive(Clone, Copy, Debug)]
 enum TokensError {
-    /// The saved profile predates `personal_hub_id`; signing in again stores it.
+    /// Hub returned a profile without `personal_hub_id`.
     NoHub,
     Request(HubError),
 }
@@ -31,7 +31,7 @@ enum TokensError {
 impl TokensError {
     const fn message(self) -> &'static str {
         match self {
-            Self::NoHub => "Войдите в аккаунт CoreInfra Hub заново",
+            Self::NoHub => "CoreInfra Hub не вернул hub аккаунта",
             Self::Request(_) => "Не удалось загрузить токены CoreInfra Hub",
         }
     }
@@ -127,7 +127,10 @@ impl HubTokensManager {
 pub(crate) async fn issue(app: &tauri::AppHandle, name: &str) -> Result<String, String> {
     let signal = app.state::<RevisionSignal<HubTokens>>();
     let generation = signal.current().state.generation;
-    let hub_id = personal_hub_id(app).map_err(|error| error.message().to_owned())?;
+    let hub_id = personal_hub_id(app).await.map_err(|error| match error {
+        TokensError::NoHub => error.message().to_owned(),
+        TokensError::Request(_) => "Не удалось создать токен CoreInfra Hub".to_owned(),
+    })?;
     let request_name = name.to_owned();
     let result = with_session(app, |client, session| async move {
         hub::issue_agent_token(&client, &session, &hub_id, &request_name).await
@@ -149,17 +152,17 @@ pub(crate) async fn issue(app: &tauri::AppHandle, name: &str) -> Result<String, 
     Ok(token)
 }
 
-fn personal_hub_id(app: &tauri::AppHandle) -> Result<String, TokensError> {
-    settings::get_state(app)
-        .ok()
-        .and_then(|s| s.hub_profile)
-        .map(|profile| profile.personal_hub_id)
+async fn personal_hub_id(app: &tauri::AppHandle) -> Result<String, TokensError> {
+    let profile = hub_auth::load_profile(app)
+        .await
+        .map_err(TokensError::Request)?;
+    Some(profile.personal_hub_id)
         .filter(|id| !id.is_empty())
         .ok_or(TokensError::NoHub)
 }
 
 async fn fetch(app: &tauri::AppHandle) -> Result<AgentTokens, TokensError> {
-    let hub_id = personal_hub_id(app)?;
+    let hub_id = personal_hub_id(app).await?;
     with_session(app, |client, session| async move {
         hub::list_agent_tokens(&client, &session, &hub_id).await
     })
@@ -170,7 +173,10 @@ async fn fetch(app: &tauri::AppHandle) -> Result<AgentTokens, TokensError> {
 /// Runs an authenticated Hub request with the saved session and applies its `SessionUpdate`:
 /// a refreshed cookie is saved and a rejected session signs Wizard out, both only if the saved
 /// session is still the one sent.
-async fn with_session<T, F, Fut>(app: &tauri::AppHandle, request: F) -> Result<T, HubError>
+pub(crate) async fn with_session<T, F, Fut>(
+    app: &tauri::AppHandle,
+    request: F,
+) -> Result<T, HubError>
 where
     F: FnOnce(Client, String) -> Fut,
     Fut: Future<Output = (SessionUpdate, Result<T, HubError>)>,
@@ -194,6 +200,7 @@ where
         log::error!("hub session update failed");
     }
     if signing_out {
+        hub_auth::clear_profile(app);
         HubTokensManager::clear(app);
         hub_auth::republish(app);
     }

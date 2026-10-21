@@ -118,23 +118,23 @@ impl AgentStates {
     pub fn update_settings_paths(&self, settings: &mut Settings) {
         if let AgentDetection::Found(agent) = &self.codex {
             if let AgentDetection::Found(cli) = &agent.cli {
-                settings.codex_path_last = Some(cli.path.clone());
+                settings.last_paths.codex = Some(cli.path.clone());
             }
             if let AgentDetection::Found(desktop) = &agent.desktop {
-                settings.codex_desktop_path_last = Some(desktop.path.clone());
+                settings.last_paths.codex_desktop = Some(desktop.path.clone());
             }
         }
         if let AgentDetection::Found(agent) = &self.claude {
-            settings.claude_path_last = Some(agent.info.path.clone());
+            settings.last_paths.claude = Some(agent.info.path.clone());
         }
         if let AgentDetection::Found(agent) = &self.claude_desktop {
-            settings.claude_desktop_path_last = Some(agent.info.path.clone());
+            settings.last_paths.claude_desktop = Some(agent.info.path.clone());
         }
         if let AgentDetection::Found(agent) = &self.opencode {
-            settings.opencode_path_last = Some(agent.info.path.clone());
+            settings.last_paths.opencode = Some(agent.info.path.clone());
         }
         if let AgentDetection::Found(agent) = &self.pi {
-            settings.pi_path_last = Some(agent.info.path.clone());
+            settings.last_paths.pi = Some(agent.info.path.clone());
         }
     }
 }

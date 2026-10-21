@@ -35,7 +35,7 @@ pub(crate) struct Claude {
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
-    let info = match detection::detect(Agent::Claude, settings.claude_path_last.as_deref()) {
+    let info = match detection::detect(Agent::Claude, settings.last_paths.claude.as_deref()) {
         AgentDetection::Found(info) => info,
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),

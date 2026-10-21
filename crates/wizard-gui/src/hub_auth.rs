@@ -3,7 +3,7 @@
 //! HTTP-client errors in diagnostics; log only static names and error variants.
 
 use crate::{
-    hub_tokens::HubTokensManager,
+    hub_tokens::{self, HubTokensManager},
     revision_signal::{RevisionSignal, RevisionSnapshot},
     settings,
 };
@@ -13,12 +13,9 @@ use serde::Serialize;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::Manager as _;
 use tokio::time::Instant;
-use wizard_core::{
-    hub::{
-        self, Url,
-        login::{self, CallbackServer, LoginError, Reply},
-    },
-    settings::HubProfile,
+use wizard_core::hub::{
+    self, HubError, HubProfile, Url,
+    login::{self, CallbackServer, LoginError, Reply},
 };
 
 /// How long a login waits for the browser; a repeated login press restarts it.
@@ -82,24 +79,35 @@ impl Deadline {
     }
 }
 
+/// Profile of the signed-in account, kept in memory only: set at login, otherwise loaded from
+/// Hub when first needed (`load_profile`), cleared on logout or a rejected session.
+#[derive(Default)]
+pub(crate) struct HubProfileState(Mutex<Option<HubProfile>>);
+
+impl HubProfileState {
+    fn lock(&self) -> MutexGuard<'_, Option<HubProfile>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub(crate) struct HubAccount {
     signed_in: bool,
-    /// Saved at login; absent for sessions saved before profiles were stored.
+    /// Absent until loaded from Hub, or when loading failed.
     profile: Option<HubProfile>,
     pending: bool,
     error: Option<String>,
 }
 
 impl HubAccount {
-    /// `signed_in` and `profile` always come from saved settings; a read failure is signed out.
+    /// `signed_in` comes from saved settings (a read failure is signed out), `profile` from memory.
     fn saved(app: &tauri::AppHandle, pending: bool, error: Option<String>) -> Self {
-        let (signed_in, profile) = settings::get_state(app).map_or((false, None), |s| {
-            (!s.hub_session.is_empty(), s.hub_profile)
-        });
+        let signed_in = settings::get_state(app).is_ok_and(|s| !s.hub_session.is_empty());
         Self {
             signed_in,
-            profile,
+            profile: signed_in
+                .then(|| app.state::<HubProfileState>().lock().clone())
+                .flatten(),
             pending,
             error,
         }
@@ -109,7 +117,33 @@ impl HubAccount {
 /// Registers login state from saved settings.
 pub(crate) fn initialize(app: &tauri::AppHandle) {
     app.manage(HubAuth::default());
+    app.manage(HubProfileState::default());
     app.manage(RevisionSignal::new(HubAccount::saved(app, false, None)));
+}
+
+/// The signed-in account's profile, loading it from Hub when it is not in memory yet. A profile
+/// loaded for a session that was replaced meanwhile is returned but not kept.
+pub(crate) async fn load_profile(app: &tauri::AppHandle) -> Result<HubProfile, HubError> {
+    if let Some(profile) = app.state::<HubProfileState>().lock().clone() {
+        return Ok(profile);
+    }
+
+    let (sent, profile) = hub_tokens::with_session(app, |client, session| async move {
+        let (update, profile) = hub::fetch_profile(&client, &session).await;
+        (update, profile.map(|profile| (session, profile)))
+    })
+    .await?;
+    let current = settings::get_state(app).map(|s| s.hub_session);
+    if current.is_ok_and(|current| current == sent) {
+        *app.state::<HubProfileState>().lock() = Some(profile.clone());
+        republish(app);
+    }
+    Ok(profile)
+}
+
+/// Forgets the profile on logout or a rejected session.
+pub(crate) fn clear_profile(app: &tauri::AppHandle) {
+    *app.state::<HubProfileState>().lock() = None;
 }
 
 /// Returns the account state once it differs from `last_revision`.
@@ -165,13 +199,11 @@ pub(crate) async fn logout_hub_account(app: tauri::AppHandle) -> Result<(), Stri
     if !matches!(*app.state::<HubAuth>().attempt(), Attempt::Idle) {
         return Err("Дождитесь завершения попытки входа".into());
     }
-    settings::update_state(&app, |s| {
-        s.hub_session.clear();
-        s.hub_profile = None;
-    })
-    .await
-    .map_err(|_| "Не удалось удалить сессию Wizard")?;
+    settings::update_state(&app, |s| s.hub_session.clear())
+        .await
+        .map_err(|_| "Не удалось удалить сессию Wizard")?;
     log::info!("hub logout");
+    clear_profile(&app);
     HubTokensManager::clear(&app);
     publish(&app, false, None);
     Ok(())
@@ -240,16 +272,14 @@ async fn run_login(app: &tauri::AppHandle) -> Result<(), LoginError> {
             return Err(error);
         }
     };
-    if settings::update_state(app, move |s| {
-        s.hub_session = session;
-        s.hub_profile = Some(profile);
-    })
-    .await
-    .is_err()
+    if settings::update_state(app, move |s| s.hub_session = session)
+        .await
+        .is_err()
     {
         callback.reply(Reply::Failed).await;
         return Err(LoginError::Save);
     }
+    *app.state::<HubProfileState>().lock() = Some(profile);
     callback.reply(Reply::SignedIn).await;
     Ok(())
 }

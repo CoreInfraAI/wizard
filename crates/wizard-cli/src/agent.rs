@@ -1,11 +1,12 @@
 //! `agent`: agent state and routing plans with a `CoreInfra` Hub token.
 
-use anyhow::{Context as _, Result, anyhow, bail, ensure};
+use crate::account::{apply_session, hub_error};
+use anyhow::{Context as _, Result, bail, ensure};
 use clap::{Args, Subcommand};
 use std::io::{self, IsTerminal as _, Write as _};
 use wizard_core::{
     agents::{self, HubMode, RoutingMode, TokenAgent, claude, codex, opencode, pi},
-    hub::{self, HubError, SessionUpdate},
+    hub,
     prepared_plan::PreparedPlan,
     settings, validate_token,
 };
@@ -213,14 +214,14 @@ async fn hub_token(yes: bool, name: &str) -> Result<Option<String>> {
         !settings.hub_session.is_empty(),
         "Войдите в CoreInfra Hub (account login) или передайте токен через --token-stdin"
     );
-    let hub_id = settings
-        .hub_profile
-        .map(|profile| profile.personal_hub_id)
-        .filter(|id| !id.is_empty())
-        .context("Войдите в аккаунт CoreInfra Hub заново: account logout, затем account login")?;
     let client = hub::client().map_err(hub_error)?;
 
     let session = settings.hub_session;
+    let (update, profile) = hub::fetch_profile(&client, &session).await;
+    let session = apply_session(update, &session)?;
+    let hub_id = profile.map_err(hub_error)?.personal_hub_id;
+    ensure!(!hub_id.is_empty(), "CoreInfra Hub не вернул hub аккаунта");
+
     let (update, tokens) = hub::list_agent_tokens(&client, &session, &hub_id).await;
     let session = apply_session(update, &session)?;
     if let Some(token) = tokens.map_err(hub_error)?.named(name) {
@@ -237,30 +238,6 @@ async fn hub_token(yes: bool, name: &str) -> Result<Option<String>> {
     let token = token.map_err(hub_error)?;
     eprintln!("Токен {name} создан в CoreInfra Hub.");
     Ok(Some(token))
-}
-
-/// Saves the session update and returns the session to send next.
-fn apply_session(update: SessionUpdate, sent: &str) -> Result<String> {
-    let next = match &update {
-        SessionUpdate::Refreshed(session) => session.clone(),
-        SessionUpdate::Unchanged | SessionUpdate::Rejected => sent.to_owned(),
-    };
-    if update != SessionUpdate::Unchanged {
-        settings::update_file(|settings| update.apply(settings, sent))?;
-    }
-    Ok(next)
-}
-
-/// Hub errors carry no secrets; a rejected session was already signed out.
-fn hub_error(error: HubError) -> anyhow::Error {
-    match error {
-        HubError::SignedOut => {
-            anyhow!("Сессия CoreInfra Hub недействительна, выполните account login")
-        }
-        HubError::Request | HubError::Status(_) | HubError::Response => {
-            anyhow!("Запрос к CoreInfra Hub не выполнен: {error:?}")
-        }
-    }
 }
 
 /// Asks on the terminal unless `yes`; non-interactive execution requires `--yes`.

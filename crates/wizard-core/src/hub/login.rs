@@ -7,8 +7,7 @@
 //! Login completes only after `/hub/api/profile` accepts the new session. There is no state or
 //! PKCE by user decision; callback substitution remains a known risk.
 
-use super::{HUB_ORIGIN, PROFILE_PATH, hub_url, session_from_headers};
-use crate::settings::HubProfile;
+use super::{HUB_ORIGIN, HubProfile, PROFILE_PATH, hub_url, session_from_headers};
 use core::{
     fmt,
     net::{Ipv4Addr, SocketAddr},

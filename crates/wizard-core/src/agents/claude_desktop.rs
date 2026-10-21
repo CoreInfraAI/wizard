@@ -33,7 +33,7 @@ pub(crate) struct ClaudeDesktop {
 pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
     let info = match detection::detect_desktop(
         DesktopAgent::Claude,
-        settings.claude_desktop_path_last.as_deref(),
+        settings.last_paths.claude_desktop.as_deref(),
     ) {
         AgentDetection::Found(info) => info,
         AgentDetection::NotFound => return AgentDetection::NotFound,

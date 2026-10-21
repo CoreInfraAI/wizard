@@ -18,33 +18,26 @@ pub struct Settings {
     /// Account session, independent of agent tokens. Never expose through IPC.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub hub_session: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub codex_path_last: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub codex_desktop_path_last: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude_path_last: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude_desktop_path_last: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub opencode_path_last: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pi_path_last: Option<PathBuf>,
-    /// Account shown in the Hub tile, captured from `/hub/api/profile` at login.
-    /// Kept last: it serializes as a TOML table.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hub_profile: Option<HubProfile>,
+    /// Kept last: it serializes as a TOML table, written after plain keys.
+    pub last_paths: LastPaths,
 }
 
-/// Non-secret Hub account details. Deserializing a profile response keeps only these fields.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HubProfile {
-    pub username: String,
+/// Last found agent paths: first search candidates, not cached detection results.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LastPaths {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub verified_email: Option<String>,
-    /// Hub whose agent tokens Wizard lists. Empty in profiles saved before it was stored.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub personal_hub_id: String,
+    pub codex: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_desktop: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_desktop: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pi: Option<PathBuf>,
 }
 
 impl Settings {

@@ -31,7 +31,7 @@ pub(crate) struct OpenCode {
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<OpenCode> {
-    let info = match detection::detect(Agent::OpenCode, settings.opencode_path_last.as_deref()) {
+    let info = match detection::detect(Agent::OpenCode, settings.last_paths.opencode.as_deref()) {
         AgentDetection::Found(info) => info,
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
@@ -149,7 +149,7 @@ pub fn prepare_hub(mode: HubMode, token: &str, settings: &Settings) -> Result<Pr
         let executable = find_executable(
             "opencode",
             vec![PathBuf::from("~/.opencode/bin")],
-            settings.opencode_path_last.as_deref(),
+            settings.last_paths.opencode.as_deref(),
         )?
         .context("OpenCode executable not found")?;
 

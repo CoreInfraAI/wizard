@@ -58,3 +58,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Agent { yes, command } => agent::run(&runtime, yes, command),
     }
 }
+
+#[test]
+fn verify_cli() {
+    use clap::CommandFactory as _;
+    Cli::command().debug_assert();
+}

@@ -1,10 +1,10 @@
 //! `account`: Hub account login, logout and status.
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use wizard_core::{
     hub::{
-        self,
+        self, HubError, SessionUpdate,
         login::{self as hub_login, CallbackServer, LoginError, Reply},
     },
     settings,
@@ -20,7 +20,7 @@ pub(crate) enum AccountCommand {
     },
     /// Forget Wizard's Hub session; the browser session is untouched.
     Logout,
-    /// Print the account as JSON (never includes the session).
+    /// Print the account as JSON, loading its profile from Hub (never includes the session).
     Status,
 }
 
@@ -34,24 +34,64 @@ pub(crate) fn run(runtime: &tokio::runtime::Runtime, command: &AccountCommand) -
             runtime.block_on(login(*no_browser))?;
         }
         AccountCommand::Logout => {
-            settings::update_file(|settings| {
-                settings.hub_session.clear();
-                settings.hub_profile = None;
-            })?;
+            settings::update_file(|settings| settings.hub_session.clear())?;
             eprintln!("Сессия Wizard удалена.");
         }
         AccountCommand::Status => {
-            let settings = settings::load_from_file()?;
-            let profile = settings.hub_profile.as_ref();
+            let (signed_in, profile) = runtime.block_on(status())?;
             let account = serde_json::json!({
-                "signed_in": !settings.hub_session.is_empty(),
-                "username": profile.map(|profile| &profile.username),
-                "verified_email": profile.and_then(|profile| profile.verified_email.as_ref()),
+                "signed_in": signed_in,
+                "username": profile.as_ref().map(|profile| &profile.username),
+                "verified_email": profile.as_ref().and_then(|profile| profile.verified_email.as_ref()),
             });
             println!("{}", serde_json::to_string_pretty(&account)?);
         }
     }
     Ok(())
+}
+
+/// Whether a session is saved and its profile from Hub. A rejected session is signed out; other
+/// failures keep the session and report no profile.
+async fn status() -> Result<(bool, Option<hub::HubProfile>)> {
+    let session = settings::load_from_file()?.hub_session;
+    if session.is_empty() {
+        return Ok((false, None));
+    }
+    let client = hub::client().map_err(hub_error)?;
+    let (update, profile) = hub::fetch_profile(&client, &session).await;
+    apply_session(update, &session)?;
+    match profile {
+        Ok(profile) => Ok((true, Some(profile))),
+        Err(HubError::SignedOut) => Ok((false, None)),
+        Err(error) => {
+            eprintln!("{:#}", hub_error(error));
+            Ok((true, None))
+        }
+    }
+}
+
+/// Saves the session update and returns the session to send next.
+pub(crate) fn apply_session(update: SessionUpdate, sent: &str) -> Result<String> {
+    let next = match &update {
+        SessionUpdate::Refreshed(session) => session.clone(),
+        SessionUpdate::Unchanged | SessionUpdate::Rejected => sent.to_owned(),
+    };
+    if update != SessionUpdate::Unchanged {
+        settings::update_file(|settings| update.apply(settings, sent))?;
+    }
+    Ok(next)
+}
+
+/// Hub errors carry no secrets; a rejected session was already signed out.
+pub(crate) fn hub_error(error: HubError) -> anyhow::Error {
+    match error {
+        HubError::SignedOut => {
+            anyhow!("Сессия CoreInfra Hub недействительна, выполните account login")
+        }
+        HubError::Request | HubError::Status(_) | HubError::Response => {
+            anyhow!("Запрос к CoreInfra Hub не выполнен: {error:?}")
+        }
+    }
 }
 
 /// Signs in through the browser and saves the session. Ctrl-C cancels; nothing is saved then.
@@ -78,12 +118,7 @@ async fn login(no_browser: bool) -> Result<()> {
         Some(email) => format!("{} ({email})", profile.username),
         None => profile.username.clone(),
     };
-    if settings::update_file(|settings| {
-        settings.hub_session = session;
-        settings.hub_profile = Some(profile);
-    })
-    .is_err()
-    {
+    if settings::update_file(|settings| settings.hub_session = session).is_err() {
         callback.reply(Reply::Failed).await;
         return Err(LoginError::Save.into());
     }

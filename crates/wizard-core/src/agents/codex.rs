@@ -33,10 +33,10 @@ pub(crate) struct Codex {
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
-    let cli = detection::detect(Agent::Codex, settings.codex_path_last.as_deref());
+    let cli = detection::detect(Agent::Codex, settings.last_paths.codex.as_deref());
     let desktop = detection::detect_desktop(
         DesktopAgent::Codex,
-        settings.codex_desktop_path_last.as_deref(),
+        settings.last_paths.codex_desktop.as_deref(),
     );
     if !matches!(cli, AgentDetection::Found(_)) && !matches!(desktop, AgentDetection::Found(_)) {
         let mut errors = Vec::new();
@@ -200,7 +200,7 @@ pub fn prepare_routing_for_gui(
     } else {
         match detection::detect_desktop(
             DesktopAgent::Codex,
-            settings.codex_desktop_path_last.as_deref(),
+            settings.last_paths.codex_desktop.as_deref(),
         ) {
             AgentDetection::Found(_) => true,
             AgentDetection::NotFound => return Ok(plan),
@@ -296,14 +296,14 @@ fn daemon_executable(settings: &Settings) -> Result<PathBuf> {
     let extra = vec![PathBuf::from("%LOCALAPPDATA%/Programs/OpenAI/Codex/bin")];
     #[cfg(not(target_os = "windows"))]
     let extra = vec![];
-    if let Some(executable) = find_executable("codex", extra, settings.codex_path_last.as_deref())?
+    if let Some(executable) = find_executable("codex", extra, settings.last_paths.codex.as_deref())?
     {
         return Ok(executable);
     }
 
     let desktop = match detection::detect_desktop(
         DesktopAgent::Codex,
-        settings.codex_desktop_path_last.as_deref(),
+        settings.last_paths.codex_desktop.as_deref(),
     ) {
         AgentDetection::Found(desktop) => desktop.path,
         AgentDetection::NotFound => anyhow::bail!("Codex CLI and ChatGPT not found"),

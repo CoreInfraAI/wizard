@@ -11,7 +11,7 @@ use cookie::Cookie;
 use core::time::Duration;
 pub use reqwest::{Client, Url};
 use reqwest::{
-    StatusCode,
+    RequestBuilder, StatusCode,
     header::{CONTENT_TYPE, COOKIE, HeaderMap, SET_COOKIE},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -67,10 +67,7 @@ impl SessionUpdate {
         match self {
             Self::Unchanged => {}
             Self::Refreshed(session) => settings.hub_session = session,
-            Self::Rejected => {
-                settings.hub_session.clear();
-                settings.hub_profile = None;
-            }
+            Self::Rejected => settings.hub_session.clear(),
         }
     }
 }
@@ -83,9 +80,45 @@ pub async fn post<T: DeserializeOwned>(
     path: &str,
     body: &impl Serialize,
 ) -> (SessionUpdate, Result<T, HubError>) {
-    let response = match send(client, session, path, body).await {
-        Ok(response) => response,
-        Err(error) => return (SessionUpdate::Unchanged, Err(error)),
+    let Ok(body) = serde_json::to_vec(body) else {
+        return (SessionUpdate::Unchanged, Err(HubError::Request));
+    };
+    request(session, path, |url| {
+        client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .body(body)
+    })
+    .await
+}
+
+/// Non-secret fields of the signed-in account (`GET /hub/api/profile`). The response also
+/// carries account secrets; only `HubProfile` fields are parsed and nothing is logged.
+pub async fn fetch_profile(
+    client: &Client,
+    session: &str,
+) -> (SessionUpdate, Result<HubProfile, HubError>) {
+    request(session, PROFILE_PATH, |url| client.get(url)).await
+}
+
+/// Sends the request built for `path` with `session`, as described for `post`.
+async fn request<T: DeserializeOwned>(
+    session: &str,
+    path: &str,
+    build: impl FnOnce(Url) -> RequestBuilder,
+) -> (SessionUpdate, Result<T, HubError>) {
+    if session.is_empty() {
+        return (SessionUpdate::Unchanged, Err(HubError::SignedOut));
+    }
+    let Some(url) = hub_url(path) else {
+        return (SessionUpdate::Unchanged, Err(HubError::Request));
+    };
+    let Ok(response) = build(url)
+        .header(COOKIE, format!("session={session}"))
+        .send()
+        .await
+    else {
+        return (SessionUpdate::Unchanged, Err(HubError::Request));
     };
     let status = response.status();
     if status == StatusCode::UNAUTHORIZED {
@@ -114,32 +147,22 @@ pub async fn post<T: DeserializeOwned>(
     (update, parsed)
 }
 
-async fn send(
-    client: &Client,
-    session: &str,
-    path: &str,
-    body: &impl Serialize,
-) -> Result<reqwest::Response, HubError> {
-    if session.is_empty() {
-        return Err(HubError::SignedOut);
-    }
-    let url = hub_url(path).ok_or(HubError::Request)?;
-    let body = serde_json::to_vec(body).map_err(|_| HubError::Request)?;
-    client
-        .post(url)
-        .header(COOKIE, format!("session={session}"))
-        .header(CONTENT_TYPE, "application/json")
-        .body(body)
-        .send()
-        .await
-        .map_err(|_| HubError::Request)
-}
-
 /// `path` on Hub, or `None` if it would leave the Hub origin (for example `//host`): the
 /// session must never be sent elsewhere.
 fn hub_url(path: &str) -> Option<Url> {
     let url = Url::parse(HUB_ORIGIN).ok()?.join(path).ok()?;
     (url.origin().ascii_serialization() == HUB_ORIGIN).then_some(url)
+}
+
+/// Non-secret Hub account details. Deserializing a profile response keeps only these fields.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubProfile {
+    pub username: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_email: Option<String>,
+    /// Hub whose agent tokens Wizard lists and creates.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub personal_hub_id: String,
 }
 
 /// Agent token of a Hub hub. `token` is a secret: no `Debug`, never logged.

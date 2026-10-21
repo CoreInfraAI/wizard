@@ -31,7 +31,7 @@ pub(crate) struct Pi {
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Pi> {
-    let info = match detection::detect(Agent::Pi, settings.pi_path_last.as_deref()) {
+    let info = match detection::detect(Agent::Pi, settings.last_paths.pi.as_deref()) {
         AgentDetection::Found(info) => info,
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
@@ -137,7 +137,7 @@ pub fn prepare_hub(mode: HubMode, token: &str, settings: &Settings) -> Result<Pr
         let executable = find_executable(
             "pi",
             vec![PathBuf::from("~/.pi/agent/bin")],
-            settings.pi_path_last.as_deref(),
+            settings.last_paths.pi.as_deref(),
         )?
         .context("Pi executable not found")?;
 
