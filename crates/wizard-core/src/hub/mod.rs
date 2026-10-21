@@ -16,8 +16,7 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-// TEMP: local `cargo x ff-hub --https`; restore https://hub.coreinfra.ai before committing.
-const HUB_ORIGIN: &str = "https://hub.local.coreinfra.ai:8443";
+const HUB_ORIGIN: &str = "https://hub.coreinfra.ai";
 const PROFILE_PATH: &str = "/hub/api/profile";
 const HUB_INFO_PATH: &str = "/hub/api/hub/info";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);

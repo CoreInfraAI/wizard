@@ -373,13 +373,12 @@ mod tests {
             assert!(!is_login_link(&Url::parse(url).expect("fixture URL")));
         }
 
-        // TEMP: local Hub origin; restore hub.coreinfra.ai together with the constants.
         let link = callback_link(
-            "/callback?login_link=https%3A%2F%2Fhub.local.coreinfra.ai%3A8443%2Fhub%2Fapi%2Flogin%3Fkey%3Dtest",
+            "/callback?login_link=https%3A%2F%2Fhub.coreinfra.ai%2Fhub%2Fapi%2Flogin%3Fkey%3Dtest",
         );
         assert_eq!(
             link.map(String::from).as_deref(),
-            Some("https://hub.local.coreinfra.ai:8443/hub/api/login?key=test")
+            Some("https://hub.coreinfra.ai/hub/api/login?key=test")
         );
     }
 
