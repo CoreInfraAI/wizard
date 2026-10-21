@@ -175,6 +175,8 @@ fn remove_inactive_routing_settings(env: &mut Map<String, Value>, current_mode: 
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_API_KEY",
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+            "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING",
+            "ANTHROPIC_DEFAULT_MODEL",
         ],
         RoutingMode::Sub => &[
             "ANTHROPIC_BASE_URL",
@@ -182,6 +184,8 @@ fn remove_inactive_routing_settings(env: &mut Map<String, Value>, current_mode: 
             "HTTPS_PROXY",
             "NO_PROXY",
             "CLAUDE_ENV_FILE",
+            "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING",
+            "ANTHROPIC_DEFAULT_MODEL",
         ],
     };
     for key in previous_keys {
@@ -195,6 +199,16 @@ fn write_routing_settings(
     token: &str,
     script_path: &Path,
 ) -> Result<()> {
+    if mode != RoutingMode::Disabled {
+        // Off by default behind a custom base URL; without it Anthropic buffers whole tool inputs.
+        env.insert(
+            "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING".into(),
+            json!("1"),
+        );
+        // Lowest-priority default: `/model`, `--model` and `ANTHROPIC_MODEL` still win.
+        env.insert("ANTHROPIC_DEFAULT_MODEL".into(), json!("sonnet"));
+    }
+
     match mode {
         RoutingMode::Disabled => {}
         RoutingMode::Hub => {
