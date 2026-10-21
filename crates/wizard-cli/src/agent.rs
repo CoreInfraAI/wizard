@@ -89,6 +89,7 @@ pub(crate) fn run(
         }
         AgentCommand::Codex { command } => {
             let (mode, args) = routing_mode(&command);
+            let settings = settings::load_from_file()?;
             let Some(token) = resolve_token(
                 runtime,
                 yes,
@@ -99,7 +100,6 @@ pub(crate) fn run(
             else {
                 return Ok(());
             };
-            let settings = settings::load_from_file()?;
 
             run_plan(runtime, yes, move || {
                 codex::prepare_routing(mode, &token, &settings)
@@ -127,12 +127,12 @@ pub(crate) fn run(
         }
         AgentCommand::Pi { command } => {
             let (mode, args) = hub_mode(&command);
+            let settings = settings::load_from_file()?;
             let Some(token) =
                 resolve_token(runtime, yes, args, TokenAgent::Pi, pi::configured_token)?
             else {
                 return Ok(());
             };
-            let settings = settings::load_from_file()?;
 
             run_plan(runtime, yes, move || {
                 pi::prepare_hub(mode, &token, &settings)
@@ -140,17 +140,15 @@ pub(crate) fn run(
         }
         AgentCommand::Opencode { command } => {
             let (mode, args) = hub_mode(&command);
-            let Some(token) = resolve_token(
-                runtime,
-                yes,
-                args,
-                TokenAgent::OpenCode,
-                opencode::configured_token,
-            )?
+            // Token lookup and preparation must find the same OpenCode installation.
+            let settings = settings::load_from_file()?;
+            let token_settings = settings.clone();
+            let Some(token) = resolve_token(runtime, yes, args, TokenAgent::OpenCode, move || {
+                opencode::configured_token(&token_settings)
+            })?
             else {
                 return Ok(());
             };
-            let settings = settings::load_from_file()?;
 
             run_plan(runtime, yes, move || {
                 opencode::prepare_hub(mode, &token, &settings)
@@ -184,7 +182,7 @@ fn resolve_token(
     yes: bool,
     args: Option<&TokenArgs>,
     agent: TokenAgent,
-    configured: fn() -> Result<Option<String>>,
+    configured: impl FnOnce() -> Result<Option<String>> + Send + 'static,
 ) -> Result<Option<String>> {
     let Some(args) = args else {
         return Ok(Some(String::new()));
@@ -199,7 +197,13 @@ fn resolve_token(
         return Ok(Some(token));
     }
 
-    if let Some(token) = configured()? {
+    // OpenCode 2 reads its token through its CLI, which needs a blocking worker.
+    let configured = runtime.block_on(async {
+        tokio::task::spawn_blocking(configured)
+            .await
+            .context("token lookup task failed")?
+    })?;
+    if let Some(token) = configured {
         eprintln!("Используется токен из конфигурации агента.");
         return Ok(Some(token));
     }

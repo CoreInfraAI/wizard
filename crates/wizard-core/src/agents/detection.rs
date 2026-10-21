@@ -106,7 +106,12 @@ fn cli_version(agent: Agent, path: &Path) -> Result<String> {
     let version = match agent {
         Agent::Codex => text.strip_prefix("codex-cli "),
         Agent::Claude => text.strip_suffix(" (Claude Code)"),
-        Agent::OpenCode | Agent::Pi => (text.split_whitespace().count() == 1).then_some(text),
+        // OpenCode 2 prints `opencode v2.1.1`; earlier versions print only the version.
+        Agent::OpenCode => {
+            let text = text.strip_prefix("opencode v").unwrap_or(text);
+            (text.split_whitespace().count() == 1).then_some(text)
+        }
+        Agent::Pi => (text.split_whitespace().count() == 1).then_some(text),
     };
     version
         .map(str::trim)

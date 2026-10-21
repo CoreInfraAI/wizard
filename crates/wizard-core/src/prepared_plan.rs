@@ -88,11 +88,20 @@ impl PreparedPlan {
                 PreparedStep::PiRemovePlugin { .. } => PreparedStepInfo {
                     description: "Удалить плагин CoreInfra из Pi.".to_owned(),
                 },
-                PreparedStep::OpenCodeInstallPlugin { .. } => PreparedStepInfo {
+                PreparedStep::OpenCodeInstallPlugin { .. } | PreparedStep::OpenCodeAddPlugin { .. } => PreparedStepInfo {
                     description: "Установить последнюю версию плагина CoreInfra для OpenCode.".to_owned(),
                 },
                 PreparedStep::OpenCodeVerifyPlugin { .. } => PreparedStepInfo {
                     description: "Убедиться, что плагин CoreInfra добавлен в конфигурацию OpenCode.".to_owned(),
+                },
+                PreparedStep::OpenCodeSetCredential { .. } => PreparedStepInfo {
+                    description: "Сохранить ключ CoreInfra от Wizard в OpenCode и сделать его активным.".to_owned(),
+                },
+                PreparedStep::OpenCodeReload { .. } => PreparedStepInfo {
+                    description: "Перезагрузить конфигурацию фоновой службы OpenCode, если она запущена.".to_owned(),
+                },
+                PreparedStep::OpenCodeRemoveCredential { .. } => PreparedStepInfo {
+                    description: "Удалить ключ CoreInfra от Wizard из OpenCode. Другие ключи CoreInfra сохранятся.".to_owned(),
                 },
                 PreparedStep::SetCodexProxyEnabled { token } => PreparedStepInfo {
                     description: if token.is_some() {
@@ -234,9 +243,28 @@ pub enum PreparedStep {
         executable: PathBuf,
         config_dir: PathBuf,
     },
+    /// `OpenCode` 2 `plugin add`.
+    #[serde(rename = "opencode_add_plugin")]
+    OpenCodeAddPlugin {
+        executable: PathBuf,
+        config_dir: PathBuf,
+    },
     #[serde(rename = "opencode_verify_plugin")]
     OpenCodeVerifyPlugin {
         config_dir: PathBuf,
+    },
+    #[serde(rename = "opencode_set_credential")]
+    OpenCodeSetCredential {
+        executable: PathBuf,
+        token: String,
+    },
+    #[serde(rename = "opencode_remove_credential")]
+    OpenCodeRemoveCredential {
+        executable: PathBuf,
+    },
+    #[serde(rename = "opencode_reload")]
+    OpenCodeReload {
+        executable: PathBuf,
     },
     CodexRestartDaemon {
         executable: PathBuf,
@@ -270,7 +298,18 @@ impl PreparedStep {
                 executable,
                 config_dir,
             } => opencode::install_plugin(&executable, &config_dir),
+            Self::OpenCodeAddPlugin {
+                executable,
+                config_dir,
+            } => opencode::add_plugin(&executable, &config_dir),
             Self::OpenCodeVerifyPlugin { config_dir } => opencode::verify_plugin(&config_dir),
+            Self::OpenCodeSetCredential { executable, token } => {
+                opencode::set_credential(&executable, &token)
+            }
+            Self::OpenCodeRemoveCredential { executable } => {
+                opencode::remove_credential(&executable)
+            }
+            Self::OpenCodeReload { executable } => opencode::reload(&executable),
             Self::CodexRestartDaemon {
                 executable,
                 codex_home,

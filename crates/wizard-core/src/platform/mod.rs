@@ -173,7 +173,25 @@ pub(crate) fn is_executable(path: &Path) -> Result<bool> {
 /// Callers explicitly configure stdout/stderr (piped to capture, null to discard).
 /// Must be called inside `spawn_blocking`.
 pub(crate) fn command_output(
+    command: tokio::process::Command,
+    timeout: Duration,
+) -> Result<Output> {
+    run_command(command, None, timeout)
+}
+
+/// Like `command_output`, but writes `input` to the command's stdin and closes it.
+/// Use this to pass secrets instead of command arguments.
+pub(crate) fn command_output_with_stdin(
+    command: tokio::process::Command,
+    input: &[u8],
+    timeout: Duration,
+) -> Result<Output> {
+    run_command(command, Some(input), timeout)
+}
+
+fn run_command(
     mut command: tokio::process::Command,
+    input: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<Output> {
     let runtime =
@@ -190,20 +208,37 @@ pub(crate) fn command_output(
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        command
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-        let child = command
+        let stdin = if input.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        };
+        command.stdin(stdin).kill_on_drop(true);
+        let mut child = command
             .spawn()
             .with_context(|| format!("failed to run {program_name}"))?;
-        tokio::time::timeout(timeout, child.wait_with_output())
-            .await
-            .with_context(|| {
-                format!(
-                    "{program_name} timed out after {} seconds; the operation may be partially completed",
-                    timeout.as_secs()
-                )
-            })?
-            .context("failed to wait for command output")
+        tokio::time::timeout(timeout, async {
+            if let Some(input) = input {
+                use tokio::io::AsyncWriteExt as _;
+
+                let mut stdin = child.stdin.take().context("command stdin is unavailable")?;
+                stdin
+                    .write_all(input)
+                    .await
+                    .context("failed to write command input")?;
+                drop(stdin);
+            }
+            child
+                .wait_with_output()
+                .await
+                .context("failed to wait for command output")
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "{program_name} timed out after {} seconds; the operation may be partially completed",
+                timeout.as_secs()
+            )
+        })?
     })
 }

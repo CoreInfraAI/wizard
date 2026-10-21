@@ -21,6 +21,7 @@ regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+jsonc-parser.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 toml_edit = { workspace = true, features = ["serde"] }
 tempfile.workspace = true
