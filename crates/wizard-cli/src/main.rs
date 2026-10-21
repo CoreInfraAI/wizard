@@ -30,7 +30,7 @@ enum Command {
     /// Configure agents and the token they use.
     #[command(disable_help_subcommand = true)]
     Agent {
-        /// Apply the displayed plan without an interactive confirmation.
+        /// Confirm without prompting: creating a Hub token and applying the displayed plan.
         #[arg(long, global = true)]
         yes: bool,
         #[command(subcommand)]

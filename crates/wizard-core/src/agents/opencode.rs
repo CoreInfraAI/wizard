@@ -105,6 +105,11 @@ fn has_hub_plugin(config: &Value) -> bool {
         .is_some_and(|plugins| plugins.iter().any(is_hub_plugin))
 }
 
+/// The `CoreInfra` token in this agent's configuration, as detection reports it. Never log it.
+pub fn configured_token() -> Result<Option<String>> {
+    Ok(read_routing()?.1.map(AgentToken::into_secret))
+}
+
 fn read_routing() -> Result<(HubMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::OpenCode.lock()?;
     let dir = config_dir()?;

@@ -1,4 +1,5 @@
-//! Backend-only settings storage. The API key is stored as plaintext, never logged.
+//! Backend-only settings storage. Secrets (Hub session, proxy tokens) are stored as plaintext,
+//! never logged.
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,6 @@ pub struct Settings {
     /// Local proxy demand of `ChatGPT` with its token; `None` means disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_proxy_enabled: Option<String>,
-    #[serde(rename = "coreinfra_api_key", skip_serializing_if = "String::is_empty")]
-    pub coreinfra_token: String,
     /// Account session, independent of agent tokens. Never expose through IPC.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub hub_session: String,

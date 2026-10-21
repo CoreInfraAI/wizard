@@ -5,11 +5,10 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 use wizard_core::agents::{
-    AgentStates, Backup, BackupAgent, HubMode, RoutingMode, claude, claude_desktop, codex,
-    collect_agent_state, opencode, pi,
+    AgentStates, Backup, BackupAgent, HubMode, RoutingMode, TokenAgent, claude, claude_desktop,
+    codex, collect_agent_state, opencode, pi,
 };
 use wizard_core::prepared_plan::{PreparedPlan, PreparedStepInfo};
-use wizard_core::validate_token;
 
 #[derive(Clone)]
 pub(crate) struct AgentRevisionState;
@@ -106,15 +105,13 @@ impl AgentChange {
         }
     }
 
-    /// Name of a Hub token created for this agent.
-    /// Keep in sync with `createdTokenNames` in `wizard-ui/src/agents/AgentList.tsx`.
-    const fn token_name(self) -> &'static str {
+    const fn token_agent(self) -> TokenAgent {
         match self {
-            Self::CodexSetRouting(_) => "agent-codex",
-            Self::ClaudeSetRouting(_) => "agent-claude-code",
-            Self::ClaudeDesktopSetRouting(_) => "agent-claude-desktop",
-            Self::SetPiHub(_) => "agent-pi",
-            Self::SetOpenCodeHub(_) => "agent-opencode",
+            Self::CodexSetRouting(_) => TokenAgent::Codex,
+            Self::ClaudeSetRouting(_) => TokenAgent::Claude,
+            Self::ClaudeDesktopSetRouting(_) => TokenAgent::ClaudeDesktop,
+            Self::SetPiHub(_) => TokenAgent::Pi,
+            Self::SetOpenCodeHub(_) => TokenAgent::OpenCode,
         }
     }
 }
@@ -142,7 +139,9 @@ pub(crate) async fn prepare_agent_change(
     let token = if change.enabled() {
         match token {
             Some(TokenChoice::Existing { token }) if !token.is_empty() => token,
-            Some(TokenChoice::Create) => hub_tokens::issue(&app, change.token_name()).await?,
+            Some(TokenChoice::Create) => {
+                hub_tokens::issue(&app, change.token_agent().token_name()).await?
+            }
             _ => return Err("Выберите токен CoreInfra Hub".into()),
         }
     } else {
@@ -225,10 +224,8 @@ pub(crate) async fn apply_agent_plan(
     Ok(())
 }
 
-// No Debug: direct changes may contain credentials.
 #[derive(Deserialize)]
 pub(crate) enum DirectChange {
-    SetCoreInfraToken(String),
     RestoreBackup { agent: BackupAgent, id: u32 },
 }
 
@@ -238,16 +235,11 @@ pub(crate) async fn apply_direct_change(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let name = match &change {
-        DirectChange::SetCoreInfraToken(_) => "SetCoreInfraToken",
         DirectChange::RestoreBackup { .. } => "RestoreBackup",
     };
     log::info!("received direct change: {name}");
 
     let result = match change {
-        DirectChange::SetCoreInfraToken(token) => {
-            validate_token(&token).map_err(|error| format!("{error:#}"))?;
-            settings::update_state(&app, move |settings| settings.coreinfra_token = token).await
-        }
         DirectChange::RestoreBackup { agent, id } => {
             let result = tauri::async_runtime::spawn_blocking(move || match agent {
                 BackupAgent::Codex => codex::restore_backup(id),

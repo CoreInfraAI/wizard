@@ -20,6 +20,31 @@ pub enum RoutingMode {
     Hub,
 }
 
+/// Agent whose `CoreInfra` Hub token Wizard finds or creates by name.
+#[derive(Clone, Copy, Debug)]
+pub enum TokenAgent {
+    Codex,
+    Claude,
+    ClaudeDesktop,
+    OpenCode,
+    Pi,
+}
+
+impl TokenAgent {
+    /// Name of the Hub token Wizard creates for this agent. Keep in sync with
+    /// `createdTokenNames` in `wizard-ui/src/agents/AgentList.tsx`.
+    #[must_use]
+    pub const fn token_name(self) -> &'static str {
+        match self {
+            Self::Codex => "agent-codex",
+            Self::Claude => "agent-claude-code",
+            Self::ClaudeDesktop => "agent-claude-desktop",
+            Self::OpenCode => "agent-opencode",
+            Self::Pi => "agent-pi",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HubMode {
@@ -36,6 +61,10 @@ pub struct AgentToken(String);
 impl AgentToken {
     fn new(token: String) -> Option<Self> {
         (!token.is_empty()).then_some(Self(token))
+    }
+
+    fn into_secret(self) -> String {
+        self.0
     }
 }
 

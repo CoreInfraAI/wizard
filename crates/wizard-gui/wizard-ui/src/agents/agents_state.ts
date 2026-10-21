@@ -52,7 +52,6 @@ export function getAgentBackups(agent: BackupAgent): Promise<Backup[]> {
 }
 
 export type DirectChange =
-  | { SetCoreInfraToken: string }
   | { RestoreBackup: { agent: BackupAgent; id: number } };
 
 export function applyDirectChange(change: DirectChange): Promise<void> {

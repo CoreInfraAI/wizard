@@ -62,6 +62,11 @@ fn agent_dir() -> Result<PathBuf> {
         .join(".pi/agent"))
 }
 
+/// The `CoreInfra` token in this agent's configuration, as detection reports it. Never log it.
+pub fn configured_token() -> Result<Option<String>> {
+    Ok(read_routing()?.1.map(AgentToken::into_secret))
+}
+
 fn read_routing() -> Result<(HubMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::Pi.lock()?;
     let dir = agent_dir()?;

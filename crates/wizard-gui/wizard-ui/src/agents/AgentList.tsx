@@ -33,8 +33,8 @@ const hubModes: ModeOption<HubMode>[] = [
 // Hub access shared by all tiles. Token values are secrets: never log them.
 type Hub = HubTokensState & { signedIn: boolean };
 
-// Names of Hub tokens created for agents, used for the default choice and the create button.
-// Keep in sync with `TokenAgent::token_name` in `crates/wizard-gui/src/hub_tokens.rs`.
+// Names of Hub tokens created for agents, used for the default choice and the create option.
+// Keep in sync with `TokenAgent::token_name` in `crates/wizard-core/src/agents/mod.rs`.
 const createdTokenNames: Record<AgentId, string> = {
   codex: "agent-codex",
   claude: "agent-claude-code",
