@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CoreInfra Wizard",
-  "version": "0.2.4",
   "identifier": "ai.coreinfra.wizard",
   "build": {
     "beforeDevCommand": {

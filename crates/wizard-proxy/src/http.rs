@@ -5,7 +5,7 @@ use http_body_util::{BodyExt, Full, combinators::UnsyncBoxBody};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
     CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, PROXY_AUTHORIZATION,
-    TRANSFER_ENCODING,
+    TRANSFER_ENCODING, USER_AGENT,
 };
 use hyper::service::service_fn;
 use hyper::upgrade::{OnUpgrade, Upgraded};
@@ -192,6 +192,7 @@ async fn connect_tunnel(
         .uri(target.clone())
         .header(HOST, host)
         .header(PROXY_AUTHORIZATION, upstream.authorization.clone())
+        .header(USER_AGENT, crate::user_agent())
         .body(empty_body())
         .map_err(io::Error::other)?;
     let mut sender = open_upstream(upstream, driver).await?;

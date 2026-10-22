@@ -30,9 +30,10 @@ pub fn install_crypto_provider() -> anyhow::Result<()> {
         .map_err(|_| anyhow!("rustls crypto provider already installed"))
 }
 
-/// HTTP client for Hub: no redirects, no cookie store, `REQUEST_TIMEOUT`.
+/// HTTP client for Hub: Wizard's `User-Agent`, no redirects, no cookie store, `REQUEST_TIMEOUT`.
 pub fn client() -> Result<Client, HubError> {
     Client::builder()
+        .user_agent(wizard_proxy::user_agent())
         .redirect(reqwest::redirect::Policy::none())
         .timeout(REQUEST_TIMEOUT)
         .build()

@@ -1,4 +1,4 @@
-use crate::utils::{Paths, gh_api_json, stable_version};
+use crate::utils::{gh_api_json, stable_version};
 use anyhow::{Context as _, Result, bail};
 use semver::Version;
 use serde_json::Value;
@@ -10,8 +10,8 @@ struct DevTag {
     commit: String,
 }
 
-pub(crate) fn get_or_create(paths: &Paths, repository: &str, commit: &str) -> Result<Version> {
-    let stable = stable_version(paths)?;
+pub(crate) fn get_or_create(repository: &str, commit: &str) -> Result<Version> {
+    let stable = stable_version()?;
     for _ in 0..10 {
         let tags = find(repository, &stable)?;
         if let Some(tag) = tags
@@ -38,8 +38,8 @@ pub(crate) fn get_or_create(paths: &Paths, repository: &str, commit: &str) -> Re
     bail!("failed to allocate a unique dev tag after 10 attempts")
 }
 
-pub(crate) fn parse_version(paths: &Paths, value: &str) -> Result<Version> {
-    let stable = stable_version(paths)?;
+pub(crate) fn parse_version(value: &str) -> Result<Version> {
+    let stable = stable_version()?;
     let sequence = value
         .strip_prefix(&format!("{stable}-dev."))
         .context("dev version must use the <stable>-dev.<sequence> format")?

@@ -128,13 +128,13 @@ fn main() -> Result<()> {
             repository,
             release_id,
         } => release::generate_latest_json(&paths, dev, &repository, release_id),
-        Commands::Version { check } => version(&paths, check.as_deref()),
+        Commands::Version { check } => version(check.as_deref()),
     }
 }
 
 /// Prints the application version or checks it against an expected value.
-fn version(paths: &Paths, expected: Option<&str>) -> Result<()> {
-    let actual = stable_version(paths)?;
+fn version(expected: Option<&str>) -> Result<()> {
+    let actual = stable_version()?;
     if let Some(expected) = expected {
         if actual.to_string() != expected {
             anyhow::bail!("application version is {actual}, expected {expected}");

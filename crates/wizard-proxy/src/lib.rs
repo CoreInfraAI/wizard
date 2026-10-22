@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use std::env::consts::{ARCH, OS};
 use std::io;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
@@ -16,6 +17,16 @@ mod upstream;
 pub const CLAUDE_DESKTOP_ADDRESS: &str = "127.0.0.1:33787";
 /// Listener of `ChatGPT`, with its own token.
 pub const CHATGPT_ADDRESS: &str = "127.0.0.1:33788";
+
+/// `User-Agent` of requests Wizard itself sends, e.g. `CoreInfraAI-Wizard/<version> (macos; aarch64)`.
+/// OS and architecture are those of the running binary.
+#[must_use]
+pub fn user_agent() -> String {
+    format!(
+        "CoreInfraAI-Wizard/{} ({OS}; {ARCH})",
+        env!("CARGO_PKG_VERSION")
+    )
+}
 
 /// Owns a running listener. No settings are read or watched by this crate.
 pub struct Proxy {

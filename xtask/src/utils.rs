@@ -64,15 +64,12 @@ pub(crate) fn clean_build_command(program: &str) -> Command {
     command
 }
 
-/// Reads the stable base version from `tauri.conf.json` and rejects pre-release versions.
-pub(crate) fn stable_version(paths: &Paths) -> Result<Version> {
-    let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
-    let version = config["version"]
-        .as_str()
-        .context("tauri.conf.json version must be a string")?;
-    let version = Version::parse(version)?;
+/// Returns the stable base version from the workspace `Cargo.toml` and rejects pre-release versions.
+/// `tauri.conf.json` has no version, so Tauri uses this one too.
+pub(crate) fn stable_version() -> Result<Version> {
+    let version = Version::parse(env!("CARGO_PKG_VERSION"))?;
     if !version.pre.is_empty() || !version.build.is_empty() {
-        bail!("tauri.conf.json must contain a stable version, got {version}");
+        bail!("Cargo.toml must contain a stable version, got {version}");
     }
     Ok(version)
 }

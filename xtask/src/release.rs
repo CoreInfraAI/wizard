@@ -20,9 +20,9 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
     let repository = required_env("GITHUB_REPOSITORY")?;
     let commit = required_env("GITHUB_SHA")?;
     let version = if dev {
-        dev_tag::get_or_create(paths, &repository, &commit)?
+        dev_tag::get_or_create(&repository, &commit)?
     } else {
-        stable_version(paths)?
+        stable_version()?
     };
     let expected_tag = format!("v{version}");
     let tag = if dev {
@@ -163,12 +163,12 @@ fn find_github_release_by_tag(repository: &str, tag: &str) -> Result<Option<Valu
     }
 }
 
-fn release_version(paths: &Paths, dev: bool, version: Option<&str>) -> Result<semver::Version> {
+fn release_version(dev: bool, version: Option<&str>) -> Result<semver::Version> {
     match (dev, version) {
-        (true, Some(version)) => dev_tag::parse_version(paths, version),
+        (true, Some(version)) => dev_tag::parse_version(version),
         (true, None) => bail!("--version must be set with --dev"),
         (false, Some(_)) => bail!("--version can only be used with --dev"),
-        (false, None) => stable_version(paths),
+        (false, None) => stable_version(),
     }
 }
 
@@ -200,7 +200,7 @@ pub(crate) fn build(
         None
     };
 
-    let version = release_version(paths, dev, version)?;
+    let version = release_version(dev, version)?;
     let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
     let product_name = config["productName"]
         .as_str()
@@ -457,9 +457,9 @@ pub(crate) fn generate_latest_json(
         let value = tag
             .strip_prefix('v')
             .context("dev release tag must start with v")?;
-        dev_tag::parse_version(paths, value)?
+        dev_tag::parse_version(value)?
     } else {
-        stable_version(paths)?
+        stable_version()?
     };
     let expected_tag = format!("v{version}");
     if tag != expected_tag {

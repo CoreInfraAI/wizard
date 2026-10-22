@@ -439,6 +439,11 @@ mod tests {
                 assert_eq!(fetch_profile(&client, profile, &session).await, expected);
 
                 let heads = server.await.expect("test server");
+                let user_agent = format!("User-Agent: {}", wizard_proxy::user_agent());
+                assert!(heads.iter().all(|head| {
+                    head.split("\r\n")
+                        .any(|line| line.eq_ignore_ascii_case(&user_agent))
+                }));
                 let profile = heads[1].to_ascii_lowercase();
                 assert!(profile.starts_with("get /hub/api/profile http/1.1\r\n"));
                 assert!(

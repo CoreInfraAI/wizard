@@ -148,6 +148,8 @@ async fn check_in_background(app: &tauri::AppHandle, state: &RevisionSignal<Upda
 async fn find_update(app: &tauri::AppHandle) -> Result<Option<Update>> {
     let updater = app
         .updater_builder()
+        // Client-level, so it also covers proxy CONNECT and the download.
+        .configure_client(|client| client.user_agent(wizard_proxy::user_agent()))
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .context("Не удалось подготовить проверку обновлений")?;
