@@ -13,6 +13,8 @@ use tokio::task::{JoinHandle, JoinSet};
 mod http;
 mod upstream;
 
+pub use upstream::{HOST as UPSTREAM_HOST, PORT as UPSTREAM_PORT, USERNAME as UPSTREAM_USERNAME};
+
 /// Listener of Claude Desktop, with its own token.
 pub const CLAUDE_DESKTOP_ADDRESS: &str = "127.0.0.1:33787";
 /// Listener of `ChatGPT`, with its own token.

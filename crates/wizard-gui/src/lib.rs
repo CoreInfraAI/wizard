@@ -10,6 +10,7 @@ use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 mod agents;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod autostart;
+mod claude_desktop_install;
 mod hub_auth;
 mod hub_tokens;
 mod logs;
@@ -68,6 +69,7 @@ pub fn run_application() -> Result<()> {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(Arc::new(claude_desktop_install::InstallManager::default()))
         .manage(proxy::ProxyState::default())
         .manage(revision_signal::RevisionSignal::new(proxy::Proxy::default()))
         .manage(Arc::new(revision_signal::RevisionSignal::new(
@@ -103,9 +105,15 @@ pub fn run_application() -> Result<()> {
                 request_main_window(app.handle());
             }
             updater::start(app.handle().clone());
+            #[cfg(target_os = "macos")]
+            claude_desktop_install::start_background_checks(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            claude_desktop_install::get_claude_desktop_install_state,
+            claude_desktop_install::check_claude_desktop_release,
+            claude_desktop_install::download_claude_desktop_release,
+            claude_desktop_install::install_claude_desktop_release,
             logs::open_logs,
             logs::read_logs,
             updater::get_update_state,

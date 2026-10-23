@@ -6,8 +6,9 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
-const HOST: &str = "proxy.hub.coreinfra.ai";
-const PORT: u16 = 443;
+pub const HOST: &str = "proxy.hub.coreinfra.ai";
+pub const PORT: u16 = 443;
+pub const USERNAME: &str = "coreinfra";
 
 // No Debug: the authorization header contains the saved token.
 pub(crate) struct Upstream {
@@ -32,7 +33,7 @@ impl Upstream {
 }
 
 pub(crate) fn authorization(token: &str) -> io::Result<HeaderValue> {
-    let value = format!("Basic {}", STANDARD.encode(format!("coreinfra:{token}")));
+    let value = format!("Basic {}", STANDARD.encode(format!("{USERNAME}:{token}")));
     let mut header = HeaderValue::from_str(&value).map_err(io::Error::other)?;
     header.set_sensitive(true);
     Ok(header)

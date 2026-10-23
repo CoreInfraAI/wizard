@@ -20,6 +20,9 @@ pub(super) enum Agent {
     Pi,
 }
 
+#[cfg(target_os = "macos")]
+pub(super) const CLAUDE_APP_PATH: &str = "/Applications/Claude.app";
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum DesktopAgent {
     // The existing code identity still refers to the ChatGPT application.
@@ -127,12 +130,15 @@ pub(super) fn detect_desktop(
 ) -> AgentDetection<AgentInfo> {
     #[cfg(target_os = "macos")]
     {
-        let app_name = match agent {
-            DesktopAgent::Codex => "ChatGPT.app",
-            DesktopAgent::Claude => "Claude.app",
-        };
+        let app_path = Path::new(match agent {
+            DesktopAgent::Codex => "/Applications/ChatGPT.app",
+            DesktopAgent::Claude => CLAUDE_APP_PATH,
+        });
+        let app_name = app_path
+            .file_name()
+            .expect("desktop app path has a filename");
         let mut candidates: Vec<PathBuf> = last_found.into_iter().map(Path::to_owned).collect();
-        candidates.push(PathBuf::from("/Applications").join(app_name));
+        candidates.push(app_path.to_owned());
         if let Some(home) = env_var_not_empty("HOME") {
             candidates.push(PathBuf::from(home).join("Applications").join(app_name));
         }

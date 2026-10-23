@@ -21,6 +21,17 @@ pub(crate) struct HubTokens {
     generation: u64,
 }
 
+impl HubTokens {
+    /// Use only a successfully loaded list; never issue a token for a background operation.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn named_token(&self, name: &str) -> Option<String> {
+        if self.loading || self.error.is_some() {
+            return None;
+        }
+        self.tokens.named(name).map(|token| token.token.clone())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum TokensError {
     /// Hub returned a profile without `personal_hub_id`.

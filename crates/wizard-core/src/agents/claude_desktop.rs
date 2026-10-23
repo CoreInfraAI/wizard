@@ -92,6 +92,11 @@ fn has_hub_connection(config: &Value) -> bool {
             .is_some_and(|url| url.trim_end_matches('/') == HUB_URL)
 }
 
+/// Reads the token owned by the active routing mode without exposing the full profile.
+pub fn configured_token(settings: &Settings) -> Result<Option<String>> {
+    Ok(read_routing(settings)?.1.map(AgentToken::into_secret))
+}
+
 /// Hub reads the profile's key. Sub has none in the profile; its token is the proxy setting.
 fn read_routing(settings: &Settings) -> Result<(RoutingMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;

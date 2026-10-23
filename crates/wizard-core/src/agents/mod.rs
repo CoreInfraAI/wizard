@@ -7,6 +7,8 @@ pub use crate::config_files::backups::{AgentKind as BackupAgent, Backup};
 
 pub mod claude;
 pub mod claude_desktop;
+#[cfg(target_os = "macos")]
+pub mod claude_desktop_install;
 pub mod codex;
 mod detection;
 pub mod opencode;

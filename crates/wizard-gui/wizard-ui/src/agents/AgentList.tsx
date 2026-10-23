@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { type AgentChange, type AgentDetection, type AgentId, type AgentStates, type BackupAgent, type HubMode, type PreparedAgentChange, type RoutingMode, type TokenChoice, prepareAgentChange } from "./agents_state";
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
+import { ClaudeDesktopInstall, useClaudeDesktopInstall } from "./ClaudeDesktopInstall";
 import { type HubTokensState, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
 import { useHubAccount } from "../settings/hub_account";
 import { type Proxy, useProxy } from "./proxy";
@@ -47,7 +48,7 @@ const createdTokenNames: Record<AgentId, string> = {
 type TokenOption = { key: string; label: string; token: string | null };
 
 // Everything the token menu shows. Choosing an option only changes the local draft: creating
-// happens on «Применить», in the backend, before the plan is prepared.
+// happens on an explicit apply/check/download action in the backend.
 // Selected: the draft, else the agent's token, else the oldest Hub token with the created name,
 // else creating. Creating is offered only when the loaded list has no such token: an unknown list
 // must not suggest a duplicate. Once a created token is listed, it replaces a create draft
@@ -127,8 +128,9 @@ function TokenSelect({ options, value, disabled, onChange }: {
 }
 
 // Mode and token of one agent. The saved mode wins until the user picks another one.
-function RoutingSelector<M extends string>({ agent, modes, mode, toChange, agentToken, hub, badges, disabled, onPrepare }: {
+function RoutingSelector<M extends string>({ agent, modes, mode, toChange, agentToken, token: tokenOverride, hub, badges, disabled, onPrepare }: {
   agent: AgentId;
+  token?: ReturnType<typeof useTokenMenu>;
   modes: ModeOption<M>[];
   mode: M;
   toChange: (mode: M) => AgentChange;
@@ -141,7 +143,8 @@ function RoutingSelector<M extends string>({ agent, modes, mode, toChange, agent
   const [draft, setDraft] = useState<M>();
   const selected = draft ?? mode;
   const enabled = selected !== "disabled";
-  const token = useTokenMenu(agent, agentToken, hub);
+  const localToken = useTokenMenu(agent, agentToken, hub);
+  const token = tokenOverride ?? localToken;
 
   useEffect(() => {
     if (draft === mode) setDraft(undefined);
@@ -165,7 +168,7 @@ function RoutingSelector<M extends string>({ agent, modes, mode, toChange, agent
           </RadioField>
         ))}
       </RadioGroup>
-      {enabled && (
+      {(enabled || tokenOverride !== undefined) && (
         <div>
           <TokenSelect options={token.options} value={token.selectedOption} disabled={disabled || !hub.signedIn} onChange={token.choose} />
           {hub.status === "error" && <ErrorText>{hub.error}</ErrorText>}
@@ -179,26 +182,30 @@ function RoutingSelector<M extends string>({ agent, modes, mode, toChange, agent
   );
 }
 
-function Installation({ name, detection, children, actions }: {
+function Installation({ name, detection, children, actions, tokenSelect, alwaysShowChildren = false }: {
   name: string;
   detection: AgentDetection<{ path: string; version: string | null }>;
   children?: ReactNode;
   actions?: ReactNode;
+  tokenSelect?: ReactNode;
+  alwaysShowChildren?: boolean;
 }) {
   return (
     <section className="flex min-w-0 flex-col gap-3 rounded-lg border border-zinc-200 bg-white p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
           <Heading level={2}>{name}</Heading>
-          {detection.status === "found" && (
+          {detection.status !== "error" && (
             <span className="text-sm text-zinc-500 dark:text-zinc-400">
-              {detection.data.version ? `v${detection.data.version}` : "Версия неизвестна"}
+              {detection.status === "not_found" ? "Не найден"
+                : detection.data.version ? `v${detection.data.version}` : "Версия неизвестна"}
             </span>
           )}
         </div>
         {actions && <div className="max-w-1/2 shrink-0">{actions}</div>}
       </div>
-      {detection.status === "found" && (
+      {detection.status !== "found" && tokenSelect}
+      {(detection.status === "found" || alwaysShowChildren) && (
         <>
           {children && <div className="space-y-3">{children}</div>}
 {/*
@@ -213,7 +220,6 @@ function Installation({ name, detection, children, actions }: {
 */}
         </>
       )}
-      {detection.status === "not_found" && <Text>Не найден</Text>}
       {detection.status === "error" && (
         <ErrorText>Не удалось обнаружить {name}: {detection.data}</ErrorText>
       )}
@@ -274,6 +280,8 @@ export function AgentList({ agents }: { agents: AgentStates }) {
   const { account } = useHubAccount();
   const hub: Hub = { ...useHubTokens(), signedIn: account?.signed_in === true };
   const proxy = useProxy();
+  const claudeDesktopToken = useTokenMenu("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
+  const claudeInstall = useClaudeDesktopInstall();
   const codex = agents.codex;
   const chatGptProxyStopped = proxy.proxy?.chatgpt === false && codex.status === "found"
     && codex.data.desktop.status === "found" && codex.data.routing_mode !== "disabled";
@@ -329,13 +337,23 @@ export function AgentList({ agents }: { agents: AgentStates }) {
             disabled={isChangeInProgress} onPrepare={prepare} />
         )}
       </Installation>
-      <Installation name="Claude Desktop" detection={agents.claude_desktop}>
+      <Installation name="Claude Desktop" detection={agents.claude_desktop} alwaysShowChildren
+        tokenSelect={
+          <div>
+            <TokenSelect options={claudeDesktopToken.options} value={claudeDesktopToken.selectedOption}
+              disabled={isChangeInProgress || !hub.signedIn} onChange={claudeDesktopToken.choose} />
+            {!hub.signedIn && <Text>Войдите в CoreInfra Hub для выбора токена.</Text>}
+            {hub.status === "error" && <ErrorText>{hub.error}</ErrorText>}
+          </div>
+        }>
         {agents.claude_desktop.status === "found" && (
-          <RoutingSelector agent="claude_desktop" modes={routingModes("Claude")} mode={agents.claude_desktop.data.routing_mode}
+          <RoutingSelector agent="claude_desktop" token={claudeDesktopToken} modes={routingModes("Claude")} mode={agents.claude_desktop.data.routing_mode}
             toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })} agentToken={agents.claude_desktop.data.token} hub={hub}
             badges={<ProxyStatus proxy={proxy} app="claude_desktop" />} disabled={isChangeInProgress} onPrepare={prepare} />
         )}
         <Text>Для входа в аккаунт включите VPN и примените режим «Без CoreInfra» в Wizard.</Text>
+        <ClaudeDesktopInstall observation={claudeInstall} token={claudeDesktopToken.selected} tokenReady={claudeDesktopToken.ready}
+          disabled={isChangeInProgress} installed={agents.claude_desktop.status === "found"} />
       </Installation>
       <Installation name="OpenCode" detection={agents.opencode}>
         {agents.opencode.status === "found" && (

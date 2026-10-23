@@ -30,4 +30,8 @@ uuid.workspace = true
 wizard-proxy.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
 plist.workspace = true
+semver.workspace = true
+sha2.workspace = true
