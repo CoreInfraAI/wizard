@@ -1,24 +1,16 @@
 //! GUI ownership of Claude installation and UI-independent daily checks.
 
-#[cfg(not(target_os = "macos"))]
-use crate::agents::TokenChoice;
-use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
-#[cfg(target_os = "macos")]
 use crate::{
     agents::{AgentRevisionState, TokenChoice},
-    hub_tokens, settings,
+    hub_tokens,
+    revision_signal::{RevisionSignal, RevisionSnapshot},
+    settings,
 };
-#[cfg(target_os = "macos")]
-use alloc::boxed::Box;
-use alloc::sync::Arc;
-#[cfg(target_os = "macos")]
+use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 use serde::Serialize;
-#[cfg(target_os = "macos")]
 use std::time::Instant;
-#[cfg(target_os = "macos")]
 use tauri::Manager as _;
-#[cfg(target_os = "macos")]
 use wizard_core::agents::{TokenAgent, claude_desktop_install as installer};
 
 #[derive(Clone, Copy, Serialize)]
@@ -31,19 +23,13 @@ pub(crate) enum Operation {
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-#[cfg_attr(
-    not(target_os = "macos"),
-    expect(dead_code, reason = "macOS-only operation phases")
-)]
 pub(crate) enum State {
-    #[cfg(not(target_os = "macos"))]
-    Unsupported,
     Idle,
     Checking,
     UpToDate,
     Available {
         version: String,
-        path: String,
+        path: Option<String>,
     },
     Downloading {
         received: u64,
@@ -51,7 +37,7 @@ pub(crate) enum State {
     },
     ReadyToInstall {
         version: String,
-        path: String,
+        path: Option<String>,
     },
     Installing,
     Failed {
@@ -60,16 +46,13 @@ pub(crate) enum State {
     },
 }
 
-#[cfg(target_os = "macos")]
 enum Package {
     Available(Box<installer::Release>),
     Downloaded(Arc<installer::DownloadedRelease>),
 }
 
-#[cfg(target_os = "macos")]
 const CHECK_INTERVAL: Duration = Duration::from_hours(24);
 
-#[cfg(target_os = "macos")]
 #[derive(Default)]
 struct Session {
     package: Option<Package>,
@@ -78,24 +61,18 @@ struct Session {
 
 pub(crate) struct InstallManager {
     signal: RevisionSignal<State>,
-    #[cfg(target_os = "macos")]
     session: Arc<tokio::sync::Mutex<Session>>,
 }
 
 impl Default for InstallManager {
     fn default() -> Self {
         Self {
-            #[cfg(target_os = "macos")]
             signal: RevisionSignal::new(State::Idle),
-            #[cfg(not(target_os = "macos"))]
-            signal: RevisionSignal::new(State::Unsupported),
-            #[cfg(target_os = "macos")]
             session: Arc::new(tokio::sync::Mutex::new(Session::default())),
         }
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn start_background_checks(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let tokens = app.state::<RevisionSignal<hub_tokens::HubTokens>>();
@@ -158,17 +135,6 @@ pub(crate) fn install_claude_desktop_release(app: tauri::AppHandle) -> Result<()
     start(app, None, Operation::Install, false)
 }
 
-#[cfg(not(target_os = "macos"))]
-fn start(
-    _app: tauri::AppHandle,
-    _token: Option<TokenChoice>,
-    _operation: Operation,
-    _automatic: bool,
-) -> Result<(), String> {
-    Err("Установка Claude доступна только на macOS".into())
-}
-
-#[cfg(target_os = "macos")]
 fn start(
     app: tauri::AppHandle,
     token: Option<TokenChoice>,
@@ -240,7 +206,6 @@ fn start(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 async fn resolve_token(
     app: &tauri::AppHandle,
     token: Option<TokenChoice>,
@@ -254,7 +219,6 @@ async fn resolve_token(
     }
 }
 
-#[cfg(target_os = "macos")]
 async fn background_token(app: &tauri::AppHandle) -> Result<Option<String>, String> {
     let settings = settings::get_state(app).map_err(|_| "Не удалось прочитать настройки Wizard")?;
     if settings.hub_session.is_empty() {
@@ -279,7 +243,6 @@ async fn background_token(app: &tauri::AppHandle) -> Result<Option<String>, Stri
     }
 }
 
-#[cfg(target_os = "macos")]
 async fn run(
     app: &tauri::AppHandle,
     manager: &InstallManager,
@@ -315,7 +278,11 @@ async fn run(
             let state = match &release {
                 Some(value) => State::Available {
                     version: value.version.to_string(),
-                    path: value.target.path.display().to_string(),
+                    path: value
+                        .target
+                        .path
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
                 },
                 None => State::UpToDate,
             };
@@ -341,7 +308,12 @@ async fn run(
             .map_err(|error| format!("{error:#}"))?;
             let state = State::ReadyToInstall {
                 version: download.release.version.to_string(),
-                path: download.release.target.path.display().to_string(),
+                path: download
+                    .release
+                    .target
+                    .path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
             };
 
             session.package = Some(Package::Downloaded(Arc::new(download)));

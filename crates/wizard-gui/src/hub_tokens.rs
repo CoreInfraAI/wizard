@@ -23,7 +23,6 @@ pub(crate) struct HubTokens {
 
 impl HubTokens {
     /// Use only a successfully loaded list; never issue a token for a background operation.
-    #[cfg(target_os = "macos")]
     pub(crate) fn named_token(&self, name: &str) -> Option<String> {
         if self.loading || self.error.is_some() {
             return None;

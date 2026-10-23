@@ -1,9 +1,10 @@
-//! macOS Claude installation. No settings writes, UI state, or persisted credentials.
+//! Claude release checks, downloads and installation. No settings writes or UI state.
 
 use super::{
     AgentDetection,
     detection::{self, DesktopAgent},
 };
+#[cfg(target_os = "macos")]
 use crate::platform::macos::{app_is_running, os_version, read_app_version};
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use core::time::Duration;
@@ -11,23 +12,36 @@ use reqwest::{Client, Url};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt as _;
+use std::process::{Command, Stdio};
 use std::{
     fs,
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
 };
 use tempfile::TempDir;
 
+#[cfg(target_os = "macos")]
 const BUNDLE_ID: &str = "com.anthropic.claudefordesktop";
 const MAX_DOWNLOAD: u64 = 1024 * 1024 * 1024;
+const DOWNLOAD_NAME: &str = if cfg!(target_os = "windows") {
+    "download.msix"
+} else if cfg!(target_os = "linux") {
+    "download.deb"
+} else {
+    "download.zip"
+};
+#[cfg(target_os = "macos")]
 const FEED: &str = "https://api.anthropic.com/api/desktop/darwin/arm64/squirrel/update";
 // Apple-issued Developer ID of Anthropic, not merely any valid code signature.
+#[cfg(target_os = "macos")]
 const SIGNING_REQUIREMENT: &str = "=anchor apple generic and identifier \"com.anthropic.claudefordesktop\" and certificate leaf[subject.OU] = \"Q6L2SF6YDW\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
 
 #[derive(Clone)]
 pub struct Target {
-    pub path: PathBuf,
+    // Windows and Linux package managers choose installation locations.
+    pub path: Option<PathBuf>,
     version: Option<Version>,
 }
 
@@ -52,11 +66,26 @@ pub fn detect_target(last_path: Option<&Path>) -> Result<Target> {
                 .version
                 .context("Не удалось определить установленную версию Claude")?;
             (
-                info.path,
+                if cfg!(any(target_os = "windows", target_os = "linux")) {
+                    None
+                } else {
+                    Some(info.path)
+                },
                 Some(Version::parse(&version).context("Неизвестный формат версии Claude")?),
             )
         }
-        AgentDetection::NotFound => (PathBuf::from(detection::CLAUDE_APP_PATH), None),
+        AgentDetection::NotFound => {
+            #[cfg(target_os = "macos")]
+            {
+                (Some(PathBuf::from(detection::CLAUDE_APP_PATH)), None)
+            }
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                (None, None)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+            bail!("Установка Claude Desktop на этой платформе не поддерживается")
+        }
         AgentDetection::Error(message) => bail!("{message}"),
     };
 
@@ -125,8 +154,12 @@ fn parse_release(bytes: &[u8], target: Target) -> Result<Option<Release>> {
         .find(|entry| entry.version == feed.current_release)
         .context("В ответе отсутствует архив указанной версии")?
         .update_to;
+    validate_payload(version, payload, target).map(Some)
+}
+
+fn validate_payload(version: Version, mut payload: Payload, target: Target) -> Result<Release> {
     ensure!(
-        payload.version == feed.current_release,
+        payload.version == version.to_string(),
         "Версии в ответе сервера не совпадают"
     );
 
@@ -149,18 +182,18 @@ fn parse_release(bytes: &[u8], target: Target) -> Result<Option<Release>> {
         "Недопустимый размер архива"
     );
 
-    Ok(Some(Release {
+    payload.sha256.make_ascii_lowercase();
+    Ok(Release {
         version,
         target,
         url,
-        sha256: payload.sha256.to_ascii_lowercase(),
+        sha256: payload.sha256,
         size: payload.size,
-    }))
+    })
 }
 
-pub async fn check_release(token: &str, target: Target) -> Result<Option<Release>> {
-    let os_version = os_version();
-    let mut url = Url::parse(FEED)?;
+fn feed_url(target: &Target) -> Result<Url> {
+    let (mut url, os_version) = platform_feed(target)?;
     url.query_pairs_mut()
         .append_pair("device_id", &uuid::Uuid::new_v4().to_string())
         .append_pair(
@@ -171,7 +204,24 @@ pub async fn check_release(token: &str, target: Target) -> Result<Option<Release
                 .map_or_else(|| "0.0.0".into(), ToString::to_string),
         )
         .append_pair("os_version", &os_version);
+    Ok(url)
+}
 
+#[cfg(target_os = "macos")]
+fn platform_feed(_target: &Target) -> Result<(Url, String)> {
+    Ok((Url::parse(FEED)?, os_version()))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn platform_feed(_target: &Target) -> Result<(Url, String)> {
+    bail!("Проверка обновлений Claude Desktop на этой платформе ещё не реализована")
+}
+
+pub async fn check_release(token: &str, target: Target) -> Result<Option<Release>> {
+    if cfg!(target_os = "linux") {
+        return check_linux_release(token, target).await;
+    }
+    let url = feed_url(&target)?;
     let mut response = client(token)?
         .get(url)
         .timeout(Duration::from_secs(30))
@@ -218,7 +268,7 @@ pub async fn download_release(
         .prefix("wizard-claude-")
         .tempdir()
         .context("Не удалось создать временный каталог")?;
-    let mut file = fs::File::create(directory.path().join("download.zip"))?;
+    let mut file = fs::File::create(directory.path().join(DOWNLOAD_NAME))?;
 
     let mut response = client(token)?
         .get(release.url.clone())
@@ -258,6 +308,242 @@ pub async fn download_release(
     Ok(DownloadedRelease { directory, release })
 }
 
+const APT_ORIGIN: &str = "https://downloads.claude.ai/claude-desktop";
+const APT_SIGNER: &str = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE";
+
+async fn apt_metadata(client: &Client, path: &str) -> Result<Vec<u8>> {
+    let mut response = client
+        .get(format!("{APT_ORIGIN}/{path}"))
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|_| anyhow!("Не удалось получить метаданные APT через CoreInfra"))?;
+    ensure!(
+        response.status().is_success(),
+        "Сервер APT вернул HTTP {}",
+        response.status().as_u16()
+    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| anyhow!("Не удалось прочитать метаданные APT"))?
+    {
+        ensure!(
+            bytes.len() + chunk.len() <= 2 * 1024 * 1024,
+            "Метаданные APT слишком велики"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn deb_field<'a>(paragraph: &'a str, name: &str) -> Result<&'a str> {
+    paragraph
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(name)
+                .and_then(|value| value.strip_prefix(": "))
+        })
+        .context("В метаданных APT отсутствует обязательное поле")
+}
+
+fn verify_apt_index(release: &str, arch: &str, index: &[u8]) -> Result<()> {
+    let valid_until = deb_field(release, "Valid-Until")?.replace(" UTC", " +0000");
+    let expiry = chrono::DateTime::parse_from_rfc2822(&valid_until)
+        .context("Некорректный срок действия метаданных APT")?;
+    ensure!(
+        expiry > chrono::Utc::now(),
+        "Подписанные метаданные APT устарели"
+    );
+    let path = format!("main/binary-{arch}/Packages");
+    let entry = release
+        .lines()
+        .skip_while(|line| *line != "SHA256:")
+        .skip(1)
+        .take_while(|line| line.starts_with(' '))
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .find(|fields| fields.len() == 3 && fields[2] == path)
+        .context("В подписанных метаданных нет SHA-256 индекса APT")?;
+    ensure!(
+        entry[1].parse::<usize>()? == index.len()
+            && entry[0].eq_ignore_ascii_case(&format!("{:x}", Sha256::digest(index))),
+        "Размер или SHA-256 индекса APT не совпадает"
+    );
+    Ok(())
+}
+
+fn parse_apt_release(index: &str, arch: &str, target: Target) -> Result<Option<Release>> {
+    let mut latest: Option<(Version, &str)> = None;
+    for paragraph in index.split("\n\n") {
+        if deb_field(paragraph, "Package").ok() != Some("claude-desktop")
+            || deb_field(paragraph, "Architecture").ok() != Some(arch)
+        {
+            continue;
+        }
+        let version = Version::parse(deb_field(paragraph, "Version")?)
+            .context("Некорректная версия Claude в APT")?;
+        if latest
+            .as_ref()
+            .is_none_or(|(current, _)| version > *current)
+        {
+            latest = Some((version, paragraph));
+        }
+    }
+    let (version, paragraph) = latest.context("В APT нет Claude для этой архитектуры")?;
+    if target
+        .version
+        .as_ref()
+        .is_some_and(|current| version <= *current)
+    {
+        return Ok(None);
+    }
+    let filename = deb_field(paragraph, "Filename")?;
+    ensure!(
+        filename.starts_with("pool/")
+            && Path::new(filename)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("deb"))
+            && !filename.split('/').any(|part| part == ".."),
+        "Некорректный путь пакета APT"
+    );
+    let payload = Payload {
+        version: version.to_string(),
+        url: format!("{APT_ORIGIN}/apt/stable/{filename}"),
+        sha256: deb_field(paragraph, "SHA256")?.to_owned(),
+        size: deb_field(paragraph, "Size")?.parse()?,
+    };
+    validate_payload(version, payload, target).map(Some)
+}
+
+async fn check_linux_release(token: &str, target: Target) -> Result<Option<Release>> {
+    let arch = command_output(
+        Command::new("/usr/bin/dpkg").arg("--print-architecture"),
+        "Не удалось определить архитектуру Debian/Ubuntu",
+    )?;
+    let arch = arch.trim();
+    ensure!(
+        matches!(arch, "amd64" | "arm64"),
+        "Claude требует Ubuntu/Debian amd64 или arm64"
+    );
+    let client = client(token)?;
+    let directory = tempfile::Builder::new()
+        .prefix("wizard-claude-apt-")
+        .tempdir()?;
+    let key = directory.path().join("key.asc");
+    let keyring = directory.path().join("keyring.gpg");
+    let signed = directory.path().join("InRelease");
+    let verified = directory.path().join("Release");
+    fs::write(&key, apt_metadata(&client, "key.asc").await?)?;
+    fs::write(
+        &signed,
+        apt_metadata(&client, "apt/stable/dists/stable/InRelease").await?,
+    )?;
+    command_output(
+        Command::new("/usr/bin/gpg")
+            .args(["--no-options", "--batch", "--homedir"])
+            .arg(directory.path())
+            .arg("--dearmor")
+            .arg("--output")
+            .arg(&keyring)
+            .arg(&key),
+        "Не удалось прочитать ключ APT; необходим gpg",
+    )?;
+    let status = command_output(
+        Command::new("/usr/bin/gpgv")
+            .arg("--homedir")
+            .arg(directory.path())
+            .arg("--keyring")
+            .arg(&keyring)
+            .args(["--status-fd", "1", "--output"])
+            .arg(&verified)
+            .arg(&signed),
+        "Подпись репозитория APT не прошла проверку",
+    )?;
+    ensure!(
+        status.lines().any(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            fields.len() > 2
+                && fields[0] == "[GNUPG:]"
+                && fields[1] == "VALIDSIG"
+                && fields[2] == APT_SIGNER
+        }),
+        "Репозиторий APT подписан не ключом Anthropic"
+    );
+    let index = apt_metadata(
+        &client,
+        &format!("apt/stable/dists/stable/main/binary-{arch}/Packages"),
+    )
+    .await?;
+    verify_apt_index(&fs::read_to_string(verified)?, arch, &index)?;
+    parse_apt_release(core::str::from_utf8(&index)?, arch, target)
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_INSTALL: &str = r#"
+set -eu
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+stage=$(mktemp -d /tmp/wizard-claude-install-XXXXXXXX) || exit 20
+trap 'rm -rf -- "$stage"' EXIT
+# Copy into root-owned storage before rechecking: the caller cannot replace this file.
+cp -- "$1" "$stage/package.deb" || exit 20
+actual=$(sha256sum "$stage/package.deb") || exit 20
+[ "${actual%% *}" = "$3" ] || exit 20
+[ "$(dpkg-deb -f "$stage/package.deb" Package)" = claude-desktop ] || exit 12
+[ "$(dpkg-deb -f "$stage/package.deb" Version)" = "$2" ] || exit 13
+[ "$(dpkg-deb -f "$stage/package.deb" Architecture)" = "$(dpkg --print-architecture)" ] || exit 14
+for process in /proc/[0-9]*/exe; do
+    executable=$(readlink "$process" 2>/dev/null || :)
+    case "$executable" in /usr/lib/claude-desktop/*) exit 15 ;; esac
+done
+DEBIAN_FRONTEND=noninteractive apt-get --assume-yes --no-install-recommends --no-remove install "$stage/package.deb" || exit 16
+[ "$(dpkg-query -W -f='${Status} ${Version}' claude-desktop)" = "install ok installed $2" ] || exit 17
+"#;
+
+#[cfg(target_os = "linux")]
+fn install_linux(archive: &Path, release: &Release) -> Result<()> {
+    let version = release.version.to_string();
+    let metadata = command_output(
+        Command::new("/usr/bin/dpkg-deb").arg("-f").arg(archive),
+        "Не удалось прочитать пакет DEB",
+    )?;
+    ensure!(
+        deb_field(&metadata, "Package")? == "claude-desktop"
+            && deb_field(&metadata, "Version")? == version,
+        "Неверный пакет или версия Claude"
+    );
+    let arch = command_output(
+        Command::new("/usr/bin/dpkg").arg("--print-architecture"),
+        "Не удалось определить архитектуру Ubuntu/Debian",
+    )?;
+    ensure!(
+        matches!(arch.trim(), "amd64" | "arm64")
+            && deb_field(&metadata, "Architecture")? == arch.trim(),
+        "Архитектура DEB не соответствует системе"
+    );
+    let status = Command::new("/usr/bin/pkexec").args(["--disable-internal-agent", "/bin/sh", "-c", LINUX_INSTALL, "wizard-claude-install"])
+        .arg(archive).arg(&version).arg(&release.sha256)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()
+        .context("Не удалось запросить права администратора; необходим pkexec и графический агент Polkit")?;
+    if status.success() {
+        return Ok(());
+    }
+    bail!(
+        "{}",
+        match status.code() {
+            Some(12..=14) => "DEB не соответствует выбранному пакету, версии или архитектуре",
+            Some(15) => "Полностью закройте Claude Desktop и повторите установку",
+            Some(17) => "APT завершил установку, но ожидаемая версия Claude не обнаружена",
+            Some(20) => "Не удалось подготовить DEB или его SHA-256 не совпадает",
+            Some(126 | 127) =>
+                "Права администратора не получены. Проверьте запрос Polkit; пакет сохранён для повтора",
+            _ =>
+                "APT не удалось установить Claude. Проверьте доступ к репозиториям, зависимости и блокировку менеджера пакетов. Возможна частичная установка; пакет сохранён для повтора",
+        }
+    )
+}
+
 fn command_output(command: &mut Command, message: &str) -> Result<String> {
     let output = command
         .stdin(Stdio::null())
@@ -268,6 +554,7 @@ fn command_output(command: &mut Command, message: &str) -> Result<String> {
     String::from_utf8(output.stdout).context(message.to_owned())
 }
 
+#[cfg(target_os = "macos")]
 fn verify_bundle(path: &Path, version: &Version) -> Result<()> {
     let plist = plist::Value::from_file(path.join("Contents/Info.plist"))?;
     ensure!(
@@ -294,6 +581,209 @@ fn verify_bundle(path: &Path, version: &Version) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn powershell(script: &str) -> Command {
+    let mut command = Command::new("powershell.exe");
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+    ]);
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW; only WINDOWS_ELEVATE requests UAC.
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn platform_feed(target: &Target) -> Result<(Url, String)> {
+    #[derive(Deserialize)]
+    struct SystemInfo {
+        arch: String,
+        os_version: String,
+        has_msix: bool,
+    }
+
+    let output = command_output(
+        &mut powershell(
+            r"
+$ErrorActionPreference = 'Stop'
+@{
+    arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    os_version = [Environment]::OSVersion.Version.ToString()
+    has_msix = $null -ne (Get-AppxPackage -Name Claude)
+} | ConvertTo-Json -Compress
+",
+        ),
+        "Не удалось определить платформу Windows и пакет Claude",
+    )?;
+    let info: SystemInfo =
+        serde_json::from_str(output.trim()).context("Некорректные сведения о платформе Windows")?;
+    ensure!(
+        matches!(info.arch.as_str(), "x64" | "arm64"),
+        "Claude требует Windows x64 или ARM64"
+    );
+    ensure!(
+        target.version.is_none() || info.has_msix,
+        "Обнаружена старая установка Claude без MSIX. Удалите её самостоятельно перед установкой MSIX; Wizard не выполняет миграцию"
+    );
+    Ok((
+        Url::parse(&format!(
+            "https://releases.claude.com/api/desktop/win32/{}/msix/update",
+            info.arch
+        ))?,
+        info.os_version,
+    ))
+}
+
+#[cfg(target_os = "windows")]
+const WINDOWS_PUBLISHER: &str = "CN=\"Anthropic, PBC\", O=\"Anthropic, PBC\", L=San Francisco, S=California, C=US, SERIALNUMBER=4860621, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US";
+
+#[cfg(target_os = "windows")]
+const WINDOWS_INSTALL: &str = r"
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$phase = 18
+$lock = $null
+try {
+    if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne $package.sid) { exit 18 }
+    $phase = 20
+    # Deny writes/replacement until deployment finishes, including across verification.
+    $lock = [IO.File]::Open($package.archive, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    if ((Get-FileHash -LiteralPath $package.archive -Algorithm SHA256).Hash -ne $package.sha256) { exit 20 }
+    $phase = 10
+    $signature = Get-AuthenticodeSignature -LiteralPath $package.archive
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -cne $package.publisher) { exit 10 }
+
+    $phase = 11
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($package.archive)
+    try {
+        $entry = $zip.GetEntry('AppxManifest.xml')
+        if ($null -eq $entry -or $entry.Length -gt 1048576) { exit 11 }
+        $settings = New-Object Xml.XmlReaderSettings
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $stream = $entry.Open()
+        try {
+            $reader = [Xml.XmlReader]::Create($stream, $settings)
+            try {
+                $manifest = New-Object Xml.XmlDocument
+                $manifest.Load($reader)
+            } finally { $reader.Dispose() }
+        } finally { $stream.Dispose() }
+    } finally { $zip.Dispose() }
+    $identity = $manifest.DocumentElement.Identity
+    if ($identity.Name -cne 'Claude' -or $identity.Publisher -cne $package.publisher) { exit 12 }
+    if ($identity.Version -cne $package.version) { exit 13 }
+    $arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    if ($arch -notin @('x64', 'arm64') -or $identity.ProcessorArchitecture -cne $arch) { exit 14 }
+
+    $phase = 15
+    if (Get-Process -Name Claude -ErrorAction SilentlyContinue) { exit 15 }
+    if (!$install) { exit 0 }
+    $phase = 16
+    # No force-close, deferred registration, downgrade or remote dependencies.
+    Add-AppxPackage -Path $package.archive | Out-Null
+    $phase = 17
+    $installed = Get-AppxPackage -Name Claude
+    if ($null -eq $installed -or $installed.Publisher -cne $package.publisher -or $installed.Version.ToString() -cne $package.version) { exit 17 }
+    exit 0
+} catch { exit $phase }
+finally { if ($null -ne $lock) { $lock.Dispose() } }
+";
+
+#[cfg(target_os = "windows")]
+const WINDOWS_ELEVATE: &str = r#"
+# Only public package metadata and the originating SID cross the elevation boundary.
+$json = ($package | ConvertTo-Json -Compress).Replace("'", "''")
+$script = '$package = ConvertFrom-Json ''' + $json + '''; $install = $true;' + [Environment]::NewLine + $body
+$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+try {
+    $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
+    if ($child.ExitCode -ne 0) { exit $child.ExitCode }
+    # Confirm registration from the original, unelevated user's context too.
+    $installed = Get-AppxPackage -Name Claude
+    if ($null -eq $installed -or $installed.Publisher -cne $package.publisher -or $installed.Version.ToString() -cne $package.version) { exit 17 }
+    exit 0
+} catch {
+    if ($_.Exception.NativeErrorCode -eq 1223 -or $_.Exception.InnerException.NativeErrorCode -eq 1223) { exit 19 }
+    exit 21
+}
+"#;
+
+#[cfg(target_os = "windows")]
+fn install_windows(archive: &Path, version: &Version, sha256: &str) -> Result<()> {
+    ensure!(
+        version.pre.is_empty()
+            && version.build.is_empty()
+            && [version.major, version.minor, version.patch]
+                .into_iter()
+                .all(|part| u16::try_from(part).is_ok()),
+        "Версия Claude не соответствует формату MSIX"
+    );
+    let package = serde_json::json!({
+        "archive": archive,
+        "publisher": WINDOWS_PUBLISHER,
+        "version": format!("{version}.0"),
+        "sha256": sha256,
+        "sid": "",
+    })
+    .to_string();
+    let setup = r"
+$ErrorActionPreference = 'Stop'
+$package = $env:WIZARD_CLAUDE_PACKAGE | ConvertFrom-Json
+$package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+";
+    // Reject corrupt packages and running Claude before asking for UAC.
+    run_windows_install(
+        powershell(&format!("{setup}\n$install = $false\n{WINDOWS_INSTALL}"))
+            .env("WIZARD_CLAUDE_PACKAGE", &package),
+    )?;
+    run_windows_install(
+        powershell(&format!(
+            "{setup}\n$body = @'\n{WINDOWS_INSTALL}\n'@\n{WINDOWS_ELEVATE}"
+        ))
+        .env("WIZARD_CLAUDE_PACKAGE", &package),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_install(command: &mut Command) -> Result<()> {
+    let status = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("Не удалось запустить установку MSIX")?;
+    if status.success() {
+        return Ok(());
+    }
+    bail!(
+        "{}",
+        match status.code() {
+            Some(10) => "Подпись MSIX не прошла проверку Anthropic",
+            Some(11) => "Не удалось прочитать манифест MSIX",
+            Some(12) => "Неверный идентификатор или издатель пакета Claude",
+            Some(13) => "Версия MSIX не совпадает с выбранной",
+            Some(14) => "Архитектура MSIX не соответствует Windows",
+            Some(15) =>
+                "Полностью закройте Claude Desktop, включая значок в трее, и повторите установку",
+            Some(17) =>
+                "Windows завершила установку, но ожидаемая версия Claude не обнаружена у исходного пользователя",
+            Some(18) =>
+                "В UAC выбрана другая учётная запись. Подтвердите повышение прав для того же пользователя, который запустил Wizard",
+            Some(19) =>
+                "Запрос прав администратора отменён. Пакет сохранён для повторной установки",
+            Some(20) =>
+                "Не удалось заблокировать и проверить MSIX: файл недоступен или SHA-256 не совпадает",
+            Some(21) => "Не удалось запустить процесс установки с правами администратора",
+            _ =>
+                "Windows не удалось установить MSIX. Проверьте зависимости пакета и ограничения системы. Пакет сохранён для повторной попытки",
+        }
+    )
+}
+
 fn archive_sha256(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path).context("Не удалось открыть архив для проверки SHA-256")?;
     let mut hash = Sha256::new();
@@ -315,62 +805,79 @@ fn archive_sha256(path: &Path) -> Result<String> {
 
 pub fn install_release(download: &DownloadedRelease) -> Result<()> {
     let DownloadedRelease { directory, release } = download;
-    let archive = directory.path().join("download.zip");
+    let archive = directory.path().join(DOWNLOAD_NAME);
     ensure!(
         archive_sha256(&archive)? == release.sha256,
         "SHA-256 архива не совпадает"
     );
 
-    // Keep the archive for retry, but clean extracted files after every attempt.
-    let extracted = tempfile::Builder::new()
-        .prefix("extracted-")
-        .tempdir_in(directory.path())
-        .context("Не удалось создать каталог распаковки")?;
-    // bsdtar's default extraction rejects traversal through symlinks and '..'. Do not use -P.
-    command_output(
-        Command::new("/usr/bin/tar")
-            .arg("-xf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(extracted.path()),
-        "Не удалось распаковать Claude",
-    )?;
-    let app = extracted.path().join("Claude.app");
+    #[cfg(target_os = "macos")]
+    {
+        // Keep the archive for retry, but clean extracted files after every attempt.
+        let extracted = tempfile::Builder::new()
+            .prefix("extracted-")
+            .tempdir_in(directory.path())
+            .context("Не удалось создать каталог распаковки")?;
+        // bsdtar's default extraction rejects traversal through symlinks and '..'. Do not use -P.
+        command_output(
+            Command::new("/usr/bin/tar")
+                .arg("-xf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(extracted.path()),
+            "Не удалось распаковать Claude",
+        )?;
+        let app = extracted.path().join("Claude.app");
 
-    // Stage beside the destination so replacement uses rename on one filesystem.
-    let parent = release
-        .target
-        .path
-        .parent()
-        .context("Некорректный путь установки")?;
-    let staging = tempfile::Builder::new()
-        .prefix(".wizard-claude-")
-        .tempdir_in(parent)
-        .context("Нет прав на установку в каталог приложения")?;
-    let staged = staging.path().join("Claude.app");
-    command_output(
-        Command::new("/usr/bin/ditto").arg(&app).arg(&staged),
-        "Не удалось подготовить приложение к замене",
-    )?;
+        // Stage beside the destination so replacement uses rename on one filesystem.
+        let parent = release
+            .target
+            .path
+            .as_ref()
+            .context("Не указан путь установки")?
+            .parent()
+            .context("Некорректный путь установки")?;
+        let staging = tempfile::Builder::new()
+            .prefix(".wizard-claude-")
+            .tempdir_in(parent)
+            .context("Нет прав на установку в каталог приложения")?;
+        let staged = staging.path().join("Claude.app");
+        command_output(
+            Command::new("/usr/bin/ditto").arg(&app).arg(&staged),
+            "Не удалось подготовить приложение к замене",
+        )?;
 
-    verify_bundle(&staged, &release.version)?;
-    // Check all Claude instances, including a running app at a different path. Never terminate them.
-    ensure!(
-        !app_is_running(BUNDLE_ID),
-        "Полностью закройте Claude Desktop, включая значок в меню, и повторите установку"
-    );
-    replace_bundle(staging, &staged, &release.target)
+        verify_bundle(&staged, &release.version)?;
+        // Check all Claude instances, including a running app at a different path. Never terminate them.
+        ensure!(
+            !app_is_running(BUNDLE_ID),
+            "Полностью закройте Claude Desktop, включая значок в меню, и повторите установку"
+        );
+        replace_bundle(staging, &staged, &release.target)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        install_windows(&archive, &release.version, &release.sha256)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        install_linux(&archive, release)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    bail!("Установка Claude Desktop на этой платформе ещё не реализована")
 }
 
+#[cfg(target_os = "macos")]
 fn replace_bundle(staging: TempDir, staged: &Path, target: &Target) -> Result<()> {
+    let destination = target.path.as_ref().context("Не указан путь установки")?;
     let previous = staging.path().join("previous.app");
     if target.version.is_some() {
-        fs::rename(&target.path, &previous)
+        fs::rename(destination, &previous)
             .context("Не удалось переместить предыдущую версию Claude")?;
     }
 
-    if let Err(error) = fs::rename(staged, &target.path) {
-        if target.version.is_some() && fs::rename(&previous, &target.path).is_err() {
+    if let Err(error) = fs::rename(staged, destination) {
+        if target.version.is_some() && fs::rename(&previous, destination).is_err() {
             let preserved = staging.keep();
             bail!(
                 "Замена и восстановление Claude не удались. Предыдущая версия сохранена в {}",
@@ -391,7 +898,7 @@ mod tests {
 
     fn target(version: Option<&str>) -> Target {
         Target {
-            path: detection::CLAUDE_APP_PATH.into(),
+            path: Some(PathBuf::from("Claude.app")),
             version: version.map(|v| Version::parse(v).unwrap()),
         }
     }
@@ -403,77 +910,38 @@ mod tests {
         }}]})
     }
 
-    #[test]
-    fn feed_checks_version_and_origin() {
-        let value = feed();
-        let bytes = serde_json::to_vec(&value).unwrap();
-        assert!(parse_release(&bytes, target(None)).unwrap().is_some());
-        assert!(
-            parse_release(&bytes, target(Some("3.2.0")))
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            parse_release(&bytes, target(Some("3.2.1")))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            parse_release(&bytes, target(Some("3.2.2")))
-                .unwrap()
-                .is_none()
-        );
-
-        for url in [
-            "http://downloads.claude.ai/releases/darwin/arm64/3.2.1/Claude.zip",
-            "https://evil.test/Claude.zip",
-        ] {
-            let mut invalid = feed();
-            invalid["releases"][0]["updateTo"]["url"] = json!(url);
-            assert!(parse_release(&serde_json::to_vec(&invalid).unwrap(), target(None)).is_err());
-        }
-
-        let mut relocated = feed();
-        relocated["releases"][0]["updateTo"]["url"] =
-            json!("https://downloads.claude.ai/new-location/archive?download=1");
-        assert!(
-            parse_release(&serde_json::to_vec(&relocated).unwrap(), target(None))
-                .unwrap()
-                .is_some()
-        );
-
-        for (key, value) in [
-            ("sha256", json!("bad")),
-            ("size", json!(MAX_DOWNLOAD + 1)),
-            ("version", json!("1.0.0")),
-        ] {
-            let mut invalid = feed();
-            invalid["releases"][0]["updateTo"][key] = value;
-            assert!(parse_release(&serde_json::to_vec(&invalid).unwrap(), target(None)).is_err());
-        }
-    }
-
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn failed_install_keeps_archive_for_retry_and_cleans_extraction() {
         let directory = tempfile::tempdir().unwrap();
-        let archive = directory.path().join("download.zip");
+        let archive = directory.path().join(DOWNLOAD_NAME);
         fs::write(&archive, b"invalid zip").unwrap();
         let mut release = parse_release(&serde_json::to_vec(&feed()).unwrap(), target(None))
             .unwrap()
             .unwrap();
         release.sha256 = archive_sha256(&archive).unwrap();
         // No personal application path is used, even if extraction unexpectedly succeeds.
-        release.target.path = directory.path().join("destination.app");
+        release.target.path = Some(directory.path().join("destination.app"));
         let download = DownloadedRelease { directory, release };
 
         for _ in 0..2 {
             let error = install_release(&download).unwrap_err();
-            assert_eq!(error.to_string(), "Не удалось распаковать Claude");
+            assert_eq!(
+                error.to_string(),
+                if cfg!(target_os = "windows") {
+                    "Подпись MSIX не прошла проверку Anthropic"
+                } else if cfg!(target_os = "linux") {
+                    "Не удалось прочитать пакет DEB"
+                } else {
+                    "Не удалось распаковать Claude"
+                }
+            );
             assert_eq!(fs::read(&archive).unwrap(), b"invalid zip");
             assert_eq!(fs::read_dir(download.directory.path()).unwrap().count(), 1);
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn replacement_restores_old_bundle_on_failure() {
         let root = tempfile::tempdir().unwrap();
@@ -481,7 +949,7 @@ mod tests {
         fs::create_dir(&destination).unwrap();
         fs::write(destination.join("old"), "old").unwrap();
         let target = Target {
-            path: destination.clone(),
+            path: Some(destination.clone()),
             version: Some(Version::new(1, 0, 0)),
         };
 

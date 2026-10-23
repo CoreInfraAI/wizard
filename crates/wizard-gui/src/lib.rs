@@ -105,7 +105,6 @@ pub fn run_application() -> Result<()> {
                 request_main_window(app.handle());
             }
             updater::start(app.handle().clone());
-            #[cfg(target_os = "macos")]
             claude_desktop_install::start_background_checks(app.handle().clone());
             Ok(())
         })

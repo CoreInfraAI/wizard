@@ -7,8 +7,8 @@ import { ErrorText } from "../components/ErrorText";
 
 type Operation = "check" | "download" | "install";
 type Phase =
-  | { status: "unsupported" | "idle" | "checking" | "up_to_date" | "installing" }
-  | { status: "available" | "ready_to_install"; version: string; path: string }
+  | { status: "idle" | "checking" | "up_to_date" | "installing" }
+  | { status: "available" | "ready_to_install"; version: string; path: string | null }
   | { status: "downloading"; received: number; total: number }
   | { status: "failed"; operation: Operation; message: string };
 type Snapshot = Phase & { revision: number };
@@ -26,7 +26,6 @@ export function useClaudeDesktopInstall() {
           if (stopped) return;
           setState(next);
           setError(undefined);
-          if (next.status === "unsupported") return;
           lastRevision = next.revision;
         } catch {
           if (stopped) return;
@@ -54,7 +53,6 @@ export function ClaudeDesktopInstall({ observation, token, tokenReady, disabled,
   const [error, setError] = useState<string>();
   const { state, busy } = observation;
   if (!state) return observation.error ? <ErrorText>{observation.error}</ErrorText> : null;
-  if (state.status === "unsupported") return null;
 
   const retryInstall = state.status === "failed" && state.operation === "install";
   const blocked = disabled || busy || observation.error !== undefined;
@@ -127,15 +125,18 @@ export function ClaudeDesktopInstall({ observation, token, tokenReady, disabled,
       </div>
       {state.status === "up_to_date" && <Text>Более новой доступной версии не найдено.</Text>}
       {state.status === "available" && (
-        <Text>Доступна версия {state.version}.<br />Путь установки: <code className="break-all">{state.path}</code>.</Text>
+        <Text>Доступна версия {state.version}.
+          {state.path && <><br />Путь установки: <code className="break-all">{state.path}</code>.</>}</Text>
       )}
       {state.status === "ready_to_install" && (
         <Text>Версия {state.version} скачана и готова к установке.
-          <br />
-          Путь установки: <code className="break-all">{state.path}</code>.</Text>
+          {state.path && <><br />Путь установки: <code className="break-all">{state.path}</code>.</>}</Text>
+      )}
+      {state.status === "ready_to_install" && state.path === null && (
+        <Text>Система запросит права администратора для установки Claude.</Text>
       )}
       {installed && (state.status === "ready_to_install" || retryInstall) && (
-        <Text>Перед установкой полностью закройте Claude Desktop, включая значок в меню. Приложение не будет запущено автоматически.</Text>
+        <Text>Перед установкой полностью закройте Claude Desktop, включая значок в меню или трее. Приложение не будет запущено автоматически.</Text>
       )}
       {state.status === "installing" && <Text>Не выходите из Wizard до завершения операции.</Text>}
       {state.status === "failed" && <ErrorText>{state.message}</ErrorText>}

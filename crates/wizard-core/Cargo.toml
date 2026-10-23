@@ -21,6 +21,8 @@ regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+semver.workspace = true
+sha2.workspace = true
 jsonc-parser.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 toml_edit = { workspace = true, features = ["serde"] }
@@ -33,5 +35,3 @@ wizard-proxy.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
 plist.workspace = true
-semver.workspace = true
-sha2.workspace = true

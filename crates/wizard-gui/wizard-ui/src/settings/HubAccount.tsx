@@ -29,7 +29,7 @@ export function HubAccount({ className }: { className?: string }) {
   return (
     <section className={clsx(className, "min-w-0 space-y-3 rounded-lg border border-zinc-200 bg-white p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900")}>
       <div className="flex flex-wrap items-center gap-2">
-        <Heading level={2}>CoreInfra Hub</Heading>
+        <Heading level={2}>CoreInfra AI Hub</Heading>
         <Badge color={account?.signed_in ? "green" : "zinc"}>
           {stateError ? "Недоступен" : !account ? "Загрузка…" : account.pending ? "Ожидание входа…" : account.signed_in ? "Вход выполнен" : "Вход не выполнен"}
         </Badge>
