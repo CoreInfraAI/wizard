@@ -34,15 +34,22 @@ export function HubAccount({ className }: { className?: string }) {
           {stateError ? "Недоступен" : !account ? "Загрузка…" : account.pending ? "Ожидание входа…" : account.signed_in ? "Вход выполнен" : "Вход не выполнен"}
         </Badge>
       </div>
-      {account?.signed_in && account.profile && (
-        <Text>
-          <Strong>Аккаунт: {account.profile.username}</Strong>
-          {account.profile.verified_email && <> · {account.profile.verified_email}</>}
-        </Text>
+      {account?.signed_in ? (
+        <div className="flex items-center gap-3">
+          {account.profile && (
+            <Text className="min-w-0 break-words">
+              <Strong>Хаб: {account.profile.personal_hub_name}</Strong>
+            </Text>
+          )}
+          <Button plain type="button" className="shrink-0" disabled={submitting} onClick={() => void changeAccount()}>
+            Выйти
+          </Button>
+        </div>
+      ) : (
+        <Button outline type="button" disabled={!account || submitting} onClick={() => void changeAccount()}>
+          Войти через CoreInfra Hub
+        </Button>
       )}
-      <Button outline type="button" disabled={!account || submitting} onClick={() => void changeAccount()}>
-        {account?.signed_in ? "Выйти" : "Войти через CoreInfra Hub"}
-      </Button>
       <Text>{account?.signed_in ? "Выход из аккаунта не изменяет настройки агентов." : "Вход в аккаунт не изменяет настройки агентов."}</Text>
       {(stateError || error || account?.error) && <ErrorText>{stateError || error || account?.error}</ErrorText>}
     </section>

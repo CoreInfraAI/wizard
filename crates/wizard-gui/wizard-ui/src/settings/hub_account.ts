@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 
-type HubProfile = { username: string; verified_email?: string };
+type HubProfile = { personal_hub_name: string };
 type HubAccount = { signed_in: boolean; profile: HubProfile | null; pending: boolean; error: string | null };
 type HubAccountSnapshot = HubAccount & { revision: number };
 

@@ -99,7 +99,41 @@ pub async fn fetch_profile(
     client: &Client,
     session: &str,
 ) -> (SessionUpdate, Result<HubProfile, HubError>) {
-    request(session, PROFILE_PATH, |url| client.get(url)).await
+    #[derive(Deserialize)]
+    struct ProfileResponse {
+        personal_hub_id: String,
+        hubs: Vec<ProfileHub>,
+    }
+
+    #[derive(Deserialize)]
+    struct ProfileHub {
+        hub_id: String,
+        hub_name: String,
+        display_name: Option<String>,
+    }
+
+    let (update, response) =
+        request::<ProfileResponse>(session, PROFILE_PATH, |url| client.get(url)).await;
+    let profile = response.and_then(|response| {
+        if response.personal_hub_id.is_empty() {
+            return Err(HubError::Response);
+        }
+        let hub = response
+            .hubs
+            .into_iter()
+            .find(|hub| hub.hub_id == response.personal_hub_id)
+            .ok_or(HubError::Response)?;
+        let personal_hub_name = hub
+            .display_name
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(hub.hub_name);
+        Ok(HubProfile {
+            personal_hub_id: response.personal_hub_id,
+            personal_hub_name,
+        })
+    });
+    (update, profile)
 }
 
 /// Sends the request built for `path` with `session`, as described for `post`.
@@ -111,7 +145,7 @@ async fn request<T: DeserializeOwned>(
     if session.is_empty() {
         return (SessionUpdate::Unchanged, Err(HubError::SignedOut));
     }
-    let Some(url) = hub_url(path) else {
+    let Ok(url) = Url::parse(&format!("{HUB_ORIGIN}{path}")) else {
         return (SessionUpdate::Unchanged, Err(HubError::Request));
     };
     let Ok(response) = build(url)
@@ -148,22 +182,13 @@ async fn request<T: DeserializeOwned>(
     (update, parsed)
 }
 
-/// `path` on Hub, or `None` if it would leave the Hub origin (for example `//host`): the
-/// session must never be sent elsewhere.
-fn hub_url(path: &str) -> Option<Url> {
-    let url = Url::parse(HUB_ORIGIN).ok()?.join(path).ok()?;
-    (url.origin().ascii_serialization() == HUB_ORIGIN).then_some(url)
-}
-
-/// Non-secret Hub account details. Deserializing a profile response keeps only these fields.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Non-secret Hub account details, constructed explicitly by `fetch_profile`.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct HubProfile {
-    pub username: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verified_email: Option<String>,
     /// Hub whose agent tokens Wizard lists and creates.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub personal_hub_id: String,
+    pub personal_hub_name: String,
 }
 
 /// Agent token of a Hub hub. `token` is a secret: no `Debug`, never logged.

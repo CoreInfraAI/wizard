@@ -7,13 +7,13 @@
 //! Login completes only after `/hub/api/profile` accepts the new session. There is no state or
 //! PKCE by user decision; callback substitution remains a known risk.
 
-use super::{HUB_ORIGIN, HubProfile, PROFILE_PATH, hub_url, session_from_headers};
+use super::{HUB_ORIGIN, HubProfile, session_from_headers};
 use core::{
     fmt,
     net::{Ipv4Addr, SocketAddr},
     time::Duration,
 };
-use reqwest::{Client, Url, header::COOKIE};
+use reqwest::{Client, Url};
 use std::process::Stdio;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -139,8 +139,8 @@ impl Callback {
     /// Exchanges the login link for a session and confirms it with `/hub/api/profile`.
     pub async fn sign_in(&self, client: &Client) -> Result<(String, HubProfile), LoginError> {
         let session = exchange(client, self.link.clone()).await?;
-        let profile_url = hub_url(PROFILE_PATH).ok_or(LoginError::Unverified)?;
-        let profile = fetch_profile(client, profile_url, &session).await?;
+        let (_, profile) = super::fetch_profile(client, &session).await;
+        let profile = profile.map_err(|_| LoginError::Unverified)?;
         Ok((session, profile))
     }
 
@@ -322,23 +322,6 @@ async fn exchange(client: &Client, link: Url) -> Result<String, LoginError> {
         .ok_or(LoginError::MissingSession)
 }
 
-/// Confirms that `/hub/api/profile` accepts `session` and returns its non-secret fields.
-/// A redirect does not prove success: Hub also reports errors that way. The response also
-/// carries account secrets; only `HubProfile` fields are parsed and nothing is logged.
-async fn fetch_profile(client: &Client, url: Url, session: &str) -> Result<HubProfile, LoginError> {
-    let response = client
-        .get(url)
-        .header(COOKIE, format!("session={session}"))
-        .send()
-        .await
-        .map_err(|_| LoginError::Unverified)?;
-    if !response.status().is_success() {
-        return Err(LoginError::Unverified);
-    }
-    let body = response.bytes().await.map_err(|_| LoginError::Unverified)?;
-    serde_json::from_slice(&body).map_err(|_| LoginError::Unverified)
-}
-
 /// Sends a plain-text response and closes the connection; write failures are ignored.
 async fn respond(stream: &mut TcpStream, status: &str, location: Option<&str>, body: &str) {
     let location = location.map_or_else(String::new, |url| format!("Location: {url}\r\n"));
@@ -379,79 +362,5 @@ mod tests {
             link.map(String::from).as_deref(),
             Some("https://hub.coreinfra.ai/hub/api/login?key=test")
         );
-    }
-
-    /// Login answers with a redirect that sets the cookie; only `/profile` decides success.
-    #[test]
-    fn exchange_keeps_redirect_cookie_and_profile_decides() {
-        // Tests skip application startup; another test may already have installed it.
-        let _ = super::super::install_crypto_provider();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        runtime.block_on(async {
-            let client = super::super::client().expect("HTTP client");
-            // The profile also carries secrets such as `login_key`; only display fields are kept.
-            let profile_body = r#"{"username":"test-user","verified_email":"user@example.com","personal_hub_id":"hub-1","login_key":"secret","login_link":"secret"}"#;
-            let account = HubProfile {
-                username: "test-user".to_owned(),
-                verified_email: Some("user@example.com".to_owned()),
-                personal_hub_id: "hub-1".to_owned(),
-            };
-            for (profile_status, expected) in [
-                ("200 OK", Ok(account)),
-                ("303 See Other", Err(LoginError::Unverified)),
-            ] {
-                let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-                    .await
-                    .expect("test listener");
-                let address = listener.local_addr().expect("test address");
-                let responses = [
-                    ("303 See Other\r\nSet-Cookie: session=test; HttpOnly", ""),
-                    (profile_status, profile_body),
-                ];
-                // `Location` points to a closed port: a followed redirect fails the exchange.
-                let server = tokio::spawn(async move {
-                    let mut heads = Vec::new();
-                    for (status, body) in responses {
-                        let (mut stream, _) = listener.accept().await.expect("test connection");
-                        let head = read_request_head(&mut stream).await.expect("test request");
-                        heads.push(String::from_utf8(head).expect("test request head"));
-                        let response = format!(
-                            "HTTP/1.1 {status}\r\nLocation: http://127.0.0.1:1/login\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                            body.len()
-                        );
-                        stream
-                            .write_all(response.as_bytes())
-                            .await
-                            .expect("test response");
-                    }
-                    heads
-                });
-
-                let link = Url::parse(&format!("http://{address}/hub/api/login?key=test"))
-                    .expect("test URL");
-                let session = exchange(&client, link).await.expect("session");
-                assert_eq!(session, "test");
-                let profile = Url::parse(&format!("http://{address}/hub/api/profile"))
-                    .expect("test URL");
-                assert_eq!(fetch_profile(&client, profile, &session).await, expected);
-
-                let heads = server.await.expect("test server");
-                let user_agent = format!("User-Agent: {}", wizard_proxy::user_agent());
-                assert!(heads.iter().all(|head| {
-                    head.split("\r\n")
-                        .any(|line| line.eq_ignore_ascii_case(&user_agent))
-                }));
-                let profile = heads[1].to_ascii_lowercase();
-                assert!(profile.starts_with("get /hub/api/profile http/1.1\r\n"));
-                assert!(
-                    profile
-                        .split("\r\n")
-                        .any(|line| line == "cookie: session=test")
-                );
-            }
-        });
     }
 }

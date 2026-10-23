@@ -41,8 +41,7 @@ pub(crate) fn run(runtime: &tokio::runtime::Runtime, command: &AccountCommand) -
             let (signed_in, profile) = runtime.block_on(status())?;
             let account = serde_json::json!({
                 "signed_in": signed_in,
-                "username": profile.as_ref().map(|profile| &profile.username),
-                "verified_email": profile.as_ref().and_then(|profile| profile.verified_email.as_ref()),
+                "personal_hub_name": profile.as_ref().map(|profile| &profile.personal_hub_name),
             });
             println!("{}", serde_json::to_string_pretty(&account)?);
         }
@@ -114,15 +113,11 @@ async fn login(no_browser: bool) -> Result<()> {
             return Err(error.into());
         }
     };
-    let account = match &profile.verified_email {
-        Some(email) => format!("{} ({email})", profile.username),
-        None => profile.username.clone(),
-    };
     if settings::update_file(|settings| settings.hub_session = session).is_err() {
         callback.reply(Reply::Failed).await;
         return Err(LoginError::Save.into());
     }
     callback.reply(Reply::SignedIn).await;
-    eprintln!("Вход выполнен: {account}");
+    eprintln!("Вход выполнен: {}", profile.personal_hub_name);
     Ok(())
 }
