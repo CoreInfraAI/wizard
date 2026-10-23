@@ -43,10 +43,13 @@ function App() {
 
   return (
     <main className="mx-auto flex min-h-dvh flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8">
-      <div className="@container grid grid-cols-[repeat(auto-fit,minmax(350px,1fr))] gap-6">
-        <HubAccount className="@min-[724px]:col-span-2" />
-        {updateTile}
-        <AgentPanel />
+      {/* Keep inline-size containment off the auto-fit grid to avoid collapsed columns in WebKit. */}
+      <div className="@container">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(350px,1fr))] gap-6">
+          <HubAccount className="@min-[724px]:col-span-2" />
+          {updateTile}
+          <AgentPanel />
+        </div>
       </div>
       <div className="mt-auto shrink-0">
         <OpenLogsButton />
