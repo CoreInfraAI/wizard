@@ -5404,6 +5404,7 @@ dependencies = [
  "cookie",
  "dirs 6.0.0",
  "jsonc-parser",
+ "libc",
  "log",
  "objc2-app-kit",
  "objc2-foundation",

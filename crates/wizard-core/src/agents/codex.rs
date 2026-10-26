@@ -8,12 +8,14 @@ use crate::{
         backups::{AgentKind, BackupManager},
         changes::{FileChange, FileSnapshot},
     },
-    platform::{command_output, env_var_not_empty, find_executable, is_executable},
+    platform::{
+        command_output, daemon_command_status, env_var_not_empty, find_executable, is_executable,
+    },
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
 };
 use anyhow::{Context as _, Result, ensure};
 use core::time::Duration;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -105,47 +107,84 @@ pub fn restore_backup(id: u32) -> Result<()> {
     BackupManager::load_backup(AgentKind::Codex, id)
 }
 
-/// Call from a Tokio blocking worker. Restart only if the version probe succeeds.
+/// Call from a Tokio blocking worker. Restart only if the version probe finds a managed daemon.
 /// A restart may interrupt active work; this does not change routing configuration.
 pub fn restart_daemon(executable: &Path, codex_home: &Path) -> Result<()> {
+    if !managed_daemon_running(executable, codex_home) {
+        log::info!("Codex daemon restart skipped: no managed daemon is running");
+        return Ok(());
+    }
+
+    // Unlike `daemon restart`, bootstrap also replaces a running updater, which relaunches the
+    // daemon on updates. It keeps variables later removed from `.env`, and one started by an
+    // older Wizard stays attributed to Wizard by macOS. Bootstrap resets remote control, though.
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .args(["app-server", "daemon", "bootstrap"])
+        .env("CODEX_HOME", codex_home);
+    if remote_control_enabled(codex_home)? {
+        command.arg("--remote-control");
+    }
+
+    log::info!("Restarting Codex daemon");
+    // Allow the daemon's maximum five-minute graceful shutdown, plus startup and updater readiness.
+    let status = daemon_command_status(command, Duration::from_secs(420))
+        .inspect_err(|_| {
+            log::error!("Codex daemon restart failed: command could not complete");
+        })
+        .context(
+            "Codex daemon restart failed; run `codex app-server daemon restart` in a terminal",
+        )?;
+    if !status.success() {
+        log::error!("Codex daemon restart failed with {status}");
+    }
+    ensure!(
+        status.success(),
+        "Codex daemon restart failed with {status}; run `codex app-server daemon restart` in a terminal"
+    );
+    log::info!("Codex daemon restarted successfully");
+    Ok(())
+}
+
+/// Whether `daemon version` reports an app-server that the daemon manages.
+fn managed_daemon_running(executable: &Path, codex_home: &Path) -> bool {
+    #[derive(Deserialize)]
+    struct Version {
+        backend: Option<String>,
+    }
+
     let mut probe = tokio::process::Command::new(executable);
     probe
         .args(["app-server", "daemon", "version"])
         .env("CODEX_HOME", codex_home)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
     // TODO: Distinguish an absent daemon from command failures and unsupported versions.
-    // For now, spawn errors, timeouts and nonzero exit statuses all mean "no daemon".
-    if !matches!(command_output(probe, Duration::from_secs(15)), Ok(output) if output.status.success())
-    {
-        log::info!("Codex daemon restart skipped: version probe did not succeed");
-        return Ok(());
-    }
+    // For now, spawn errors, timeouts, nonzero exit statuses and unmanaged servers all mean
+    // "no daemon".
+    command_output(probe, Duration::from_secs(15))
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice::<Version>(&output.stdout).ok())
+        .is_some_and(|version| version.backend.as_deref() == Some("pid"))
+}
 
-    log::info!("Restarting Codex daemon");
-    let mut command = tokio::process::Command::new(executable);
-    command
-        .args(["app-server", "daemon", "restart"])
-        .env("CODEX_HOME", codex_home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    // Allow the daemon's maximum five-minute graceful shutdown, plus startup time.
-    let output = command_output(command, Duration::from_secs(360)).inspect_err(|_| {
-        log::error!("Codex daemon restart failed: command could not complete");
-    })?;
-    if !output.status.success() {
-        log::error!("Codex daemon restart failed with {}", output.status);
-    }
-    ensure!(
-        output.status.success(),
-        "Codex daemon restart failed with {}; run the command manually for diagnostics",
-        output.status
-    );
-    log::info!("Codex daemon restarted successfully");
-    Ok(())
+fn remote_control_enabled(codex_home: &Path) -> Result<bool> {
+    let path = codex_home.join("app-server-daemon/settings.json");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let settings: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(settings
+        .get("remoteControlEnabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false))
 }
 
 /// Prepare without writing files or probing the daemon. `token` is ignored when disabled.

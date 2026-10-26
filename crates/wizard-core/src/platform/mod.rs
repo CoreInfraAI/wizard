@@ -3,7 +3,7 @@ use core::time::Duration;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
-    process::Output,
+    process::{ExitStatus, Output, Stdio},
 };
 
 #[cfg(target_os = "macos")]
@@ -177,6 +177,22 @@ pub(crate) fn command_output(
     timeout: Duration,
 ) -> Result<Output> {
     run_command(command, None, timeout)
+}
+
+/// Runs a command that starts long-lived background processes, with null stdio and bounded
+/// execution time. On macOS, when this process is its own responsible process (the app, not a
+/// CLI in a terminal), the command becomes its own, so TCC does not attribute the processes it
+/// starts to Wizard. Must be called inside `spawn_blocking`.
+pub(crate) fn daemon_command_status(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Result<ExitStatus> {
+    #[cfg(target_os = "macos")]
+    if macos::tcc::is_self_responsible() {
+        return macos::tcc::command_status_disclaimed(command.as_std(), timeout);
+    }
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    Ok(command_output(command, timeout)?.status)
 }
 
 /// Like `command_output`, but writes `input` to the command's stdin and closes it.
