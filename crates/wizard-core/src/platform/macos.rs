@@ -4,6 +4,8 @@ use objc2_foundation::{NSProcessInfo, NSString};
 use serde::Deserialize;
 use std::path::Path;
 
+pub(super) mod tcc;
+
 pub(crate) fn os_version() -> String {
     let version = NSProcessInfo::processInfo().operatingSystemVersion();
 

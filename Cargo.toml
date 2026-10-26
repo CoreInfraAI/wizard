@@ -43,6 +43,7 @@ anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock"] }
 dirs = "6"
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
+libc = "0.2.189"
 base64 = "0.22.1"
 clap = "4.5.60"
 cookie = { version = "0.18.2", default-features = false }
