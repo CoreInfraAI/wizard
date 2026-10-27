@@ -1,5 +1,27 @@
 @import "tailwindcss";
 
+/* Hub fonts (hub-ui/src/styles/style.css), variable upright only. */
+@font-face {
+  font-family: InterVariable;
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/InterVariable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Code VF";
+  font-weight: 200 900;
+  font-style: normal;
+  font-stretch: normal;
+  src: url("./assets/fonts/SourceCodeVF-Upright.ttf.woff2") format("woff2-variations");
+}
+
+@theme {
+  --font-sans: "InterVariable", sans-serif;
+  --font-mono: "Source Code VF", monospace;
+}
+
 @layer base {
   body {
     @apply bg-zinc-100 text-zinc-950 dark:bg-zinc-950 dark:text-white;
