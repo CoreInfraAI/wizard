@@ -191,8 +191,9 @@ pub(crate) async fn apply_agent_plan(
 
     let proxy_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        // Sync even when the setting is unchanged: «Применить» restarts a stopped listener.
-        // Also sync after a failed save: tray or autostart can fail after the setting is saved.
+        // Sync even when the setting is unchanged: «Применить» starts a stopped daemon.
+        // Reload checks both slots; unchanged tokens preserve active connections.
+        // Even if saving fails, synchronize with the settings actually on disk.
         plan.apply_with_proxies(
             |token| {
                 tauri::async_runtime::block_on(async {
@@ -200,7 +201,7 @@ pub(crate) async fn apply_agent_plan(
                         settings.claude_proxy_enabled = token;
                     })
                     .await;
-                    let synced = proxy::sync_one(&proxy_app, proxy::App::ClaudeDesktop).await;
+                    let synced = proxy::sync(&proxy_app).await;
                     saved.and(synced)
                 })
             },
@@ -210,7 +211,7 @@ pub(crate) async fn apply_agent_plan(
                         settings.codex_proxy_enabled = token;
                     })
                     .await;
-                    let synced = proxy::sync_one(&proxy_app, proxy::App::ChatGpt).await;
+                    let synced = proxy::sync(&proxy_app).await;
                     saved.and(synced)
                 })
             },

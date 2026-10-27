@@ -17,4 +17,6 @@ clap = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 wizard-core.workspace = true
+wizard-proxy-daemon.workspace = true
+wizard-proxy.workspace = true
 wizard-settings.workspace = true
