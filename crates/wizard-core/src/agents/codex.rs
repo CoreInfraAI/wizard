@@ -10,7 +10,6 @@ use crate::{
     },
     platform::{command_output, env_var_not_empty, find_executable, is_executable},
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
-    settings::Settings,
 };
 use anyhow::{Context as _, Result, ensure};
 use core::time::Duration;
@@ -21,6 +20,7 @@ use std::{
     sync::Mutex,
 };
 use toml_edit::DocumentMut;
+use wizard_settings::Settings;
 
 pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 

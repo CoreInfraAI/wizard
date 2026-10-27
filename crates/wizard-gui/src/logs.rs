@@ -41,10 +41,8 @@ pub(crate) async fn open_logs(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) async fn read_logs(app: tauri::AppHandle) -> Result<String, String> {
-    let path = app
-        .path()
-        .app_log_dir()
+pub(crate) async fn read_logs() -> Result<String, String> {
+    let path = wizard_settings::paths::logs_dir()
         .map_err(|error| error.to_string())?
         .join("Wizard.log");
     tauri::async_runtime::spawn_blocking(move || read_tail(&path))

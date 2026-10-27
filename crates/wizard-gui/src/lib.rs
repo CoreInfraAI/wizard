@@ -54,7 +54,8 @@ pub fn run_application() -> Result<()> {
             tauri_plugin_log::Builder::new()
                 .targets([
                     Target::new(TargetKind::Stdout),
-                    Target::new(TargetKind::LogDir {
+                    Target::new(TargetKind::Folder {
+                        path: wizard_settings::paths::logs_dir()?,
                         file_name: Some("Wizard".into()),
                     }),
                 ])

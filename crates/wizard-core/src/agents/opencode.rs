@@ -9,7 +9,6 @@ use crate::{
         find_executable,
     },
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
-    settings::Settings,
 };
 use anyhow::{Context as _, Result, bail, ensure};
 use core::time::Duration;
@@ -21,6 +20,7 @@ use std::{
     process::Stdio,
     sync::Mutex,
 };
+use wizard_settings::Settings;
 
 const PACKAGE: &str = "@coreinfra/opencode-plugin";
 const INSTALL_SOURCE: &str = "@coreinfra/opencode-plugin@latest";

@@ -2,13 +2,11 @@
 
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
-use wizard_core::{
-    hub::{
-        self, HubError, SessionUpdate,
-        login::{self as hub_login, CallbackServer, LoginError, Reply},
-    },
-    settings,
+use wizard_core::hub::{
+    self, HubError, SessionUpdate,
+    login::{self as hub_login, CallbackServer, LoginError, Reply},
 };
+use wizard_settings as settings;
 
 #[derive(Subcommand)]
 pub(crate) enum AccountCommand {

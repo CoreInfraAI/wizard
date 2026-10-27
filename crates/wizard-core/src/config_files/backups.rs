@@ -27,7 +27,9 @@ impl AgentKind {
             Self::Claude => "claude",
         };
 
-        Ok(crate::config_dir()?.join("backups").join(name))
+        Ok(wizard_settings::paths::config_dir()?
+            .join("backups")
+            .join(name))
     }
 
     fn ensure_directory(self) -> Result<PathBuf> {

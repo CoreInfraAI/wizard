@@ -10,7 +10,6 @@ use crate::{
     },
     platform::env_var_not_empty,
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
-    settings::Settings,
 };
 use anyhow::{Context as _, Result};
 use serde::Serialize;
@@ -19,6 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
+use wizard_settings::Settings;
 
 const HUB_URL: &str = "https://hub.coreinfra.ai/claude/api";
 const API_URL: &str = "https://hub.coreinfra.ai/anthropic/subscription/api";

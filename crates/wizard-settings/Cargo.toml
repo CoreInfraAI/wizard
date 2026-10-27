@@ -1,0 +1,19 @@
+[package]
+name = "wizard-settings"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme = false
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }

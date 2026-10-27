@@ -6,7 +6,6 @@ use crate::{
     config_files::{self, changes::FileChange},
     platform::{append_command_path, command_output, env_var_not_empty, find_executable},
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
-    settings::Settings,
 };
 use anyhow::{Context as _, Result, ensure};
 use core::time::Duration;
@@ -17,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
+use wizard_settings::Settings;
 
 const PACKAGE: &str = "npm:@coreinfra/pi-plugin";
 const INSTALL_SOURCE: &str = "npm:@coreinfra/pi-plugin@latest";

@@ -5,12 +5,12 @@ use super::{
 use crate::{
     config_files::{changes::FileChange, json},
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
-    settings::Settings,
 };
 use anyhow::{Context as _, Result, ensure};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Mutex};
+use wizard_settings::Settings;
 
 const HUB_URL: &str = "https://hub.coreinfra.ai/anthropic/api";
 const CONNECTION_KEYS: [&str; 5] = [

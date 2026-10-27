@@ -1,7 +1,7 @@
 //! Agent discovery and configuration shared by GUI and CLI.
 
-use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
+use wizard_settings::Settings;
 
 pub use crate::config_files::backups::{AgentKind as BackupAgent, Backup};
 

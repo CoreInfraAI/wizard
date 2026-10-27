@@ -6,7 +6,7 @@ use anyhow::{Context as _, Result, anyhow};
 use serde::Serialize;
 use tauri::Manager as _;
 use tokio::sync::Mutex;
-use wizard_core::settings::Settings;
+use wizard_settings::Settings;
 
 /// Actual state of each desktop app's listener.
 #[derive(Clone, Default, PartialEq, Eq, Serialize)]

@@ -8,8 +8,9 @@ use wizard_core::{
     agents::{self, HubMode, RoutingMode, TokenAgent, claude, codex, opencode, pi},
     hub,
     prepared_plan::PreparedPlan,
-    settings, validate_token,
+    validate_token,
 };
+use wizard_settings as settings;
 
 #[derive(Subcommand)]
 pub(crate) enum AgentCommand {

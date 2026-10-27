@@ -21,6 +21,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Show Wizard's configuration and log directories.
+    Paths,
     /// Manage the `CoreInfra` Hub account.
     #[command(disable_help_subcommand = true)]
     Account {
@@ -54,6 +56,14 @@ fn run(cli: Cli) -> Result<()> {
         .build()
         .context("failed to create CLI runtime")?;
     match cli.command {
+        Command::Paths => {
+            let paths = serde_json::json!({
+                "config_dir": wizard_settings::paths::config_dir()?,
+                "logs_dir": wizard_settings::paths::logs_dir()?,
+            });
+            println!("{}", serde_json::to_string_pretty(&paths)?);
+            Ok(())
+        }
         Command::Account { command } => account::run(&runtime, &command),
         Command::Agent { yes, command } => agent::run(&runtime, yes, command),
     }

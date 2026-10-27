@@ -37,6 +37,7 @@ missing_panics_doc = "allow"
 [workspace.dependencies]
 wizard-core = { path = "crates/wizard-core" }
 wizard-proxy = { path = "crates/wizard-proxy" }
+wizard-settings = { path = "crates/wizard-settings" }
 
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock"] }

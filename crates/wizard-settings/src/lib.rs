@@ -1,7 +1,10 @@
 //! Backend-only settings storage. Secrets (Hub session, proxy tokens) are stored as plaintext,
 //! never logged.
 
+pub mod paths;
+
 use anyhow::{Context as _, Result, anyhow, bail};
+use paths::settings_path;
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write as _, path::PathBuf};
 
@@ -45,10 +48,6 @@ impl Settings {
     pub fn local_proxy_enabled(&self) -> bool {
         self.claude_proxy_enabled.is_some() || self.codex_proxy_enabled.is_some()
     }
-}
-
-fn settings_path() -> Result<PathBuf> {
-    Ok(crate::config_dir()?.join("config.toml"))
 }
 
 pub fn load_from_file() -> Result<Settings> {

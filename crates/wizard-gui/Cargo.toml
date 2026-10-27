@@ -26,7 +26,7 @@ tauri-build = { workspace = true, features = [] }
 anyhow.workspace = true
 log.workspace = true
 serde.workspace = true
-serde_json = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] } # used by tauri::generate_context!()
 tauri = { workspace = true, features = [] }
 tauri-plugin-log.workspace = true
 tauri-plugin-single-instance.workspace = true
@@ -34,6 +34,7 @@ tauri-plugin-updater.workspace = true
 tokio.workspace = true
 wizard-core.workspace = true
 wizard-proxy.workspace = true
+wizard-settings.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tauri = { workspace = true, features = ["tray-icon"] }

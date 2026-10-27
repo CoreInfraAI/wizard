@@ -2,7 +2,7 @@ use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
 use anyhow::{Context as _, Result, anyhow, bail};
 use std::sync::Mutex;
 use tauri::Manager as _;
-use wizard_core::settings::{self, Settings};
+use wizard_settings::{self as settings, Settings};
 
 static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 

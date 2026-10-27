@@ -5,7 +5,6 @@
 
 pub mod login;
 
-use crate::settings::Settings;
 use anyhow::anyhow;
 use cookie::Cookie;
 use core::time::Duration;
@@ -15,6 +14,7 @@ use reqwest::{
     header::{CONTENT_TYPE, COOKIE, HeaderMap, SET_COOKIE},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use wizard_settings::Settings;
 
 const HUB_ORIGIN: &str = "https://hub.coreinfra.ai";
 const PROFILE_PATH: &str = "/hub/api/profile";
