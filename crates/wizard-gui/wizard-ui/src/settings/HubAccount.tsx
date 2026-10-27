@@ -1,18 +1,19 @@
 import { useState } from "react";
-import clsx from "clsx";
+import { MenuButton } from "@headlessui/react";
+import { ArrowRightEndOnRectangleIcon, ArrowRightStartOnRectangleIcon, ChevronUpIcon } from "@heroicons/react/16/solid";
 import { loginHubAccount, logoutHubAccount, useHubAccount } from "./hub_account";
-import { Badge } from "../components/catalyst/badge";
-import { Button } from "../components/catalyst/button";
-import { Heading } from "../components/catalyst/heading";
-import { Strong, Text } from "../components/catalyst/text";
+import { Avatar } from "../components/catalyst/avatar";
+import { Dropdown, DropdownDescription, DropdownItem, DropdownLabel, DropdownMenu } from "../components/catalyst/dropdown";
+import { SidebarItem } from "../components/catalyst/sidebar";
 import { ErrorText } from "../components/ErrorText";
 
-export function HubAccount({ className }: { className?: string }) {
+// Account state and the sign-in/out action, shared by the sidebar and agent pages.
+export function useHubAccountControl() {
   const { account, error: stateError } = useHubAccount();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
 
-  async function changeAccount() {
+  async function change() {
     if (!account || submitting) return;
     setSubmitting(true);
     setError(undefined);
@@ -26,32 +27,61 @@ export function HubAccount({ className }: { className?: string }) {
     }
   }
 
+  return {
+    account,
+    signedIn: account?.signed_in === true,
+    submitting,
+    error: stateError || error || account?.error || undefined,
+    change: () => void change(),
+  };
+}
+
+export type HubAccountControl = ReturnType<typeof useHubAccountControl>;
+
+// Sidebar footer: the signed-in hub with a menu, or the sign-in item.
+export function HubAccountMenu({ hub }: { hub: HubAccountControl }) {
+  const { account } = hub;
+  const hubName = account?.profile?.personal_hub_name;
+
   return (
-    <section className={clsx(className, "min-w-0 space-y-3 rounded-lg border border-zinc-200 bg-white p-5 sm:p-6 dark:border-zinc-800 dark:bg-zinc-900")}>
-      <div className="flex flex-wrap items-center gap-2">
-        <Heading level={2}>CoreInfra AI Hub</Heading>
-        <Badge color={account?.signed_in ? "green" : "zinc"}>
-          {stateError ? "Недоступен" : !account ? "Загрузка…" : account.pending ? "Ожидание входа…" : account.signed_in ? "Вход выполнен" : "Вход не выполнен"}
-        </Badge>
-      </div>
+    <>
       {account?.signed_in ? (
-        <div className="flex items-center gap-3">
-          {account.profile && (
-            <Text className="min-w-0 break-words">
-              <Strong>Хаб: {account.profile.personal_hub_name}</Strong>
-            </Text>
-          )}
-          <Button plain type="button" className="shrink-0" disabled={submitting} onClick={() => void changeAccount()}>
-            Выйти
-          </Button>
-        </div>
+        <Dropdown>
+          <MenuButton as={SidebarItem}>
+            <span className="flex min-w-0 items-center gap-3">
+              <Avatar initials={(hubName ?? "C").slice(0, 1).toUpperCase()} square className="size-10 bg-zinc-900 text-white dark:bg-white dark:text-zinc-900" />
+              <span className="min-w-0">
+                <span className="block truncate text-sm/5 font-medium text-zinc-950 dark:text-white">{hubName ?? "CoreInfra AI Hub"}</span>
+                <span className="block truncate text-xs/5 font-normal text-zinc-500 dark:text-zinc-400">
+                  {hubName ? "CoreInfra AI Hub" : "Вход выполнен"}
+                </span>
+              </span>
+            </span>
+            <ChevronUpIcon />
+          </MenuButton>
+          <DropdownMenu className="min-w-64" anchor="top start">
+            <DropdownItem disabled={hub.submitting} onClick={hub.change}>
+              <ArrowRightStartOnRectangleIcon />
+              <DropdownLabel>Выйти</DropdownLabel>
+              <DropdownDescription>Выход из аккаунта не изменяет настройки агентов.</DropdownDescription>
+            </DropdownItem>
+          </DropdownMenu>
+        </Dropdown>
       ) : (
-        <Button outline type="button" disabled={!account || submitting} onClick={() => void changeAccount()}>
-          Войти через CoreInfra Hub
-        </Button>
+        <SidebarItem disabled={!account || hub.submitting} onClick={hub.change} className="*:data-disabled:opacity-50">
+          <span className="flex min-w-0 items-center gap-3">
+            <Avatar src="/icon.svg" square className="size-10" />
+            <span className="min-w-0">
+              <span className="block truncate text-sm/5 font-medium text-zinc-950 dark:text-white">
+                {!account ? (hub.error ? "Хаб недоступен" : "Загрузка…") : account.pending ? "Ожидание входа…" : "Войти"}
+              </span>
+              <span className="block truncate text-xs/5 font-normal text-zinc-500 dark:text-zinc-400">CoreInfra AI Hub</span>
+            </span>
+          </span>
+          <ArrowRightEndOnRectangleIcon />
+        </SidebarItem>
       )}
-      <Text>{account?.signed_in ? "Выход из аккаунта не изменяет настройки агентов." : "Вход в аккаунт не изменяет настройки агентов."}</Text>
-      {(stateError || error || account?.error) && <ErrorText>{stateError || error || account?.error}</ErrorText>}
-    </section>
+      {hub.error && <div className="px-2"><ErrorText>{hub.error}</ErrorText></div>}
+    </>
   );
 }
