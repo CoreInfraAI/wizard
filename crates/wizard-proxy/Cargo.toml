@@ -18,3 +18,4 @@ hyper-util = { workspace = true, features = ["tokio"] }
 rustls-native-certs.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros"] }
 tokio-rustls.workspace = true
+url.workspace = true

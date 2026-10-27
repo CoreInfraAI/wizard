@@ -1,4 +1,8 @@
-//! Local HTTP forward proxy. All traffic goes through the authenticated `CoreInfra` upstream.
+//! Local HTTP forward proxy. Listed domains never connect directly: allowed ports
+//! require CONNECT through the authenticated `CoreInfra` upstream (other methods
+//! return 405 with Allow: CONNECT); unlisted ports return 403 for every method.
+//! Unmatched domains and explicit IP addresses connect directly, without proxy credentials.
+//! Malformed destinations are rejected before opening a connection.
 //! Dropping the handle requests shutdown; use [`Proxy::stop`] to wait for all sockets to close.
 
 extern crate alloc;
@@ -10,6 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
+mod destination;
 mod http;
 mod upstream;
 

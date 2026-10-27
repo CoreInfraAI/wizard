@@ -1,30 +1,43 @@
-use crate::upstream::Upstream;
+use crate::{
+    destination::{Route, route},
+    upstream::Upstream,
+};
 use alloc::sync::Arc;
 use core::{convert::Infallible, future::Future, pin::Pin, time::Duration};
 use http_body_util::{BodyExt, Full, combinators::UnsyncBoxBody};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
-    CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, PROXY_AUTHORIZATION,
+    ALLOW, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, PROXY_AUTHORIZATION,
     TRANSFER_ENCODING, USER_AGENT,
 };
+use hyper::http::uri::Authority;
 use hyper::service::service_fn;
 use hyper::upgrade::{OnUpgrade, Upgraded};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use std::io;
-use tokio::io::copy_bidirectional;
+use tokio::io::{AsyncRead, AsyncWrite, copy_bidirectional};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
+
+#[cfg(test)]
+#[path = "http_test.rs"]
+mod tests;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 type Body = UnsyncBoxBody<Bytes, hyper::Error>;
 type Driver = Pin<Box<dyn Future<Output = Result<(), hyper::Error>> + Send>>;
 
+enum Remote {
+    Direct(TcpStream),
+    Upstream(Upgraded),
+}
+
 struct Tunnel {
     client: OnUpgrade,
-    upstream: Upgraded,
+    remote: Remote,
 }
 
 pub(crate) async fn serve_client(stream: TcpStream, upstream: Arc<Upstream>) {
@@ -45,27 +58,32 @@ pub(crate) async fn serve_client(stream: TcpStream, upstream: Arc<Upstream>) {
 
     // Drive both sides in this one task. Cancelling it drops both sockets, with no
     // detached upstream tasks. Each client connection serves one request or tunnel.
-    let mut driver = tokio::select! {
-        _ = &mut connection => return,
-        driver = drivers.recv() => match driver {
-            Some(driver) => driver,
-            None => return,
-        },
+    // A direct CONNECT has no HTTP client driver; it hands us a TCP socket
+    // when the server connection upgrades.
+    let driver = tokio::select! {
+        _ = &mut connection => None,
+        driver = drivers.recv() => driver,
     };
-    tokio::select! {
-        _ = &mut connection => {},
-        _ = &mut driver => { let _ = (&mut connection).await; },
+    if let Some(mut driver) = driver {
+        tokio::select! {
+            _ = &mut connection => {},
+            _ = &mut driver => { let _ = (&mut connection).await; },
+        }
     }
 
     if let Ok(tunnel) = tunnels.try_recv()
         && let Ok(client) = tunnel.client.await
     {
         // TLS and application protocols inside CONNECT are opaque bytes.
-        let _ = copy_bidirectional(
-            &mut TokioIo::new(client),
-            &mut TokioIo::new(tunnel.upstream),
-        )
-        .await;
+        let mut client = TokioIo::new(client);
+        match tunnel.remote {
+            Remote::Direct(mut remote) => {
+                let _ = copy_bidirectional(&mut client, &mut remote).await;
+            }
+            Remote::Upstream(remote) => {
+                let _ = copy_bidirectional(&mut client, &mut TokioIo::new(remote)).await;
+            }
+        }
     }
 }
 
@@ -86,19 +104,22 @@ async fn handle(
             return error_response(StatusCode::BAD_REQUEST);
         }
 
+        let Ok(route) = route(&request.uri().to_string()) else {
+            return error_response(StatusCode::BAD_REQUEST);
+        };
         let result = timeout(
             CONNECT_TIMEOUT,
-            connect_tunnel(request.uri().clone(), &upstream, driver),
+            connect_remote(request.uri().clone(), route, &upstream, driver),
         )
         .await;
         let remote = match result {
             Ok(Ok(remote)) => remote,
-            Ok(Err(_)) => return error_response(StatusCode::BAD_GATEWAY),
+            Ok(Err(status)) => return error_response(status),
             Err(_) => return error_response(StatusCode::GATEWAY_TIMEOUT),
         };
         let tunnel = Tunnel {
             client: hyper::upgrade::on(&mut request),
-            upstream: remote,
+            remote,
         };
         if tunnels.send(tunnel).await.is_err() {
             return error_response(StatusCode::BAD_GATEWAY);
@@ -106,15 +127,36 @@ async fn handle(
         return Response::new(empty_body());
     }
 
-    let Some(authority) = request.uri().authority() else {
+    let Some(authority) = request.uri().authority().cloned() else {
         return error_response(StatusCode::BAD_REQUEST);
     };
     if request.uri().scheme_str() != Some("http")
         || authority.host().is_empty()
         || authority.as_str().contains('@')
+        || authority.port_u16() == Some(0)
     {
         return error_response(StatusCode::BAD_REQUEST);
     }
+    // Only an absent port defaults to 80; malformed explicit ports must fail.
+    let destination = if authority.as_str() == authority.host() {
+        format!("{authority}:80")
+    } else {
+        authority.to_string()
+    };
+    match route(&destination) {
+        Err(_) => return error_response(StatusCode::BAD_REQUEST),
+        Ok(Route::Block) => return error_response(StatusCode::FORBIDDEN),
+        Ok(Route::Proxy) => {
+            // Hub supports CONNECT, not absolute-form HTTP forwarding.
+            let mut response = error_response(StatusCode::METHOD_NOT_ALLOWED);
+            response
+                .headers_mut()
+                .insert(ALLOW, HeaderValue::from_static("CONNECT"));
+            return response;
+        }
+        Ok(Route::Direct) => {}
+    }
+
     let Ok(host) = HeaderValue::from_str(authority.as_str()) else {
         return error_response(StatusCode::BAD_REQUEST);
     };
@@ -122,14 +164,25 @@ async fn handle(
         return error_response(StatusCode::BAD_REQUEST);
     }
     request.headers_mut().insert(HOST, host);
-    request
-        .headers_mut()
-        .insert(PROXY_AUTHORIZATION, upstream.authorization.clone());
+
+    // Origin servers receive origin-form, not the proxy's absolute-form URI.
+    let path = request
+        .uri()
+        .path_and_query()
+        .map_or("/", |path| path.as_str());
+    let Ok(uri) = Uri::builder().path_and_query(path).build() else {
+        return error_response(StatusCode::BAD_REQUEST);
+    };
+    *request.uri_mut() = uri;
     request
         .headers_mut()
         .insert(CONNECTION, HeaderValue::from_static("close"));
 
-    let mut sender = match timeout(CONNECT_TIMEOUT, open_upstream(&upstream, driver)).await {
+    let connection = async {
+        let stream = connect_direct(&authority, 80).await?;
+        open_connection(stream, driver).await
+    };
+    let mut sender = match timeout(CONNECT_TIMEOUT, connection).await {
         Ok(Ok(sender)) => sender,
         Ok(Err(_)) => return error_response(StatusCode::BAD_GATEWAY),
         Err(_) => return error_response(StatusCode::GATEWAY_TIMEOUT),
@@ -163,11 +216,54 @@ fn valid_connect_target(uri: &Uri) -> bool {
         })
 }
 
+async fn connect_direct(authority: &Authority, default_port: u16) -> io::Result<TcpStream> {
+    let host = authority.host();
+    // HTTP authorities retain IPv6 brackets; the socket resolver needs the bare IP.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    TcpStream::connect((host, authority.port_u16().unwrap_or(default_port))).await
+}
+
+async fn connect_remote(
+    target: Uri,
+    route: Route,
+    upstream: &Upstream,
+    driver: mpsc::Sender<Driver>,
+) -> Result<Remote, StatusCode> {
+    match route {
+        Route::Block => Err(StatusCode::FORBIDDEN),
+        Route::Proxy => {
+            // An upstream failure must never fall back to a direct connection.
+            connect_tunnel(target, upstream, driver)
+                .await
+                .map(Remote::Upstream)
+                .map_err(|_| StatusCode::BAD_GATEWAY)
+        }
+        Route::Direct => {
+            let authority = target.authority().ok_or(StatusCode::BAD_REQUEST)?;
+            let port = authority.port_u16().ok_or(StatusCode::BAD_REQUEST)?;
+            connect_direct(authority, port)
+                .await
+                .map(Remote::Direct)
+                .map_err(|_| StatusCode::BAD_GATEWAY)
+        }
+    }
+}
+
 async fn open_upstream(
     upstream: &Upstream,
     driver: mpsc::Sender<Driver>,
 ) -> io::Result<hyper::client::conn::http1::SendRequest<Body>> {
     let stream = upstream.connect().await?;
+    open_connection(stream, driver).await
+}
+
+async fn open_connection(
+    stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    driver: mpsc::Sender<Driver>,
+) -> io::Result<hyper::client::conn::http1::SendRequest<Body>> {
     let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .map_err(io::Error::other)?;
