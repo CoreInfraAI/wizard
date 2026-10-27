@@ -72,7 +72,6 @@ pub fn run_application() -> Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(claude_desktop_install::InstallManager::default()))
         .manage(proxy::ProxyState::default())
-        .manage(revision_signal::RevisionSignal::new(proxy::Proxy::default()))
         .manage(Arc::new(revision_signal::RevisionSignal::new(
             updater::UpdateState::Checking,
         )))
@@ -99,11 +98,13 @@ pub fn run_application() -> Result<()> {
             #[cfg(target_os = "linux")]
             let tray_enabled = false;
 
-            #[cfg(unix)]
-            proxy::raise_open_file_limit();
-            if let Err(error) = tauri::async_runtime::block_on(proxy::sync(app.handle())) {
+            if let Err(error) = tauri::async_runtime::block_on(async {
+                wizard_proxy_daemon::create_daemon().await?;
+                proxy::sync(app.handle()).await
+            }) {
                 log::error!("proxy startup failed: {error:#}");
             }
+            proxy::start_observer(app.handle());
 
             if !minimized || !tray_enabled {
                 request_main_window(app.handle());
@@ -153,11 +154,7 @@ pub fn run_application() -> Result<()> {
         }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => request_main_window(app),
-        tauri::RunEvent::Exit => {
-            if let Err(error) = tauri::async_runtime::block_on(proxy::stop(app)) {
-                log::error!("proxy shutdown failed: {error:#}");
-            }
-        }
+        tauri::RunEvent::Exit => proxy::stop_observer(app),
         _ => {}
     });
     Ok(())

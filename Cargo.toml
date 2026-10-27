@@ -37,11 +37,13 @@ missing_panics_doc = "allow"
 [workspace.dependencies]
 wizard-core = { path = "crates/wizard-core" }
 wizard-proxy = { path = "crates/wizard-proxy" }
+wizard-proxy-daemon = { path = "crates/wizard-proxy-daemon" }
 wizard-settings = { path = "crates/wizard-settings" }
 
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock"] }
 dirs = "6"
+file-rotate = "0.8.0"
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
 libc = "0.2.189"
 base64 = "0.22.1"
@@ -52,6 +54,9 @@ http-body-util = "0.1.5"
 hyper = "1.11.1"
 hyper-util = "0.1.20"
 minisign-verify = "0.2.5"
+block2 = "0.6.2"
+objc2 = "0.6.4"
+objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation", "block2"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSArray"] }
 plist = "1.10.1"

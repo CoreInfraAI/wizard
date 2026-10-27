@@ -11,7 +11,7 @@ use wizard_core::hub;
 #[derive(Parser)]
 #[command(
     version,
-    about = "CoreInfra Wizard backend CLI. Close the GUI before changing settings.",
+    about = "CoreInfra Wizard backend CLI. Close the GUI before running.",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -41,6 +41,12 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    if let Some(arg1) = std::env::args_os().nth(1)
+        && arg1 == "--proxy"
+    {
+        return wizard_proxy_daemon::main();
+    }
+
     let cli = Cli::parse();
     if let Err(error) = run(cli) {
         eprintln!("wizard-cli: {error:#}");
