@@ -55,7 +55,10 @@
     "targets": "all",
     "createUpdaterArtifacts": false,
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "files": {
+        "Library/LaunchAgents/ai.coreinfra.wizard.proxy.plist": "ai.coreinfra.wizard.proxy.plist"
+      }
     },
     "icon": [
       "icons/32x32.png",

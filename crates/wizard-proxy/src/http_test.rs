@@ -1,10 +1,9 @@
-use crate::{Proxy, serve, upstream};
+use crate::{Proxy, ProxySlot, run_proxy_session, spawn, upstream};
 use alloc::sync::Arc;
 use core::{net::SocketAddr, time::Duration};
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{oneshot, watch};
 use tokio::time::timeout;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
@@ -18,26 +17,11 @@ async fn start_proxy() -> io::Result<(SocketAddr, Proxy)> {
     .expect("TLS versions")
     .with_root_certificates(RootCertStore::empty())
     .with_no_client_auth();
-    let upstream = Arc::new(upstream::Upstream::new(
-        tls,
-        upstream::authorization("test-token")?,
-    ));
+    let slot = Arc::new(ProxySlot::default());
+    slot.set_token(Some("test-token"), &tls).await?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
-    let (shutdown, receiver) = oneshot::channel();
-    let (finished, stopped) = watch::channel(());
-    let task = tokio::spawn(async move {
-        let _finished = finished;
-        serve(listener, upstream, receiver).await
-    });
-    Ok((
-        address,
-        Proxy {
-            shutdown,
-            task,
-            stopped,
-        },
-    ))
+    Ok((address, spawn(listener, slot, tls, None)))
 }
 
 async fn read_head(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<String> {
@@ -232,6 +216,9 @@ async fn malformed_destination_is_rejected_before_dialing() -> io::Result<()> {
     timeout(Duration::from_secs(5), async {
         let (address, proxy) = start_proxy().await?;
         for request in [
+            // Standalone (GUI-owned) listeners never expose management routes.
+            "GET /status HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /reload HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
             "CONNECT example.com HTTP/1.1\r\nHost: example.com\r\n\r\n",
             "CONNECT 127.0.0.1:0 HTTP/1.1\r\nHost: 127.0.0.1:0\r\n\r\n",
             "CONNECT user@example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
@@ -248,4 +235,140 @@ async fn malformed_destination_is_rejected_before_dialing() -> io::Result<()> {
         }
         proxy.stop().await
     }).await.expect("invalid destination timed out")
+}
+
+async fn open_tunnel(
+    address: SocketAddr,
+    origin: &TcpListener,
+) -> io::Result<(TcpStream, TcpStream)> {
+    let target = origin.local_addr()?;
+    let mut client = TcpStream::connect(address).await?;
+    client
+        .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+        .await?;
+    let (remote, _) = origin.accept().await?;
+    assert!(read_head(&mut client).await?.starts_with("HTTP/1.1 200 "));
+    Ok((client, remote))
+}
+
+async fn exchange(client: &mut TcpStream, remote: &mut TcpStream) -> io::Result<()> {
+    client.write_all(b"ping").await?;
+    let mut bytes = [0; 4];
+    remote.read_exact(&mut bytes).await?;
+    assert_eq!(&bytes, b"ping");
+    remote.write_all(b"pong").await?;
+    client.read_exact(&mut bytes).await?;
+    assert_eq!(&bytes, b"pong");
+    Ok(())
+}
+
+#[tokio::test]
+async fn token_changes_drain_sessions_but_preserve_the_listener() -> io::Result<()> {
+    timeout(Duration::from_secs(5), async {
+        let origin = TcpListener::bind("127.0.0.1:0").await?;
+        let (address, mut proxy) = start_proxy().await?;
+        let (mut client, mut remote) = open_tunnel(address, &origin).await?;
+
+        proxy.set_token(Some("test-token")).await?;
+        exchange(&mut client, &mut remote).await?;
+        // Failed preparation must not publish a replacement or cancel sessions.
+        assert!(proxy.set_token(Some("")).await.is_err());
+        exchange(&mut client, &mut remote).await?;
+
+        proxy.set_token(Some("replacement-token")).await?;
+        let mut byte = [0];
+        assert_eq!(client.read(&mut byte).await?, 0);
+        assert_eq!(remote.read(&mut byte).await?, 0);
+        assert!(
+            proxy
+                .slot
+                .current
+                .read()
+                .await
+                .as_ref()
+                .is_some_and(|generation| {
+                    generation.upstream.authorization
+                        == upstream::authorization("replacement-token")
+                            .expect("fixture authorization")
+                })
+        );
+        let (mut client, mut remote) = open_tunnel(address, &origin).await?;
+        exchange(&mut client, &mut remote).await?;
+
+        proxy.set_token(None).await?;
+        assert_eq!(client.read(&mut byte).await?, 0);
+        assert_eq!(remote.read(&mut byte).await?, 0);
+        assert!(!proxy.task.is_finished());
+        assert!(TcpListener::bind(address).await.is_err());
+        let target = origin.local_addr()?;
+        for request in [
+            format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n"),
+            format!("GET http://{target}/ HTTP/1.1\r\nHost: {target}\r\n\r\n"),
+        ] {
+            let mut client = TcpStream::connect(address).await?;
+            client.write_all(request.as_bytes()).await?;
+            assert!(read_head(&mut client).await?.starts_with("HTTP/1.1 503 "));
+        }
+
+        proxy.set_token(Some("enabled-again")).await?;
+        let (mut client, mut remote) = open_tunnel(address, &origin).await?;
+        exchange(&mut client, &mut remote).await?;
+        proxy.stop().await
+    })
+    .await
+    .expect("token update timed out")
+}
+
+#[tokio::test]
+async fn retired_generation_cannot_start_a_late_session() -> io::Result<()> {
+    timeout(Duration::from_secs(5), async {
+        let (_, mut proxy) = start_proxy().await?;
+        let old = proxy
+            .slot
+            .current
+            .read()
+            .await
+            .clone()
+            .expect("enabled proxy");
+        proxy.set_token(Some("replacement-token")).await?;
+
+        let mut polled = false;
+        run_proxy_session(old, async { polled = true }).await;
+        assert!(!polled, "a retired generation must not perform proxy I/O");
+        proxy.stop().await
+    })
+    .await
+    .expect("late session timed out")
+}
+
+#[tokio::test]
+async fn token_update_waits_for_session_future_to_be_dropped() -> io::Result<()> {
+    timeout(Duration::from_secs(5), async {
+        let (_, mut proxy) = start_proxy().await?;
+        let old = proxy
+            .slot
+            .current
+            .read()
+            .await
+            .clone()
+            .expect("enabled proxy");
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (held, mut released) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(run_proxy_session(old, async move {
+            let _held = held;
+            let _ = started.send(());
+            core::future::pending::<()>().await;
+        }));
+        ready.await.map_err(io::Error::other)?;
+
+        proxy.set_token(None).await?;
+        assert!(matches!(
+            released.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        task.await.map_err(io::Error::other)?;
+        proxy.stop().await
+    })
+    .await
+    .expect("session cleanup timed out")
 }

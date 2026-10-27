@@ -1,5 +1,8 @@
 use crate::{
+    ProxySlot, ServerState,
+    control::{Command, TIMEOUT},
     destination::{Route, route},
+    run_proxy_session,
     upstream::Upstream,
 };
 use alloc::sync::Arc;
@@ -10,15 +13,15 @@ use hyper::header::{
     ALLOW, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, PROXY_AUTHORIZATION,
     TRANSFER_ENCODING, USER_AGENT,
 };
-use hyper::http::uri::Authority;
+use hyper::http::uri::{Authority, PathAndQuery};
 use hyper::service::service_fn;
 use hyper::upgrade::{OnUpgrade, Upgraded};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode, Uri};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::io;
 use tokio::io::{AsyncRead, AsyncWrite, copy_bidirectional};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 #[cfg(test)]
@@ -40,59 +43,223 @@ struct Tunnel {
     remote: Remote,
 }
 
-pub(crate) async fn serve_client(stream: TcpStream, upstream: Arc<Upstream>) {
+// The HTTP service announces the request kind before starting any proxy I/O.
+// The connection task then supplies an upstream or a management response.
+enum Dispatch {
+    Proxy(oneshot::Sender<Option<Arc<Upstream>>>),
+    Management(Command, oneshot::Sender<Response<Body>>),
+}
+
+pub(crate) async fn serve_client(
+    stream: TcpStream,
+    slot: Arc<ProxySlot>,
+    management: Option<Arc<ServerState>>,
+) {
+    let managed = management.is_some();
+    let address = stream.local_addr().ok().map(|address| address.to_string());
+    let (dispatch, mut requests) = mpsc::channel(1);
     let (driver_sender, mut drivers) = mpsc::channel::<Driver>(1);
     let (tunnel_sender, mut tunnels) = mpsc::channel::<Tunnel>(1);
-    let service = service_fn(move |request| {
-        let upstream = Arc::clone(&upstream);
+    let service = service_fn(move |request: Request<Incoming>| {
+        let dispatch = dispatch.clone();
+        let address = address.clone();
         let driver_sender = driver_sender.clone();
         let tunnel_sender = tunnel_sender.clone();
-        async move { Ok::<_, Infallible>(handle(request, upstream, driver_sender, tunnel_sender).await) }
+        async move {
+            let response = if managed
+                && request.method() != Method::CONNECT
+                && request.uri().scheme().is_none()
+                && request.uri().authority().is_none()
+            {
+                match management_command(&request, address.as_deref()) {
+                    Err((status, allow)) => {
+                        let mut response = error_response(status);
+                        if let Some(allow) = allow {
+                            response
+                                .headers_mut()
+                                .insert(ALLOW, HeaderValue::from_static(allow));
+                        }
+                        response
+                    }
+                    Ok(command) => {
+                        let (reply, response) = oneshot::channel();
+                        if dispatch
+                            .send(Dispatch::Management(command, reply))
+                            .await
+                            .is_err()
+                        {
+                            return Ok::<_, Infallible>(error_response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                            ));
+                        }
+                        response
+                            .await
+                            .unwrap_or_else(|_| error_response(StatusCode::SERVICE_UNAVAILABLE))
+                    }
+                }
+            } else {
+                let (ready, upstream) = oneshot::channel();
+                if dispatch.send(Dispatch::Proxy(ready)).await.is_err() {
+                    return Ok::<_, Infallible>(error_response(StatusCode::SERVICE_UNAVAILABLE));
+                }
+                handle(
+                    request,
+                    upstream.await.unwrap_or(None),
+                    driver_sender,
+                    tunnel_sender,
+                )
+                .await
+            };
+            Ok::<_, Infallible>(response)
+        }
     });
     let mut builder = hyper::server::conn::http1::Builder::new();
     builder.keep_alive(false);
+    if managed {
+        builder
+            .timer(TokioTimer::new())
+            .header_read_timeout(TIMEOUT);
+    }
     let connection = builder
         .serve_connection(TokioIo::new(stream), service)
         .with_upgrades();
-    tokio::pin!(connection);
-
-    // Drive both sides in this one task. Cancelling it drops both sockets, with no
-    // detached upstream tasks. Each client connection serves one request or tunnel.
-    // A direct CONNECT has no HTTP client driver; it hands us a TCP socket
-    // when the server connection upgrades.
-    let driver = tokio::select! {
-        _ = &mut connection => None,
-        driver = drivers.recv() => driver,
+    // Own the complete connection future, not just its pinned reference, so the
+    // generation wrapper can drop every socket before releasing its read guard.
+    let mut session = Box::pin(async move {
+        tokio::pin!(connection);
+        let driver = tokio::select! {
+            _ = &mut connection => None,
+            driver = drivers.recv() => driver,
+        };
+        if let Some(mut driver) = driver {
+            tokio::select! {
+                _ = &mut connection => {},
+                _ = &mut driver => { let _ = (&mut connection).await; },
+            }
+        }
+        if let Ok(tunnel) = tunnels.try_recv()
+            && let Ok(client) = tunnel.client.await
+        {
+            let mut client = TokioIo::new(client);
+            match tunnel.remote {
+                Remote::Direct(mut remote) => {
+                    let _ = copy_bidirectional(&mut client, &mut remote).await;
+                }
+                Remote::Upstream(remote) => {
+                    let _ = copy_bidirectional(&mut client, &mut TokioIo::new(remote)).await;
+                }
+            }
+        }
+    });
+    let request = tokio::select! {
+        request = requests.recv() => request,
+        () = &mut session => return,
     };
-    if let Some(mut driver) = driver {
-        tokio::select! {
-            _ = &mut connection => {},
-            _ = &mut driver => { let _ = (&mut connection).await; },
+    match request {
+        Some(Dispatch::Proxy(ready)) => {
+            let generation = slot.current.read().await.clone();
+            if let Some(generation) = generation {
+                let upstream = Arc::clone(&generation.upstream);
+                run_proxy_session(generation, async move {
+                    let _ = ready.send(Some(upstream));
+                    session.await;
+                })
+                .await;
+            } else {
+                let _ = ready.send(None);
+                session.await;
+            }
         }
+        Some(Dispatch::Management(command, reply)) => {
+            let Some(state) = management else { return };
+            let _active = state.management.read().await;
+            // Ownership in this inner scope ensures socket cleanup precedes the
+            // management guard's release, including on task cancellation.
+            {
+                let session = session;
+                let stopping = *state.stopping.borrow();
+                let response = if stopping {
+                    error_response(StatusCode::SERVICE_UNAVAILABLE)
+                } else {
+                    match command {
+                        Command::Status => json_response(&state.status_with_lock().await),
+                        Command::Reload => json_response(&state.reload_with_lock().await),
+                    }
+                };
+                // Do not race accepted work against client disconnects. Only the
+                // reply attempt is bounded; shutdown waits on the active guard.
+                let _ = reply.send(response);
+                let _ = timeout(TIMEOUT, session).await;
+            }
+        }
+        None => {}
     }
+}
 
-    if let Ok(tunnel) = tunnels.try_recv()
-        && let Ok(client) = tunnel.client.await
+fn management_command(
+    request: &Request<Incoming>,
+    address: Option<&str>,
+) -> Result<Command, (StatusCode, Option<&'static str>)> {
+    if request
+        .headers()
+        .get(HOST)
+        .and_then(|host| host.to_str().ok())
+        != address
+        || address.is_none()
+        || request.headers().contains_key(TRANSFER_ENCODING)
+        || request
+            .headers()
+            .get(CONTENT_LENGTH)
+            .is_some_and(|length| length != "0")
     {
-        // TLS and application protocols inside CONNECT are opaque bytes.
-        let mut client = TokioIo::new(client);
-        match tunnel.remote {
-            Remote::Direct(mut remote) => {
-                let _ = copy_bidirectional(&mut client, &mut remote).await;
-            }
-            Remote::Upstream(remote) => {
-                let _ = copy_bidirectional(&mut client, &mut TokioIo::new(remote)).await;
-            }
-        }
+        return Err((StatusCode::BAD_REQUEST, None));
     }
+    let (method, command) = match request.uri().path_and_query().map(PathAndQuery::as_str) {
+        Some("/status") => (Method::GET, Command::Status),
+        Some("/reload") => (Method::POST, Command::Reload),
+        _ => return Err((StatusCode::NOT_FOUND, None)),
+    };
+    if request.method() != method {
+        let allow = match command {
+            Command::Status => "GET",
+            Command::Reload => "POST",
+        };
+        return Err((StatusCode::METHOD_NOT_ALLOWED, Some(allow)));
+    }
+    Ok(command)
+}
+
+fn json_response(value: &impl serde::Serialize) -> Response<Body> {
+    let Ok(bytes) = serde_json::to_vec(value) else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let mut response = Response::new(
+        Full::new(Bytes::from(bytes))
+            .map_err(|never| match never {})
+            .boxed_unsync(),
+    );
+    response
+        .headers_mut()
+        .insert(CONNECTION, HeaderValue::from_static("close"));
+    response
+        .headers_mut()
+        .insert("content-type", HeaderValue::from_static("application/json"));
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn handle(
     mut request: Request<Incoming>,
-    upstream: Arc<Upstream>,
+    upstream: Option<Arc<Upstream>>,
     driver: mpsc::Sender<Driver>,
     tunnels: mpsc::Sender<Tunnel>,
 ) -> Response<Body> {
+    let Some(upstream) = upstream else {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE);
+    };
+
     if request.method() == Method::CONNECT {
         if !valid_connect_target(request.uri())
             || request.headers().contains_key(TRANSFER_ENCODING)

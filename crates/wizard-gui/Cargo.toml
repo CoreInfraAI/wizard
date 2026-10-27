@@ -34,6 +34,7 @@ tauri-plugin-updater.workspace = true
 tokio.workspace = true
 wizard-core.workspace = true
 wizard-proxy.workspace = true
+wizard-proxy-daemon.workspace = true
 wizard-settings.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]

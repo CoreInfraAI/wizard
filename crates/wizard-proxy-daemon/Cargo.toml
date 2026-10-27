@@ -1,0 +1,25 @@
+[package]
+name = "wizard-proxy-daemon"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+file-rotate.workspace = true
+log.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "signal"] }
+wizard-proxy.workspace = true
+wizard-settings.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-service-management.workspace = true
