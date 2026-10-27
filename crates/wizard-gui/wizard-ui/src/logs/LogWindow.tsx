@@ -44,7 +44,7 @@ export function LogWindow() {
   }, [text, follow]);
 
   return (
-    <main className="flex h-dvh flex-col gap-4 p-6">
+    <main className="flex h-dvh flex-col gap-4 bg-zinc-100 p-6 dark:bg-zinc-950">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Heading>Журнал</Heading>
         <div className="flex flex-wrap items-center gap-4">

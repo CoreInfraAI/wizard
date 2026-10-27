@@ -19,8 +19,8 @@
       {
         "title": "CoreInfra Wizard",
         "create": false,
-        "width": 1000,
-        "height": 700
+        "width": 1100,
+        "height": 720
       }
     ],
     "security": {

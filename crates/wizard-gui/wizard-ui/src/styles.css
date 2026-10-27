@@ -23,7 +23,11 @@
 }
 
 @layer base {
-  body {
-    @apply bg-zinc-100 text-zinc-950 dark:bg-zinc-950 dark:text-white;
+  :root {
+    color-scheme: light dark;
+  }
+
+  html {
+    @apply bg-white lg:bg-zinc-100 dark:bg-zinc-900 dark:lg:bg-zinc-950;
   }
 }

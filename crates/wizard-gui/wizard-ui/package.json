@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@headlessui/react": "^2.2.10",
+    "@heroicons/react": "^2.2.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-log": "^2.9.2",
     "clsx": "^2.1.1",

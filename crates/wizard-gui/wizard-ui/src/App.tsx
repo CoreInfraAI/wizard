@@ -1,60 +1,51 @@
-import { AgentList } from "./agents/AgentList";
-import { Text } from "./components/catalyst/text";
+import { useEffect, useState } from "react";
+import { AppSidebar } from "./AppSidebar";
+import { AgentPage } from "./agents/AgentPage";
+import { type AgentId, useAgentState } from "./agents/agents_state";
+import { useProxy } from "./agents/proxy";
+import { AuthLayout } from "./components/catalyst/auth-layout";
+import { Badge } from "./components/catalyst/badge";
+import { SidebarLayout } from "./components/catalyst/sidebar-layout";
 import { ErrorText } from "./components/ErrorText";
-import { HubAccount } from "./settings/HubAccount";
 import { OpenLogsButton } from "./logs/OpenLogsButton";
-import { useAgentState } from "./agents/agents_state";
+import { useHubAccountControl } from "./settings/HubAccount";
 import { useUpdateState } from "./updates/update";
 import { UpdateScreen } from "./updates/UpdateScreen";
-import { UpdateTile } from "./updates/UpdateTile";
-
-function AgentPanel() {
-  const state = useAgentState();
-
-  if (state.status === "loading") return <Text>Загрузка...</Text>;
-  if (state.status === "error") return <ErrorText>Не удалось загрузить состояние агентов: {state.message}</ErrorText>;
-
-  return <AgentList agents={state.data} />;
-}
 
 function App() {
   const update = useUpdateState();
+  const agents = useAgentState();
+  const proxy = useProxy();
+  const account = useHubAccountControl();
+  const [page, setPage] = useState<AgentId>("claude_desktop");
   const state = update.state;
+
+  // Pages share the window scroll; start each one from the top.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [page]);
 
   if (update.error === undefined && (!state || state.status === "checking" || state.status === "installing")) {
     return (
-      <main className={!state || state.status === "checking"
-        ? "mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8"
-        : "flex min-h-dvh flex-col gap-6 p-6"}
-      >
-        <div className={state?.status === "installing" ? "flex flex-1 items-center justify-center" : undefined}>
+      <AuthLayout>
+        <div className="flex flex-col items-center gap-8">
           <UpdateScreen state={state} />
-        </div>
-        <div className="mt-auto shrink-0">
           <OpenLogsButton />
         </div>
-      </main>
+      </AuthLayout>
     );
   }
 
-  const updateTile = update.error !== undefined || state?.status === "failed" || state?.status === "available" ? (
-    <UpdateTile state={update} />
-  ) : null;
-
   return (
-    <main className="mx-auto flex min-h-dvh flex-col gap-6 px-6 pt-2 pb-6 sm:px-8 sm:pb-8">
-      {/* Keep inline-size containment off the auto-fit grid to avoid collapsed columns in WebKit. */}
-      <div className="@container">
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(350px,1fr))] gap-6">
-          <HubAccount className="@min-[724px]:col-span-2" />
-          {updateTile}
-          <AgentPanel />
-        </div>
-      </div>
-      <div className="mt-auto shrink-0">
-        <OpenLogsButton />
-      </div>
-    </main>
+    <SidebarLayout
+      navbar={null}
+      sidebar={<AppSidebar page={page} onSelect={setPage} agents={agents.status === "ready" ? agents.data : undefined}
+        proxy={proxy} account={account} update={update} />}
+    >
+      {agents.status === "loading" && <Badge color="sky" className="animate-pulse">Загрузка…</Badge>}
+      {agents.status === "error" && <ErrorText>Не удалось загрузить состояние агентов: {agents.message}</ErrorText>}
+      {agents.status === "ready" && <AgentPage agents={agents.data} page={page} proxy={proxy} account={account} />}
+    </SidebarLayout>
   );
 }
 
