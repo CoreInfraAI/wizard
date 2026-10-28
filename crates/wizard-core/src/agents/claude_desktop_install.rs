@@ -32,8 +32,13 @@ const DOWNLOAD_NAME: &str = if cfg!(target_os = "windows") {
 } else {
     "download.zip"
 };
+// The feed serves single-architecture builds. An x64 build also runs on Apple Silicon.
 #[cfg(target_os = "macos")]
-const FEED: &str = "https://api.anthropic.com/api/desktop/darwin/arm64/squirrel/update";
+const FEED: &str = if cfg!(target_arch = "aarch64") {
+    "https://api.anthropic.com/api/desktop/darwin/arm64/squirrel/update"
+} else {
+    "https://api.anthropic.com/api/desktop/darwin/x64/squirrel/update"
+};
 // Apple-issued Developer ID of Anthropic, not merely any valid code signature.
 #[cfg(target_os = "macos")]
 const SIGNING_REQUIREMENT: &str = "=anchor apple generic and identifier \"com.anthropic.claudefordesktop\" and certificate leaf[subject.OU] = \"Q6L2SF6YDW\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
