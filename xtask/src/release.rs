@@ -65,7 +65,9 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
         // RELEASE_TARGETS: update when adding a release target.
         for (platform, architecture, label, suffix) in [
             ("macOS", "Apple Silicon", "DMG", "darwin-aarch64.dmg"),
+            ("macOS", "Intel", "DMG", "darwin-x64.dmg"),
             ("Windows", "x64", "EXE", "windows-x64.exe"),
+            ("Windows", "ARM64", "EXE", "windows-arm64.exe"),
             ("Ubuntu / Debian", "x64", "DEB", "linux-amd64.deb"),
         ] {
             let url = release_asset_url(&repository, &tag, &format!("{release_name}-{suffix}"));
@@ -182,10 +184,13 @@ pub(crate) fn build(
     apple_sign: bool,
 ) -> Result<()> {
     // RELEASE_TARGETS: update when adding a release target.
-    let platform = match target {
-        "x86_64-unknown-linux-gnu" => "linux",
-        "aarch64-apple-darwin" => "darwin",
-        "x86_64-pc-windows-msvc" => "windows",
+    // Architecture as spelled in Tauri bundle names, reused in release asset names.
+    let (platform, arch) = match target {
+        "x86_64-unknown-linux-gnu" => ("linux", "amd64"),
+        "aarch64-apple-darwin" => ("darwin", "aarch64"),
+        "x86_64-apple-darwin" => ("darwin", "x64"),
+        "x86_64-pc-windows-msvc" => ("windows", "x64"),
+        "aarch64-pc-windows-msvc" => ("windows", "arm64"),
         _ => bail!("unsupported release target: {target}"),
     };
 
@@ -242,11 +247,11 @@ pub(crate) fn build(
         })
     }
     .to_string();
-    // RELEASE_TARGETS: update when adding a release target.
-    let bundles: &[&str] = match target {
-        "aarch64-apple-darwin" => &["app", "dmg"],
-        "x86_64-unknown-linux-gnu" => &["deb"],
-        "x86_64-pc-windows-msvc" => &["nsis"],
+    // RELEASE_TARGETS: update when adding a release platform.
+    let bundles: &[&str] = match platform {
+        "darwin" => &["app", "dmg"],
+        "linux" => &["deb"],
+        "windows" => &["nsis"],
         _ => bail!("unsupported release target: {target}"),
     };
     let tauri_cli = "wizard-ui/node_modules/@tauri-apps/cli/tauri.js";
@@ -287,27 +292,26 @@ pub(crate) fn build(
         verify_macos_app_signature(&bundle_dir.join("macos").join(format!("{product_name}.app")))?;
     }
 
-    // RELEASE_TARGETS: update when adding a release target.
-    let updater_artifact = match target {
-        "aarch64-apple-darwin" => bundle_dir
+    // RELEASE_TARGETS: update when adding a release platform.
+    let updater_artifact = match platform {
+        "darwin" => bundle_dir
             .join("macos")
             .join(format!("{product_name}.app.tar.gz")),
-        "x86_64-unknown-linux-gnu" => bundle_dir
+        "linux" => bundle_dir
             .join("deb")
-            .join(format!("{product_name}_{version}_amd64.deb")),
-        "x86_64-pc-windows-msvc" => bundle_dir
+            .join(format!("{product_name}_{version}_{arch}.deb")),
+        "windows" => bundle_dir
             .join("nsis")
-            .join(format!("{product_name}_{version}_x64-setup.exe")),
+            .join(format!("{product_name}_{version}_{arch}-setup.exe")),
         _ => bail!("unsupported release target: {target}"),
     };
     verify_updater_signature(&updater_artifact, updater_public_key)?;
 
     if let Some(credentials) = &apple_credentials {
         // Tauri notarizes only the app, so notarize the disk image that users download.
-        // RELEASE_TARGETS: update when adding a release target.
         let dmg = bundle_dir
             .join("dmg")
-            .join(format!("{product_name}_{version}_aarch64.dmg"));
+            .join(format!("{product_name}_{version}_{arch}.dmg"));
         apple::notarize(credentials, &dmg)?;
         apple::verify(
             credentials,
@@ -322,42 +326,42 @@ pub(crate) fn build(
     let copy =
         |source, destination| move_artifact(&bundle_dir.join(source), &output.join(destination));
 
-    // RELEASE_TARGETS: update when adding a release target.
-    match target {
-        "aarch64-apple-darwin" => {
+    // RELEASE_TARGETS: update when adding a release platform.
+    match platform {
+        "darwin" => {
             copy(
-                format!("dmg/{product_name}_{version}_aarch64.dmg"),
-                format!("{release_name}-darwin-aarch64.dmg"),
+                format!("dmg/{product_name}_{version}_{arch}.dmg"),
+                format!("{release_name}-darwin-{arch}.dmg"),
             )?;
             copy(
                 format!("macos/{product_name}.app.tar.gz"),
-                format!("{release_name}-darwin-aarch64-update.app.tar.gz"),
+                format!("{release_name}-darwin-{arch}-update.app.tar.gz"),
             )?;
             copy(
                 format!("macos/{product_name}.app.tar.gz.sig"),
-                format!("{release_name}-darwin-aarch64-update.app.tar.gz.sig"),
+                format!("{release_name}-darwin-{arch}-update.app.tar.gz.sig"),
             )
         }
-        "x86_64-unknown-linux-gnu" => {
-            let installer = format!("{product_name}_{version}_amd64.deb");
+        "linux" => {
+            let installer = format!("{product_name}_{version}_{arch}.deb");
             copy(
                 format!("deb/{installer}"),
-                format!("{release_name}-linux-amd64.deb"),
+                format!("{release_name}-linux-{arch}.deb"),
             )?;
             copy(
                 format!("deb/{installer}.sig"),
-                format!("{release_name}-linux-amd64.deb.sig"),
+                format!("{release_name}-linux-{arch}.deb.sig"),
             )
         }
-        "x86_64-pc-windows-msvc" => {
-            let installer = format!("{product_name}_{version}_x64-setup.exe");
+        "windows" => {
+            let installer = format!("{product_name}_{version}_{arch}-setup.exe");
             copy(
                 format!("nsis/{installer}"),
-                format!("{release_name}-windows-x64.exe"),
+                format!("{release_name}-windows-{arch}.exe"),
             )?;
             copy(
                 format!("nsis/{installer}.sig"),
-                format!("{release_name}-windows-x64.exe.sig"),
+                format!("{release_name}-windows-{arch}.exe.sig"),
             )
         }
         _ => bail!("unsupported release target: {target}"),
@@ -492,6 +496,12 @@ pub(crate) fn generate_latest_json(
             tag,
             &format!("{release_name}-darwin-aarch64-update.app.tar.gz.sig"),
         )?,
+        "darwin-x86_64": updater_entry(
+            assets,
+            repository,
+            tag,
+            &format!("{release_name}-darwin-x64-update.app.tar.gz.sig"),
+        )?,
         "linux-x86_64-deb": updater_entry(
             assets,
             repository,
@@ -503,6 +513,12 @@ pub(crate) fn generate_latest_json(
             repository,
             tag,
             &format!("{release_name}-windows-x64.exe.sig"),
+        )?,
+        "windows-aarch64": updater_entry(
+            assets,
+            repository,
+            tag,
+            &format!("{release_name}-windows-arm64.exe.sig"),
         )?,
     });
 
