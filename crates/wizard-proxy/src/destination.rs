@@ -1,16 +1,5 @@
 //! Destination parsing and matching ported from thinker, revision
 //! f200242dc8030b465da6ed389310c001923904b2:
-//! - `crates/ff-hub-config/src/connect_proxy.rs` (the two destination types)
-//! - `infra/ansible/roles/ff_hub/templates/config.toml` (`allowed_destinations`)
-//!
-//! Maintenance: update both parsers, `matches`, the list, and `destination_test.rs`
-//! together when syncing thinker. Preserve `url::Host` validation and check the
-//! resolved url version in both `Cargo.lock` files. There is no automatic sync.
-//! Error reporting is intentionally reduced to one static error; Serde and Hub
-//! configuration are not needed here. Accepted DNS syntax and matching rules
-//! are unchanged. `route` adds Wizard policy: listed domains never go directly,
-//! even on ports absent from the list. Unmatched DNS names and valid IP literals
-//! go directly. This is a hostname policy, not an IP-based firewall.
 
 use core::{fmt, net::SocketAddr, str::FromStr};
 use std::sync::LazyLock;

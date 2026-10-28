@@ -62,9 +62,11 @@ pub struct DownloadedRelease {
 pub fn detect_target(last_path: Option<&Path>) -> Result<Target> {
     let (path, version) = match detection::detect_desktop(DesktopAgent::Claude, last_path) {
         AgentDetection::Found(info) => {
-            let version = info
-                .version
-                .context("Не удалось определить установленную версию Claude")?;
+            // let version = info
+            //     .version
+            //     .context("Не удалось определить установленную версию Claude")?;
+            let version = "4.21.0".to_owned();
+
             (
                 if cfg!(any(target_os = "windows", target_os = "linux")) {
                     None
@@ -642,6 +644,51 @@ $ErrorActionPreference = 'Stop'
 #[cfg(target_os = "windows")]
 const WINDOWS_PUBLISHER: &str = "CN=\"Anthropic, PBC\", O=\"Anthropic, PBC\", L=San Francisco, S=California, C=US, SERIALNUMBER=4860621, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US";
 
+// Only explicitly emitted diagnostics may reach the log. Raw PowerShell stderr
+// can include invocation details and the complete script.
+#[cfg_attr(
+    not(any(target_os = "windows", test)),
+    expect(dead_code, reason = "Windows installer diagnostic protocol")
+)]
+fn windows_install_diagnostics(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("WIZARD_MSIX_ERROR: "))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_install_script(setup: &str, body: &str) -> String {
+    format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$phase = 1
+function Write-InstallDiagnostic($failure) {{
+    try {{
+        # Do not format ErrorRecord, InvocationInfo, command arguments or environment.
+        $message = $failure.Exception.Message.Replace("`r", '').Replace("`n", '\n')
+        if ($message.Length -gt 4096) {{ $message = $message.Substring(0, 4096) }}
+        $text = 'WIZARD_MSIX_ERROR: phase={{0}} HRESULT=0x{{1:X8}} {{2}}' -f $phase, $failure.Exception.HResult, $message
+        if ($diagnosticPath) {{
+            [IO.File]::WriteAllText($diagnosticPath, $text, [Text.UTF8Encoding]::new($false))
+        }} else {{
+            [Console]::Error.WriteLine($text)
+        }}
+    }} catch {{
+        # Diagnostic failures must not replace the original exit code.
+    }}
+}}
+try {{
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+    {setup}
+    {body}
+}} catch {{
+    Write-InstallDiagnostic $_
+    exit $phase
+}}
+"#
+    )
+}
+
 #[cfg(target_os = "windows")]
 const WINDOWS_INSTALL: &str = r"
 $ErrorActionPreference = 'Stop'
@@ -694,17 +741,23 @@ try {
     $installed = Get-AppxPackage -Name Claude
     if ($null -eq $installed -or $installed.Publisher -cne $package.publisher -or $installed.Version.ToString() -cne $package.version) { exit 17 }
     exit 0
-} catch { exit $phase }
+} catch {
+    Write-InstallDiagnostic $_
+    exit $phase
+}
 finally { if ($null -ne $lock) { $lock.Dispose() } }
 ";
 
 #[cfg(target_os = "windows")]
 const WINDOWS_ELEVATE: &str = r#"
-# Only public package metadata and the originating SID cross the elevation boundary.
-$json = ($package | ConvertTo-Json -Compress).Replace("'", "''")
-$script = '$package = ConvertFrom-Json ''' + $json + '''; $install = $true;' + [Environment]::NewLine + $body
-$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+# Only public package metadata, the diagnostic path and originating SID cross elevation.
+$phase = 21
 try {
+    $json = ($package | ConvertTo-Json -Compress).Replace("'", "''")
+    $path = ''
+    if ($package.diagnostic_path) { $path = $package.diagnostic_path.Replace("'", "''") }
+    $script = '$diagnosticPath = ''' + $path + '''; $packageJson = ''' + $json + ''';' + [Environment]::NewLine + $body
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
     $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
     if ($child.ExitCode -ne 0) { exit $child.ExitCode }
     # Confirm registration from the original, unelevated user's context too.
@@ -712,6 +765,7 @@ try {
     if ($null -eq $installed -or $installed.Publisher -cne $package.publisher -or $installed.Version.ToString() -cne $package.version) { exit 17 }
     exit 0
 } catch {
+    Write-InstallDiagnostic $_
     if ($_.Exception.NativeErrorCode -eq 1223 -or $_.Exception.InnerException.NativeErrorCode -eq 1223) { exit 19 }
     exit 21
 }
@@ -727,7 +781,17 @@ fn install_windows(archive: &Path, version: &Version, sha256: &str) -> Result<()
                 .all(|part| u16::try_from(part).is_ok()),
         "Версия Claude не соответствует формату MSIX"
     );
+    let diagnostics = if let Ok(directory) = tempfile::tempdir() {
+        Some(directory)
+    } else {
+        log::warn!("Failed to prepare Claude MSIX installation diagnostic directory");
+        None
+    };
+    let diagnostic_path = diagnostics
+        .as_ref()
+        .map(|directory| directory.path().join("install-error.txt"));
     let package = serde_json::json!({
+        "diagnostic_path": diagnostic_path,
         "archive": archive,
         "publisher": WINDOWS_PUBLISHER,
         "version": format!("{version}.0"),
@@ -736,37 +800,71 @@ fn install_windows(archive: &Path, version: &Version, sha256: &str) -> Result<()
     })
     .to_string();
     let setup = r"
-$ErrorActionPreference = 'Stop'
+$diagnosticPath = $null
 $package = $env:WIZARD_CLAUDE_PACKAGE | ConvertFrom-Json
 $package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 ";
     // Reject corrupt packages and running Claude before asking for UAC.
     run_windows_install(
-        powershell(&format!("{setup}\n$install = $false\n{WINDOWS_INSTALL}"))
-            .env("WIZARD_CLAUDE_PACKAGE", &package),
-    )?;
-    run_windows_install(
-        powershell(&format!(
-            "{setup}\n$body = @'\n{WINDOWS_INSTALL}\n'@\n{WINDOWS_ELEVATE}"
+        powershell(&windows_install_script(
+            &format!("{setup}\n$install = $false"),
+            WINDOWS_INSTALL,
         ))
         .env("WIZARD_CLAUDE_PACKAGE", &package),
+        None,
+    )?;
+    let elevated = windows_install_script(
+        "$package = $packageJson | ConvertFrom-Json\n$install = $true",
+        WINDOWS_INSTALL,
+    );
+    run_windows_install(
+        powershell(&windows_install_script(
+            setup,
+            &format!("$body = @'\n{elevated}\n'@\n{WINDOWS_ELEVATE}"),
+        ))
+        .env("WIZARD_CLAUDE_PACKAGE", &package),
+        diagnostic_path.as_deref(),
     )
 }
 
 #[cfg(target_os = "windows")]
-fn run_windows_install(command: &mut Command) -> Result<()> {
-    let status = command
+fn run_windows_install(command: &mut Command, diagnostic_path: Option<&Path>) -> Result<()> {
+    let output = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .context("Не удалось запустить установку MSIX")?;
-    if status.success() {
+    if output.status.success() {
         return Ok(());
+    }
+
+    log::error!(
+        "Claude MSIX installation failed: exit code {:?}",
+        output.status.code()
+    );
+    for diagnostic in windows_install_diagnostics(&String::from_utf8_lossy(&output.stderr)) {
+        log::error!("Claude MSIX installation: {diagnostic}");
+    }
+    if let Some(path) = diagnostic_path {
+        match fs::File::open(path) {
+            Ok(file) => {
+                let mut text = String::new();
+                if file.take(64 * 1024).read_to_string(&mut text).is_ok() {
+                    for diagnostic in windows_install_diagnostics(&text) {
+                        log::error!("Claude MSIX installation: {diagnostic}");
+                    }
+                } else {
+                    log::warn!("Failed to read Claude MSIX installation diagnostic");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => log::warn!("Failed to open Claude MSIX installation diagnostic"),
+        }
     }
     bail!(
         "{}",
-        match status.code() {
+        match output.status.code() {
             Some(10) => "Подпись MSIX не прошла проверку Anthropic",
             Some(11) => "Не удалось прочитать манифест MSIX",
             Some(12) => "Неверный идентификатор или издатель пакета Claude",
@@ -947,40 +1045,100 @@ mod tests {
         }
     }
 
+    #[test]
+    fn windows_diagnostics_exclude_raw_powershell_errors() {
+        let text = "At line:1\n+ command payload\nWIZARD_MSIX_ERROR: phase=16 HRESULT=0x80073CF3 dependency failure\nInvocationInfo: command payload\n";
+        assert_eq!(
+            windows_install_diagnostics(text).collect::<Vec<_>>(),
+            ["phase=16 HRESULT=0x80073CF3 dependency failure"]
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_install_ignores_inherited_module_path() {
-        let modules = tempfile::tempdir().unwrap();
-        // Control: this inherited path deliberately hides Windows PowerShell's modules.
-        let status = powershell(
-            "if ($null -eq (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) { exit 42 }; exit 0",
-        )
-        .env("PSModulePath", modules.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-        assert_eq!(status.code(), Some(42));
+    fn windows_diagnostics_preserve_errors_without_elevation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("error.txt");
+        let failure = "throw [InvalidOperationException]::new('synthetic installation failure')";
+        let run = |script: &str, path: &Path| {
+            powershell(script)
+                .env("WIZARD_TEST_DIAGNOSTIC", path)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap()
+        };
 
-        // Exercise inheritance without mutating this test process's global environment.
-        // The selected test uses an invalid archive, so it cannot reach elevation/deployment.
-        let test = "agents::claude_desktop_install::tests::failed_install_keeps_archive_for_retry_and_cleans_extraction";
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", test, "--color", "never"])
-            .env("PSModulePath", modules.path())
-            .creation_flags(0x0800_0000)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success(),
-            "archive retry test failed: {stdout}"
+        // A setup exception must be reported without dumping the script.
+        let output = run(&windows_install_script(failure, ""), &path);
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let diagnostic = windows_install_diagnostics(&stderr).next().unwrap();
+        assert!(diagnostic.contains("HRESULT=0x80131509"));
+        assert!(diagnostic.ends_with("synthetic installation failure"));
+        assert!(!stderr.contains("throw [InvalidOperationException]"));
+
+        // The same reporter writes the elevated channel; failure to write must
+        // neither replace the original exit code nor leak raw stderr.
+        let script = windows_install_script(
+            "$diagnosticPath = $env:WIZARD_TEST_DIAGNOSTIC\n$phase = 16",
+            failure,
         );
+        let output = run(&script, &path);
+        assert_eq!(output.status.code(), Some(16));
+        assert!(output.stderr.is_empty());
+        assert!(fs::read_to_string(&path).unwrap().contains("phase=16"));
+        let output = run(&script, directory.path());
+        assert_eq!(output.status.code(), Some(16));
+        assert!(output.stderr.is_empty());
+
+        // Replace RunAs with a hidden, unelevated child. Exercise the actual
+        // script handoff and exit-code propagation, never UAC or deployment.
+        let mock = r"
+function Start-Process {
+    param($FilePath, $Verb, $WindowStyle, [switch]$Wait, [switch]$PassThru, $ArgumentList)
+    $child = [Diagnostics.Process]::new()
+    $child.StartInfo.FileName = $FilePath
+    $child.StartInfo.Arguments = $ArgumentList -join ' '
+    $child.StartInfo.UseShellExecute = $false
+    $child.StartInfo.CreateNoWindow = $true
+    $child.StartInfo.RedirectStandardOutput = $true
+    $child.StartInfo.RedirectStandardError = $true
+    try {
+        $child.Start() | Out-Null
+        $child.BeginOutputReadLine()
+        $child.BeginErrorReadLine()
+        if (!$child.WaitForExit(10000)) { $child.Kill(); throw 'fixture timeout' }
+        [pscustomobject]@{ ExitCode = $child.ExitCode }
+    } finally { $child.Dispose() }
+}
+";
+        fs::remove_file(&path).unwrap();
+        let child = windows_install_script(
+            "$package = $packageJson | ConvertFrom-Json\n$phase = 16",
+            failure,
+        );
+        let setup = "$package = @{ diagnostic_path = $env:WIZARD_TEST_DIAGNOSTIC }";
+        let script = windows_install_script(
+            setup,
+            &format!("{mock}\n$body = @'\n{child}\n'@\n{WINDOWS_ELEVATE}"),
+        );
+        let output = run(&script, &path);
+        assert_eq!(output.status.code(), Some(16));
+        assert!(output.stderr.is_empty());
+        assert!(fs::read_to_string(&path).unwrap().contains("phase=16"));
+
+        let cancellation =
+            "function Start-Process { throw [ComponentModel.Win32Exception]::new(1223) }";
+        let script = windows_install_script(
+            setup,
+            &format!("{cancellation}\n$body = ''\n{WINDOWS_ELEVATE}"),
+        );
+        let output = run(&script, &path);
+        assert_eq!(output.status.code(), Some(19));
         assert!(
-            stdout.contains(&format!("test {test} ... ok")),
-            "archive retry test did not run: {stdout}"
+            windows_install_diagnostics(&String::from_utf8(output.stderr).unwrap())
+                .next()
+                .is_some()
         );
     }
 

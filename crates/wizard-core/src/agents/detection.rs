@@ -196,11 +196,11 @@ pub(super) fn detect_desktop(
     }
     #[cfg(target_os = "windows")]
     {
-        let (package, executable) = match agent {
-            DesktopAgent::Claude => ("Claude", "Claude.exe"),
+        let (packages, executable) = match agent {
+            DesktopAgent::Claude => ("Claude,AnthropicPBC.Claude", "Claude.exe"),
             DesktopAgent::Codex => ("OpenAI.Codex", "ChatGPT.exe"),
         };
-        let info = match detect_desktop_windows(package, executable, last_found) {
+        let info = match detect_desktop_windows(packages, executable, last_found) {
             Ok(Some(info)) => info,
             Ok(None) => return AgentDetection::NotFound,
             Err(error) => return AgentDetection::Error(format!("{error:#}")),
@@ -211,7 +211,7 @@ pub(super) fn detect_desktop(
 
 #[cfg(target_os = "windows")]
 fn detect_desktop_windows(
-    package: &str,
+    packages: &str,
     executable: &str,
     last_found: Option<&Path>,
 ) -> Result<Option<AgentInfo>> {
@@ -229,7 +229,10 @@ if ($env:WIZARD_DESKTOP_PATH -and (Test-Path -LiteralPath $env:WIZARD_DESKTOP_PA
     Write-Agent $env:WIZARD_DESKTOP_PATH
     exit 0
 }
-foreach ($package in (Get-AppxPackage -Name $env:WIZARD_DESKTOP_PACKAGE | Sort-Object Version -Descending)) {
+$packages = foreach ($name in $env:WIZARD_DESKTOP_PACKAGES.Split(',')) {
+    Get-AppxPackage -Name $name
+}
+foreach ($package in ($packages | Sort-Object Version -Descending)) {
     $manifest = $package | Get-AppxPackageManifest
     foreach ($application in $manifest.Package.Applications.Application) {
         $relative = [string]$application.Executable
@@ -246,7 +249,7 @@ foreach ($package in (Get-AppxPackage -Name $env:WIZARD_DESKTOP_PACKAGE | Sort-O
     let mut command = tokio::process::Command::new("powershell.exe");
     command
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("WIZARD_DESKTOP_PACKAGE", package)
+        .env("WIZARD_DESKTOP_PACKAGES", packages)
         .env("WIZARD_DESKTOP_EXECUTABLE", executable)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
