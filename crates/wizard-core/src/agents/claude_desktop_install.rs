@@ -591,6 +591,9 @@ fn powershell(script: &str) -> Command {
         "-Command",
         script,
     ]);
+    // A pwsh -> Cargo -> powershell.exe chain inherits incompatible PowerShell 7 modules.
+    // Let Windows PowerShell reconstruct its own default module paths.
+    command.env_remove("PSModulePath");
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW; only WINDOWS_ELEVATE requests UAC.
     command
 }
@@ -647,9 +650,10 @@ $phase = 18
 $lock = $null
 try {
     if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne $package.sid) { exit 18 }
-    $phase = 20
+    $phase = 22
     # Deny writes/replacement until deployment finishes, including across verification.
     $lock = [IO.File]::Open($package.archive, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $phase = 23
     # Hash the locked stream without reopening the path through PowerShell's file provider.
     if ((Get-FileHash -InputStream $lock -Algorithm SHA256).Hash -ne $package.sha256) { exit 20 }
     $phase = 10
@@ -776,9 +780,10 @@ fn run_windows_install(command: &mut Command) -> Result<()> {
                 "В UAC выбрана другая учётная запись. Подтвердите повышение прав для того же пользователя, который запустил Wizard",
             Some(19) =>
                 "Запрос прав администратора отменён. Пакет сохранён для повторной установки",
-            Some(20) =>
-                "Не удалось заблокировать и проверить MSIX: файл недоступен или SHA-256 не совпадает",
+            Some(20) => "SHA-256 пакета MSIX не совпадает",
             Some(21) => "Не удалось запустить процесс установки с правами администратора",
+            Some(22) => "Не удалось открыть и заблокировать пакет MSIX",
+            Some(23) => "Не удалось вычислить SHA-256 пакета MSIX",
             _ =>
                 "Windows не удалось установить MSIX. Проверьте зависимости пакета и ограничения системы. Пакет сохранён для повторной попытки",
         }
@@ -940,6 +945,43 @@ mod tests {
             assert_eq!(fs::read(&archive).unwrap(), b"invalid zip");
             assert_eq!(fs::read_dir(download.directory.path()).unwrap().count(), 1);
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_install_ignores_inherited_module_path() {
+        let modules = tempfile::tempdir().unwrap();
+        // Control: this inherited path deliberately hides Windows PowerShell's modules.
+        let status = powershell(
+            "if ($null -eq (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) { exit 42 }; exit 0",
+        )
+        .env("PSModulePath", modules.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+        assert_eq!(status.code(), Some(42));
+
+        // Exercise inheritance without mutating this test process's global environment.
+        // The selected test uses an invalid archive, so it cannot reach elevation/deployment.
+        let test = "agents::claude_desktop_install::tests::failed_install_keeps_archive_for_retry_and_cleans_extraction";
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--color", "never"])
+            .env("PSModulePath", modules.path())
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "archive retry test failed: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("test {test} ... ok")),
+            "archive retry test did not run: {stdout}"
+        );
     }
 
     #[cfg(target_os = "macos")]
