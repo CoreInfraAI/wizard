@@ -650,7 +650,8 @@ try {
     $phase = 20
     # Deny writes/replacement until deployment finishes, including across verification.
     $lock = [IO.File]::Open($package.archive, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    if ((Get-FileHash -LiteralPath $package.archive -Algorithm SHA256).Hash -ne $package.sha256) { exit 20 }
+    # Hash the locked stream without reopening the path through PowerShell's file provider.
+    if ((Get-FileHash -InputStream $lock -Algorithm SHA256).Hash -ne $package.sha256) { exit 20 }
     $phase = 10
     $signature = Get-AuthenticodeSignature -LiteralPath $package.archive
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -cne $package.publisher) { exit 10 }
