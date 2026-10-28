@@ -813,8 +813,8 @@ try {
     if (Get-Process -Name Claude -ErrorAction SilentlyContinue) { exit 15 }
     if (!$install) { exit 0 }
     $phase = 16
-    # No force-close, deferred registration, downgrade or remote dependencies.
-    Add-AppxPackage -Path $package.archive | Out-Null
+    # Force-close only for the explicit testing flag; no deferred registration or downgrade.
+    Add-AppxPackage -Path $package.archive -ForceTargetApplicationShutdown:([bool]$package.force_target_shutdown) | Out-Null
     $phase = 17
     $installed = Get-AppxPackage -Name Claude
     if ($null -eq $installed -or $installed.Publisher -cne $package.publisher -or $installed.Version.ToString() -cne $package.version) { exit 17 }
@@ -867,7 +867,17 @@ fn install_windows(archive: &Path, version: &Version, sha256: &str) -> Result<()
     let diagnostic_path = diagnostics
         .as_ref()
         .map(|directory| directory.path().join("install-error.txt"));
+
+    // TODO: remove --force-claude-shutdown
+    let force_target_shutdown = std::env::args_os()
+        .skip(1)
+        .any(|arg| arg == "--force-claude-shutdown");
+    if force_target_shutdown {
+        log::warn!("Claude MSIX testing mode: ForceTargetApplicationShutdown enabled");
+    }
+
     let package = serde_json::json!({
+        "force_target_shutdown": force_target_shutdown,
         "diagnostic_path": diagnostic_path,
         "archive": archive,
         "publisher": WINDOWS_PUBLISHER,
@@ -881,7 +891,7 @@ $diagnosticPath = $null
 $package = $env:WIZARD_CLAUDE_PACKAGE | ConvertFrom-Json
 $package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 ";
-    // Reject corrupt packages and running Claude before asking for UAC.
+    // Reject corrupt packages and running Claude before asking for UAC, even in force-close mode.
     run_windows_install(
         powershell(&windows_install_script(
             &format!("{setup}\n$install = $false"),
