@@ -661,20 +661,87 @@ fn windows_install_diagnostics(text: &str) -> impl Iterator<Item = &str> {
 }
 
 #[cfg(target_os = "windows")]
+const WINDOWS_IN_USE_DIAGNOSTICS: &str = r"
+function Write-PackageUsageDiagnostic {
+    try {
+        # Resolve the installed, trusted package, not executable-name guesses.
+        $installed = @(Get-AppxPackage -Name Claude -ErrorAction Stop | Where-Object {
+            $_.Name -ceq 'Claude' -and $_.Publisher -ceq $package.publisher
+        })
+        if ($installed.Count -ne 1 -or !$installed[0].InstallLocation) {
+            Write-InstallMessage 'Related component snapshot unavailable: installed package identity not resolved'
+            return
+        }
+        $root = [IO.Path]::GetFullPath($installed[0].InstallLocation).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        $all = @(Get-CimInstance -ClassName Win32_Process -OperationTimeoutSec 5 -ErrorAction Stop)
+        $unavailable = @($all | Where-Object { !$_.ExecutablePath }).Count
+        $related = @($all | Where-Object {
+            if (!$_.ExecutablePath) { return $false }
+            try {
+                [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+            } catch { $false }
+        })
+        Write-InstallMessage ('Related component snapshot (not proven blockers): processes={0}, unavailable_executable_paths={1}' -f $related.Count, $unavailable)
+        foreach ($process in ($related | Select-Object -First 16)) {
+            Write-InstallMessage ('Related process: name={0} pid={1}' -f $process.Name, $process.ProcessId)
+        }
+        if ($related.Count -gt 16) { Write-InstallMessage 'Related process list truncated at 16 entries' }
+
+        # Service ownership is linked through the verified executable's PID.
+        # Do not parse or log service command lines, and never stop anything.
+        $processIds = @($related | ForEach-Object { $_.ProcessId })
+        $services = @(Get-CimInstance -ClassName Win32_Service -OperationTimeoutSec 5 -ErrorAction Stop | Where-Object {
+            $_.ProcessId -gt 0 -and $processIds -contains $_.ProcessId
+        })
+        foreach ($service in ($services | Select-Object -First 16)) {
+            Write-InstallMessage ('Related service: name={0} pid={1} state={2} start_mode={3}' -f $service.Name, $service.ProcessId, $service.State, $service.StartMode)
+        }
+        if ($services.Count -gt 16) { Write-InstallMessage 'Related service list truncated at 16 entries' }
+    } catch {
+        Write-InstallMessage ('Related component snapshot failed: HRESULT=0x{0:X8}' -f $_.Exception.HResult)
+    }
+}
+function Report-InstallFailure($failure) {
+    Write-InstallDiagnostic $failure
+    $inUse = $false
+    if ($phase -eq 16) {
+        try {
+            $exception = $failure.Exception
+            for ($depth = 0; $null -ne $exception -and $depth -lt 16; $depth++) {
+                # Appx can wrap the native HRESULT; its message then contains the deployment code.
+                if (('{0:X8}' -f $exception.HResult) -eq '80073D02' -or $exception.Message -match '(?i)\b0x80073d02\b') {
+                    $inUse = $true
+                    break
+                }
+                $exception = $exception.InnerException
+            }
+        } catch {
+            # Failure classification must not replace the original error.
+        }
+    }
+    if ($inUse) {
+        Write-InstallMessage 'Deployment resources in use: HRESULT=0x80073D02'
+        Write-PackageUsageDiagnostic
+        return 24
+    }
+    return $phase
+}
+";
+
+#[cfg(target_os = "windows")]
 fn windows_install_script(setup: &str, body: &str) -> String {
     format!(
         r#"
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $phase = 1
-function Write-InstallDiagnostic($failure) {{
+function Write-InstallMessage($message) {{
     try {{
-        # Do not format ErrorRecord, InvocationInfo, command arguments or environment.
-        $message = $failure.Exception.Message.Replace("`r", '').Replace("`n", '\n')
+        $message = $message.Replace("`r", '').Replace("`n", '\n')
         if ($message.Length -gt 4096) {{ $message = $message.Substring(0, 4096) }}
-        $text = 'WIZARD_MSIX_ERROR: phase={{0}} HRESULT=0x{{1:X8}} {{2}}' -f $phase, $failure.Exception.HResult, $message
+        $text = 'WIZARD_MSIX_ERROR: ' + $message
         if ($diagnosticPath) {{
-            [IO.File]::WriteAllText($diagnosticPath, $text, [Text.UTF8Encoding]::new($false))
+            [IO.File]::AppendAllText($diagnosticPath, $text + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
         }} else {{
             [Console]::Error.WriteLine($text)
         }}
@@ -682,13 +749,19 @@ function Write-InstallDiagnostic($failure) {{
         # Diagnostic failures must not replace the original exit code.
     }}
 }}
+function Write-InstallDiagnostic($failure) {{
+    try {{
+        # Do not format ErrorRecord, InvocationInfo, command arguments or environment.
+        Write-InstallMessage ('phase={{0}} HRESULT=0x{{1:X8}} {{2}}' -f $phase, $failure.Exception.HResult, $failure.Exception.Message)
+    }} catch {{}}
+}}
+{WINDOWS_IN_USE_DIAGNOSTICS}
 try {{
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     {setup}
     {body}
 }} catch {{
-    Write-InstallDiagnostic $_
-    exit $phase
+    exit (Report-InstallFailure $_)
 }}
 "#
     )
@@ -747,8 +820,7 @@ try {
     if ($null -eq $installed -or $installed.Publisher -cne $package.publisher -or $installed.Version.ToString() -cne $package.version) { exit 17 }
     exit 0
 } catch {
-    Write-InstallDiagnostic $_
-    exit $phase
+    exit (Report-InstallFailure $_)
 }
 finally { if ($null -ne $lock) { $lock.Dispose() } }
 ";
@@ -816,6 +888,7 @@ $package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             WINDOWS_INSTALL,
         ))
         .env("WIZARD_CLAUDE_PACKAGE", &package),
+        "preflight",
         None,
     )?;
     let elevated = windows_install_script(
@@ -828,28 +901,40 @@ $package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             &format!("$body = @'\n{elevated}\n'@\n{WINDOWS_ELEVATE}"),
         ))
         .env("WIZARD_CLAUDE_PACKAGE", &package),
+        "elevation",
         diagnostic_path.as_deref(),
     )
 }
 
 #[cfg(target_os = "windows")]
-fn run_windows_install(command: &mut Command, diagnostic_path: Option<&Path>) -> Result<()> {
+fn run_windows_install(
+    command: &mut Command,
+    stage: &'static str,
+    diagnostic_path: Option<&Path>,
+) -> Result<()> {
+    log::info!("Claude MSIX {stage} started");
     let output = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
-        .context("Не удалось запустить установку MSIX")?;
+        .with_context(|| format!("Не удалось выполнить PowerShell установки MSIX ({stage})"))
+        .inspect_err(|error| {
+            log::error!("Claude MSIX {stage} process failed: {error:#}");
+        })?;
     if output.status.success() {
+        log::info!("Claude MSIX {stage} completed");
         return Ok(());
     }
 
     log::error!(
-        "Claude MSIX installation failed: exit code {:?}",
+        "Claude MSIX {stage} failed: exit code {:?}",
         output.status.code()
     );
+    let mut detailed = false;
     for diagnostic in windows_install_diagnostics(&String::from_utf8_lossy(&output.stderr)) {
-        log::error!("Claude MSIX installation: {diagnostic}");
+        log::error!("Claude MSIX {stage}: {diagnostic}");
+        detailed = true;
     }
     if let Some(path) = diagnostic_path {
         match fs::File::open(path) {
@@ -857,40 +942,55 @@ fn run_windows_install(command: &mut Command, diagnostic_path: Option<&Path>) ->
                 let mut text = String::new();
                 if file.take(64 * 1024).read_to_string(&mut text).is_ok() {
                     for diagnostic in windows_install_diagnostics(&text) {
-                        log::error!("Claude MSIX installation: {diagnostic}");
+                        log::error!("Claude MSIX {stage}: {diagnostic}");
+                        detailed = true;
                     }
                 } else {
-                    log::warn!("Failed to read Claude MSIX installation diagnostic");
+                    log::warn!("Claude MSIX {stage}: diagnostic file could not be read as UTF-8");
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => log::warn!("Failed to open Claude MSIX installation diagnostic"),
+            Err(error) => log::warn!(
+                "Claude MSIX {stage}: diagnostic file could not be opened ({:?}, OS code {:?})",
+                error.kind(),
+                error.raw_os_error()
+            ),
         }
     }
-    bail!(
-        "{}",
-        match output.status.code() {
-            Some(10) => "Подпись MSIX не прошла проверку Anthropic",
-            Some(11) => "Не удалось прочитать манифест MSIX",
-            Some(12) => "Неверный идентификатор или издатель пакета Claude",
-            Some(13) => "Версия MSIX не совпадает с выбранной",
-            Some(14) => "Архитектура MSIX не соответствует Windows",
-            Some(15) =>
-                "Полностью закройте Claude Desktop, включая значок в трее, и повторите установку",
-            Some(17) =>
-                "Windows завершила установку, но ожидаемая версия Claude не обнаружена у исходного пользователя",
-            Some(18) =>
-                "В UAC выбрана другая учётная запись. Подтвердите повышение прав для того же пользователя, который запустил Wizard",
-            Some(19) =>
-                "Запрос прав администратора отменён. Пакет сохранён для повторной установки",
-            Some(20) => "SHA-256 пакета MSIX не совпадает",
-            Some(21) => "Не удалось запустить процесс установки с правами администратора",
-            Some(22) => "Не удалось открыть и заблокировать пакет MSIX",
-            Some(23) => "Не удалось вычислить SHA-256 пакета MSIX",
-            _ =>
-                "Windows не удалось установить MSIX. Проверьте зависимости пакета и ограничения системы. Пакет сохранён для повторной попытки",
+    if !detailed {
+        log::warn!(
+            "Claude MSIX {stage}: no exception diagnostic received; raw PowerShell output is omitted"
+        );
+    }
+    let message = match output.status.code() {
+        Some(10) => "Подпись MSIX не прошла проверку Anthropic",
+        Some(11) => "Не удалось прочитать манифест MSIX",
+        Some(12) => "Неверный идентификатор или издатель пакета Claude",
+        Some(13) => "Версия MSIX не совпадает с выбранной",
+        Some(14) => "Архитектура MSIX не соответствует Windows",
+        Some(15) => {
+            "Полностью закройте Claude Desktop, включая значок в трее, и повторите установку"
         }
-    )
+        Some(17) => {
+            "Windows завершила установку, но ожидаемая версия Claude не обнаружена у исходного пользователя"
+        }
+        Some(18) => {
+            "В UAC выбрана другая учётная запись. Подтвердите повышение прав для того же пользователя, который запустил Wizard"
+        }
+        Some(19) => "Запрос прав администратора отменён. Пакет сохранён для повторной установки",
+        Some(20) => "SHA-256 пакета MSIX не совпадает",
+        Some(21) => "Не удалось запустить процесс установки с правами администратора",
+        Some(22) => "Не удалось открыть и заблокировать пакет MSIX",
+        Some(23) => "Не удалось вычислить SHA-256 пакета MSIX",
+        Some(24) => {
+            "Обновление Claude заблокировано: ресурсы пакета используются (0x80073D02). Закрытия окна или значка в трее может быть недостаточно. Сведения о связанных процессах и службах записаны в лог, если их удалось получить. Пакет сохранён для повторной попытки"
+        }
+        _ => {
+            "Windows не удалось установить MSIX. Проверьте зависимости пакета и ограничения системы. Пакет сохранён для повторной попытки"
+        }
+    };
+    log::error!("Claude MSIX {stage}: {message}");
+    bail!("{message}")
 }
 
 fn archive_sha256(path: &Path) -> Result<String> {
@@ -913,6 +1013,27 @@ fn archive_sha256(path: &Path) -> Result<String> {
 }
 
 pub fn install_release(download: &DownloadedRelease) -> Result<()> {
+    log::info!(
+        "Claude Desktop installation started: version {}",
+        download.release.version
+    );
+    // Installation errors contain only local operations/public package metadata.
+    // Do not use this logging boundary for token-bearing checks or downloads.
+    let result = install_release_inner(download);
+    match &result {
+        Ok(()) => log::info!(
+            "Claude Desktop installation completed: version {}",
+            download.release.version
+        ),
+        Err(error) => log::error!(
+            "Claude Desktop installation failed: version {}: {error:#}",
+            download.release.version
+        ),
+    }
+    result
+}
+
+fn install_release_inner(download: &DownloadedRelease) -> Result<()> {
     let DownloadedRelease { directory, release } = download;
     let archive = directory.path().join(DOWNLOAD_NAME);
     ensure!(
@@ -1005,6 +1126,43 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    std::thread_local! {
+        static CAPTURED_LOGS: core::cell::RefCell<Option<Vec<String>>> = const {
+            core::cell::RefCell::new(None)
+        };
+    }
+
+    struct TestLogger;
+
+    impl log::Log for TestLogger {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            CAPTURED_LOGS.with(|logs| {
+                if let Some(lines) = logs.borrow_mut().as_mut() {
+                    lines.push(format!("{} {}", record.level(), record.args()));
+                }
+            });
+        }
+
+        fn flush(&self) {}
+    }
+
+    fn capture_logs<T>(run: impl FnOnce() -> T) -> (T, String) {
+        static LOGGER: TestLogger = TestLogger;
+        static INITIALIZE: std::sync::Once = std::sync::Once::new();
+        INITIALIZE.call_once(|| {
+            log::set_logger(&LOGGER).unwrap();
+            log::set_max_level(log::LevelFilter::Info);
+        });
+        CAPTURED_LOGS.with(|logs| assert!(logs.replace(Some(Vec::new())).is_none()));
+        let result = run();
+        let text = CAPTURED_LOGS.with(|logs| logs.take().unwrap().join("\n"));
+        (result, text)
+    }
+
     fn target(version: Option<&str>) -> Target {
         Target {
             path: Some(PathBuf::from("Claude.app")),
@@ -1051,6 +1209,30 @@ mod tests {
     }
 
     #[test]
+    fn archive_failures_are_logged_before_native_installation() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join(DOWNLOAD_NAME);
+        fs::write(&archive, b"invalid archive").unwrap();
+        let release = parse_release(&serde_json::to_vec(&feed()).unwrap(), target(None))
+            .unwrap()
+            .unwrap();
+        let download = DownloadedRelease { directory, release };
+
+        let (result, logs) = capture_logs(|| install_release(&download));
+        assert!(result.is_err());
+        assert!(logs.contains("ERROR Claude Desktop installation failed: version 3.2.1"));
+        assert!(logs.contains("SHA-256 архива не совпадает"));
+        assert!(!logs.contains("installation completed"));
+        assert!(archive.exists());
+
+        fs::remove_file(&archive).unwrap();
+        let (result, logs) = capture_logs(|| install_release(&download));
+        assert!(result.is_err());
+        assert!(logs.contains("ERROR Claude Desktop installation failed"));
+        assert!(logs.contains("Не удалось открыть архив для проверки SHA-256"));
+    }
+
+    #[test]
     fn windows_diagnostics_exclude_raw_powershell_errors() {
         let text = "At line:1\n+ command payload\nWIZARD_MSIX_ERROR: phase=16 HRESULT=0x80073CF3 dependency failure\nInvocationInfo: command payload\n";
         assert_eq!(
@@ -1064,23 +1246,46 @@ mod tests {
     fn windows_diagnostics_preserve_errors_without_elevation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("error.txt");
-        let failure = "throw [InvalidOperationException]::new('synthetic installation failure')";
-        let run = |script: &str, path: &Path| {
-            powershell(script)
-                .env("WIZARD_TEST_DIAGNOSTIC", path)
-                .stdin(Stdio::null())
-                .output()
-                .unwrap()
+        let failure = "throw [InvalidOperationException]::new('synthetic installation failure: ошибка установки')";
+        let run = |script: &str, path: &Path, stage: &'static str| {
+            let (result, logs) = capture_logs(|| {
+                run_windows_install(
+                    powershell(script).env("WIZARD_TEST_DIAGNOSTIC", path),
+                    stage,
+                    (stage == "elevation").then_some(path),
+                )
+            });
+            assert!(result.is_err());
+            assert!(logs.contains(&format!("ERROR Claude MSIX {stage}")));
+            assert!(!logs.contains("throw [InvalidOperationException]"));
+            logs
         };
 
+        let (result, logs) = capture_logs(|| {
+            run_windows_install(
+                &mut Command::new(directory.path().join("missing-powershell.exe")),
+                "preflight",
+                None,
+            )
+        });
+        assert!(result.is_err());
+        assert!(logs.contains("ERROR Claude MSIX preflight process failed"));
+
         // A setup exception must be reported without dumping the script.
-        let output = run(&windows_install_script(failure, ""), &path);
-        assert_eq!(output.status.code(), Some(1));
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        let diagnostic = windows_install_diagnostics(&stderr).next().unwrap();
-        assert!(diagnostic.contains("HRESULT=0x80131509"));
-        assert!(diagnostic.ends_with("synthetic installation failure"));
-        assert!(!stderr.contains("throw [InvalidOperationException]"));
+        let logs = run(&windows_install_script(failure, ""), &path, "preflight");
+        assert!(logs.contains("exit code Some(1)"));
+        assert!(logs.contains("HRESULT=0x80131509"));
+        assert!(logs.contains("synthetic installation failure: ошибка установки"));
+
+        let logs = run("exit 13", &path, "preflight");
+        assert!(logs.contains("Версия MSIX не совпадает с выбранной"));
+        let logs = run(
+            "[Console]::Error.WriteLine('RAW_SCRIPT_PAYLOAD'); exit 1",
+            &path,
+            "preflight",
+        );
+        assert!(logs.contains("no exception diagnostic received"));
+        assert!(!logs.contains("RAW_SCRIPT_PAYLOAD"));
 
         // The same reporter writes the elevated channel; failure to write must
         // neither replace the original exit code nor leak raw stderr.
@@ -1088,13 +1293,13 @@ mod tests {
             "$diagnosticPath = $env:WIZARD_TEST_DIAGNOSTIC\n$phase = 16",
             failure,
         );
-        let output = run(&script, &path);
-        assert_eq!(output.status.code(), Some(16));
-        assert!(output.stderr.is_empty());
-        assert!(fs::read_to_string(&path).unwrap().contains("phase=16"));
-        let output = run(&script, directory.path());
-        assert_eq!(output.status.code(), Some(16));
-        assert!(output.stderr.is_empty());
+        let logs = run(&script, &path, "elevation");
+        assert!(logs.contains("exit code Some(16)"));
+        assert!(logs.contains("phase=16"));
+        assert!(logs.contains("ошибка установки"));
+        let logs = run(&script, directory.path(), "elevation");
+        assert!(logs.contains("exit code Some(16)"));
+        assert!(logs.contains("no exception diagnostic received"));
 
         // Replace RunAs with a hidden, unelevated child. Exercise the actual
         // script handoff and exit-code propagation, never UAC or deployment.
@@ -1127,24 +1332,108 @@ function Start-Process {
             setup,
             &format!("{mock}\n$body = @'\n{child}\n'@\n{WINDOWS_ELEVATE}"),
         );
-        let output = run(&script, &path);
-        assert_eq!(output.status.code(), Some(16));
-        assert!(output.stderr.is_empty());
-        assert!(fs::read_to_string(&path).unwrap().contains("phase=16"));
+        let logs = run(&script, &path, "elevation");
+        assert!(logs.contains("exit code Some(16)"));
+        assert!(logs.contains("phase=16"));
+        assert!(logs.contains("ошибка установки"));
 
+        fs::remove_file(&path).unwrap();
         let cancellation =
             "function Start-Process { throw [ComponentModel.Win32Exception]::new(1223) }";
         let script = windows_install_script(
             setup,
             &format!("{cancellation}\n$body = ''\n{WINDOWS_ELEVATE}"),
         );
-        let output = run(&script, &path);
-        assert_eq!(output.status.code(), Some(19));
-        assert!(
-            windows_install_diagnostics(&String::from_utf8(output.stderr).unwrap())
-                .next()
-                .is_some()
+        let logs = run(&script, &path, "elevation");
+        assert!(logs.contains("exit code Some(19)"));
+        assert!(logs.contains("HRESULT=0x"));
+        assert!(logs.contains("Запрос прав администратора отменён"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_in_use_diagnostics_match_package_paths() {
+        // All package/process/service queries are fixtures, never host inspection.
+        let fixture = r"
+$package = @{ publisher = 'fixture publisher' }
+function Get-AppxPackage {
+    [pscustomobject]@{ Name = 'Claude'; Publisher = 'fixture publisher'; InstallLocation = 'C:\Fixture\Claude' }
+}
+function Get-CimInstance {
+    param($ClassName)
+    if ($ClassName -eq 'Win32_Process') {
+        [pscustomobject]@{ Name = 'cowork-svc.exe'; ProcessId = 101; ExecutablePath = 'C:\Fixture\Claude\cowork-svc.exe'; CommandLine = 'RAW_COMMAND_PAYLOAD' }
+        [pscustomobject]@{ Name = 'claude-ssh-helper.exe'; ProcessId = 102; ExecutablePath = 'c:\fixture\CLAUDE\bin\claude-ssh-helper.exe' }
+        [pscustomobject]@{ Name = 'cowork-svc.exe'; ProcessId = 201; ExecutablePath = 'C:\Fixture\Claude-other\cowork-svc.exe' }
+        [pscustomobject]@{ Name = 'Claude.exe'; ProcessId = 202; ExecutablePath = 'C:\Fixture\Claude\..\Other\Claude.exe' }
+        [pscustomobject]@{ Name = 'unknown.exe'; ProcessId = 203; ExecutablePath = $null }
+    } elseif ($ClassName -eq 'Win32_Service') {
+        [pscustomobject]@{ Name = 'fixture-cowork'; ProcessId = 101; State = 'Running'; StartMode = 'Auto'; PathName = 'RAW_COMMAND_PAYLOAD' }
+        [pscustomobject]@{ Name = 'unrelated-service'; ProcessId = 201; State = 'Running'; StartMode = 'Auto'; PathName = 'C:\Fixture\Claude\misleading.exe' }
+        [pscustomobject]@{ Name = 'stopped-service'; ProcessId = 0; State = 'Stopped'; StartMode = 'Auto' }
+    } else { throw 'unexpected fixture query' }
+}
+";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("usage.txt");
+        let run = |setup: &str, phase: u8, failure: &str| {
+            // Each attempted install gets a new report; use the real file channel.
+            if path.exists() {
+                fs::remove_file(&path).unwrap();
+            }
+            let script = windows_install_script(
+                &format!(
+                    "{fixture}\n{setup}\n$diagnosticPath = $env:WIZARD_TEST_DIAGNOSTIC\n$phase = {phase}"
+                ),
+                failure,
+            );
+            let (result, logs) = capture_logs(|| {
+                run_windows_install(
+                    powershell(&script).env("WIZARD_TEST_DIAGNOSTIC", &path),
+                    "elevation",
+                    Some(&path),
+                )
+            });
+            assert!(result.is_err());
+            assert!(!logs.contains("RAW_COMMAND_PAYLOAD"));
+            (result.unwrap_err().to_string(), logs)
+        };
+
+        let native =
+            "throw [Runtime.InteropServices.COMException]::new('resources busy', -2147009278)";
+        let (message, logs) = run("", 16, native);
+        assert!(message.contains("ресурсы пакета используются (0x80073D02)"));
+        assert!(logs.contains("exit code Some(24)"));
+        assert!(logs.contains("not proven blockers"));
+        assert!(logs.contains("processes=2, unavailable_executable_paths=1"));
+        assert!(logs.contains("name=cowork-svc.exe pid=101"));
+        assert!(logs.contains("name=claude-ssh-helper.exe pid=102"));
+        assert!(logs.contains("name=fixture-cowork pid=101 state=Running start_mode=Auto"));
+        assert!(!logs.contains("pid=201"));
+        assert!(!logs.contains("pid=202"));
+        assert!(!logs.contains("unrelated-service"));
+        assert!(!logs.contains("stopped-service"));
+
+        let wrapped = "throw [InvalidOperationException]::new('Deployment failed: 0x80073d02')";
+        assert!(run("", 16, wrapped).1.contains("exit code Some(24)"));
+        let (_, logs) = run("", 17, wrapped);
+        assert!(logs.contains("exit code Some(17)"));
+        assert!(!logs.contains("Related component snapshot"));
+
+        let (_, logs) = run(
+            "function Get-CimInstance { throw 'probe failed' }",
+            16,
+            native,
         );
+        assert!(logs.contains("exit code Some(24)"));
+        assert!(logs.contains("HRESULT=0x80073D02"));
+        assert!(logs.contains("Related component snapshot failed"));
+
+        let foreign = "function Get-AppxPackage { [pscustomobject]@{ Name='Claude'; Publisher='foreign'; InstallLocation='C:\\Fixture\\Claude' } }";
+        let (_, logs) = run(foreign, 16, native);
+        assert!(logs.contains("exit code Some(24)"));
+        assert!(logs.contains("installed package identity not resolved"));
+        assert!(!logs.contains("Related process:"));
     }
 
     #[cfg(target_os = "macos")]

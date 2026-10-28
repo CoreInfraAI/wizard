@@ -132,7 +132,9 @@ pub(crate) fn download_claude_desktop_release(
 
 #[tauri::command]
 pub(crate) fn install_claude_desktop_release(app: tauri::AppHandle) -> Result<(), String> {
-    start(app, None, Operation::Install, false)
+    start(app, None, Operation::Install, false).inspect_err(|message| {
+        log::error!("Claude Desktop installation could not start: {message}");
+    })
 }
 
 fn start(
@@ -198,7 +200,12 @@ fn start(
             if automatic {
                 session.last_check = Some(Instant::now());
             }
-            log::warn!("Claude Desktop installation operation failed");
+            if matches!(operation, Operation::Install) {
+                log::error!("Claude Desktop installation failed: {message}");
+            } else {
+                // Check/download errors can originate in authenticated requests.
+                log::warn!("Claude Desktop installation operation failed");
+            }
             manager.signal.notify(State::Failed { operation, message });
         }
     });
@@ -327,7 +334,16 @@ async fn run(
             let download = Arc::clone(download);
             tauri::async_runtime::spawn_blocking(move || installer::install_release(&download))
                 .await
-                .map_err(|_| "Не удалось выполнить установку Claude")?
+                .map_err(|error| {
+                    let reason = match error {
+                        tauri::Error::JoinError(error) if error.is_panic() => "panicked",
+                        tauri::Error::JoinError(_) => "was cancelled",
+                        _ => "failed",
+                    };
+                    // A panic payload is arbitrary data, not a safe diagnostic.
+                    log::error!("Claude Desktop installation worker {reason}");
+                    "Не удалось выполнить установку Claude"
+                })?
                 .map_err(|error| format!("{error:#}"))?;
 
             session.package = None;
