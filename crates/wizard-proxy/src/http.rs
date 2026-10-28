@@ -14,9 +14,9 @@ use hyper::http::uri::Authority;
 use hyper::service::service_fn;
 use hyper::upgrade::{OnUpgrade, Upgraded};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode, Uri};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::io;
-use tokio::io::{AsyncRead, AsyncWrite, copy_bidirectional};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -26,6 +26,9 @@ use tokio::time::timeout;
 mod tests;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// After one side of a tunnel closes cleanly, the other may finish for this long. A client
+/// that half-closes and then vanishes would otherwise leave a silent remote open forever.
+const HALF_CLOSE_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 });
 
 type Body = UnsyncBoxBody<Bytes, hyper::Error>;
 type Driver = Pin<Box<dyn Future<Output = Result<(), hyper::Error>> + Send>>;
@@ -50,7 +53,10 @@ pub(crate) async fn serve_client(stream: TcpStream, upstream: Arc<Upstream>) {
         async move { Ok::<_, Infallible>(handle(request, upstream, driver_sender, tunnel_sender).await) }
     });
     let mut builder = hyper::server::conn::http1::Builder::new();
-    builder.keep_alive(false);
+    builder
+        .keep_alive(false)
+        // Enables hyper's default 30 s timeout for clients that never send a request head.
+        .timer(TokioTimer::new());
     let connection = builder
         .serve_connection(TokioIo::new(stream), service)
         .with_upgrades();
@@ -74,16 +80,36 @@ pub(crate) async fn serve_client(stream: TcpStream, upstream: Arc<Upstream>) {
     if let Ok(tunnel) = tunnels.try_recv()
         && let Ok(client) = tunnel.client.await
     {
-        // TLS and application protocols inside CONNECT are opaque bytes.
-        let mut client = TokioIo::new(client);
+        let client = TokioIo::new(client);
         match tunnel.remote {
-            Remote::Direct(mut remote) => {
-                let _ = copy_bidirectional(&mut client, &mut remote).await;
-            }
-            Remote::Upstream(remote) => {
-                let _ = copy_bidirectional(&mut client, &mut TokioIo::new(remote)).await;
-            }
+            Remote::Direct(remote) => relay(client, remote).await,
+            Remote::Upstream(remote) => relay(client, TokioIo::new(remote)).await,
         }
+    }
+}
+
+/// Copy both directions until both close; an error, or [`HALF_CLOSE_TIMEOUT`] after
+/// the first clean close, drops both sides. TLS and application protocols inside
+/// CONNECT are opaque bytes.
+async fn relay(client: impl AsyncRead + AsyncWrite, remote: impl AsyncRead + AsyncWrite) {
+    let (mut client_read, mut client_write) = tokio::io::split(client);
+    let (mut remote_read, mut remote_write) = tokio::io::split(remote);
+    let upload = async {
+        tokio::io::copy(&mut client_read, &mut remote_write).await?;
+        remote_write.shutdown().await
+    };
+    let download = async {
+        tokio::io::copy(&mut remote_read, &mut client_write).await?;
+        client_write.shutdown().await
+    };
+    tokio::pin!(upload, download);
+    tokio::select! {
+        result = &mut upload => if result.is_ok() {
+            let _ = timeout(HALF_CLOSE_TIMEOUT, download).await;
+        },
+        result = &mut download => if result.is_ok() {
+            let _ = timeout(HALF_CLOSE_TIMEOUT, upload).await;
+        },
     }
 }
 
@@ -223,7 +249,7 @@ async fn connect_direct(authority: &Authority, default_port: u16) -> io::Result<
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(host);
-    TcpStream::connect((host, authority.port_u16().unwrap_or(default_port))).await
+    crate::connect((host, authority.port_u16().unwrap_or(default_port))).await
 }
 
 async fn connect_remote(

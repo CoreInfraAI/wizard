@@ -27,7 +27,7 @@ impl Upstream {
     pub(crate) async fn connect(&self) -> io::Result<TlsStream<TcpStream>> {
         // Deliberately bypass HTTP_PROXY/HTTPS_PROXY: selected destinations must
         // use this upstream, never an environment-provided proxy or direct fallback.
-        let stream = TcpStream::connect((HOST, PORT)).await?;
+        let stream = crate::connect((HOST, PORT)).await?;
         let server_name = ServerName::try_from(HOST).map_err(io::Error::other)?;
         self.connector.connect(server_name, stream).await
     }

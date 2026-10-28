@@ -98,6 +98,8 @@ pub fn run_application() -> Result<()> {
             #[cfg(target_os = "linux")]
             let tray_enabled = false;
 
+            #[cfg(unix)]
+            proxy::raise_open_file_limit();
             if let Err(error) = tauri::async_runtime::block_on(proxy::sync(app.handle())) {
                 log::error!("proxy startup failed: {error:#}");
             }

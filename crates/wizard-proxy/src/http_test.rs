@@ -1,6 +1,8 @@
 use crate::{Proxy, serve, upstream};
 use alloc::sync::Arc;
 use core::{net::SocketAddr, time::Duration};
+use hyper::http::uri::Authority;
+use socket2::SockRef;
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
@@ -28,7 +30,7 @@ async fn start_proxy() -> io::Result<(SocketAddr, Proxy)> {
     let (finished, stopped) = watch::channel(());
     let task = tokio::spawn(async move {
         let _finished = finished;
-        serve(listener, upstream, receiver).await
+        serve(listener, address, upstream, receiver).await;
     });
     Ok((
         address,
@@ -185,6 +187,29 @@ async fn direct_connect_preserves_buffered_bytes_and_half_close() -> io::Result<
 }
 
 #[tokio::test]
+async fn half_closed_tunnel_to_silent_remote_closes_after_timeout() -> io::Result<()> {
+    timeout(Duration::from_secs(5), async {
+        let origin = TcpListener::bind("127.0.0.1:0").await?;
+        let target = origin.local_addr()?;
+        let (address, proxy) = start_proxy().await?;
+        let mut client = TcpStream::connect(address).await?;
+        client
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await?;
+        // The remote stays open and silent after the client's FIN.
+        let (mut remote, _) = origin.accept().await?;
+        assert!(read_head(&mut client).await?.starts_with("HTTP/1.1 200 "));
+        client.shutdown().await?;
+        let mut byte = [0];
+        assert_eq!(remote.read(&mut byte).await?, 0);
+        assert_eq!(client.read(&mut byte).await?, 0);
+        proxy.stop().await
+    })
+    .await
+    .expect("half-closed tunnel stayed open")
+}
+
+#[tokio::test]
 async fn stopping_proxy_closes_both_direct_tunnel_sockets() -> io::Result<()> {
     timeout(Duration::from_secs(5), async {
         let origin = TcpListener::bind("127.0.0.1:0").await?;
@@ -248,4 +273,14 @@ async fn malformed_destination_is_rejected_before_dialing() -> io::Result<()> {
         }
         proxy.stop().await
     }).await.expect("invalid destination timed out")
+}
+
+#[tokio::test]
+async fn direct_connections_use_tcp_keepalive() -> io::Result<()> {
+    let origin = TcpListener::bind("127.0.0.1:0").await?;
+    let authority =
+        Authority::try_from(origin.local_addr()?.to_string()).map_err(io::Error::other)?;
+    let stream = super::connect_direct(&authority, 80).await?;
+    assert!(SockRef::from(&stream).keepalive()?);
+    Ok(())
 }

@@ -94,6 +94,44 @@ fn publish(app: &tauri::AppHandle, proxy_app: App, running: bool) {
     });
 }
 
+/// macOS starts GUI apps with a soft limit of 256 descriptors, and each tunnel holds two;
+/// as the system proxy, the listeners would run out. Never lowers the limit.
+#[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "std has no safe bindings for getrlimit and setrlimit"
+)]
+pub(crate) fn raise_open_file_limit() {
+    // macOS OPEN_MAX: setrlimit(2) there recommends min(OPEN_MAX, rlim_max) for RLIMIT_NOFILE.
+    const TARGET: libc::rlim_t = 10240;
+
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid, writable rlimit.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } != 0 {
+        let error = std::io::Error::last_os_error();
+        log::warn!("failed to read open file limit: {error}");
+        return;
+    }
+    let previous = limit.rlim_cur;
+    limit.rlim_cur = TARGET.min(limit.rlim_max);
+    if limit.rlim_cur <= previous {
+        return;
+    }
+    // SAFETY: `limit` is a valid rlimit whose soft limit does not exceed the hard one.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) } != 0 {
+        let error = std::io::Error::last_os_error();
+        log::warn!("failed to raise open file limit from {previous}: {error}");
+        return;
+    }
+    log::info!(
+        "open file limit raised from {previous} to {}",
+        limit.rlim_cur
+    );
+}
+
 /// Called at startup and after a change of either app's proxy setting. Each listener runs while
 /// its app has a token and is restarted when that token changes; one failure does not skip the other.
 pub(crate) async fn sync(app: &tauri::AppHandle) -> Result<()> {

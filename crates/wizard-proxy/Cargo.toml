@@ -15,7 +15,9 @@ base64.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "server", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+log.workspace = true
 rustls-native-certs.workspace = true
+socket2.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros"] }
 tokio-rustls.workspace = true
 url.workspace = true
