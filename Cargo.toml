@@ -3,7 +3,7 @@ members = ["crates/wizard-*", "xtask"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.6"
+version = "0.2.7"
 authors = ["CoreInfraAI"]
 license = "MPL-2.0"
 edition = "2024"

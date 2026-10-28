@@ -1,3 +1,24 @@
+CoreInfra Wizard licensing scope
+===============================
+
+Except where separately noted, CoreInfra Wizard's original source code is
+licensed under the Mozilla Public License, v. 2.0, reproduced below.
+
+The Catalyst components and derivatives, including the source files under
+crates/wizard-gui/wizard-ui/src/components/catalyst/, are governed by the
+Tailwind Plus commercial license and are excluded from this project's
+MPL-2.0 grant. Their license terms are provided in
+crates/wizard-gui/wizard-ui/src/components/catalyst/LICENSE.md.
+This exclusion also applies to those components in distributed application
+bundles; bundling them with MPL-licensed code does not relicense them.
+
+Other third-party materials retain their respective licenses.
+
+The scope notice above is not part of the Mozilla Public License. The
+unmodified license text follows.
+
+----------------------------------------------------------------------
+
 Mozilla Public License Version 2.0
 ==================================
 

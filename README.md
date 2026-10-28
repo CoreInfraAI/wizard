@@ -60,6 +60,8 @@ The generated files are located at these paths relative to the repository root:
 
 ## License
 
-CoreInfra Wizard is licensed under the [Mozilla Public License, v. 2.0](LICENSE). If a copy of the MPL was not distributed with this project, you can obtain one at <https://mozilla.org/MPL/2.0/>.
+Except where separately noted, CoreInfra Wizard's original source code is licensed under the [Mozilla Public License, v. 2.0](LICENSE). If a copy of the MPL was not distributed with this project, you can obtain one at <https://mozilla.org/MPL/2.0/>.
 
-All versions of this project, including those released before the license file was added, are available under the same license.
+The Catalyst components and their derivatives in [`crates/wizard-gui/wizard-ui/src/components/catalyst/`](crates/wizard-gui/wizard-ui/src/components/catalyst/) are governed by the [Tailwind Plus commercial license](crates/wizard-gui/wizard-ui/src/components/catalyst/LICENSE.md) and are excluded from the MPL-2.0 grant, including when bundled in the application. Other third-party materials retain their respective licenses.
+
+The MPL-2.0 grant for CoreInfra Wizard's original code applies to all versions, including those released before the license file was added. This statement does not extend to separately licensed third-party materials.

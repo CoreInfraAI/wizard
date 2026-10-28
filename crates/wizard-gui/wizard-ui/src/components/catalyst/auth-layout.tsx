@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: LicenseRef-Tailwind-Plus
+// Catalyst by Tailwind Labs Inc., with project modifications.
+// See LICENSE.md in this directory. Excluded from the MPL-2.0 grant.
+
 import type * as React from "react";
 
 export function AuthLayout({ children }: { children: React.ReactNode }) {
