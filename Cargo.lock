@@ -5429,6 +5429,7 @@ name = "wizard-gui"
 version = "0.2.8"
 dependencies = [
  "anyhow",
+ "libc",
  "log",
  "serde",
  "serde_json",
@@ -5452,7 +5453,9 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "log",
  "rustls-native-certs",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "url",

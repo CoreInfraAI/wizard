@@ -36,6 +36,9 @@ wizard-core.workspace = true
 wizard-proxy.workspace = true
 wizard-settings.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tauri = { workspace = true, features = ["tray-icon"] }
 tauri-plugin-autostart.workspace = true
