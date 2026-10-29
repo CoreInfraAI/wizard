@@ -95,6 +95,7 @@ pub(crate) struct HubAccount {
     signed_in: bool,
     /// Absent until loaded from Hub, or when loading failed.
     profile: Option<HubProfile>,
+    active_hub_id: Option<String>,
     pending: bool,
     error: Option<String>,
 }
@@ -102,12 +103,19 @@ pub(crate) struct HubAccount {
 impl HubAccount {
     /// `signed_in` comes from saved settings (a read failure is signed out), `profile` from memory.
     fn saved(app: &tauri::AppHandle, pending: bool, error: Option<String>) -> Self {
-        let signed_in = settings::get_state(app).is_ok_and(|s| !s.hub_session.is_empty());
+        let settings = settings::get_state(app).ok();
+        let signed_in = settings.as_ref().is_some_and(|s| !s.hub_session.is_empty());
+        let profile = signed_in
+            .then(|| app.state::<HubProfileState>().lock().clone())
+            .flatten();
+        let active_hub_id = profile
+            .as_ref()
+            .zip(settings.as_ref())
+            .map(|(profile, settings)| profile.active_hub_id(&settings.active_hub_id).to_owned());
         Self {
             signed_in,
-            profile: signed_in
-                .then(|| app.state::<HubProfileState>().lock().clone())
-                .flatten(),
+            profile,
+            active_hub_id,
             pending,
             error,
         }
@@ -130,7 +138,11 @@ pub(crate) async fn load_profile(app: &tauri::AppHandle) -> Result<HubProfile, H
 
     let (sent, profile) = hub_tokens::with_session(app, |client, session| async move {
         let (update, profile) = hub::fetch_profile(&client, &session).await;
-        (update, profile.map(|profile| (session, profile)))
+        let current_session = match &update {
+            hub::SessionUpdate::Refreshed(refreshed) => refreshed.clone(),
+            _ => session,
+        };
+        (update, profile.map(|profile| (current_session, profile)))
     })
     .await?;
     let current = settings::get_state(app).map(|s| s.hub_session);
@@ -199,14 +211,61 @@ pub(crate) async fn logout_hub_account(app: tauri::AppHandle) -> Result<(), Stri
     if !matches!(*app.state::<HubAuth>().attempt(), Attempt::Idle) {
         return Err("Дождитесь завершения попытки входа".into());
     }
-    settings::update_state(&app, |s| s.hub_session.clear())
-        .await
-        .map_err(|_| "Не удалось удалить сессию Wizard")?;
+    settings::update_state(&app, |s| {
+        s.hub_session.clear();
+        s.active_hub_id.clear();
+    })
+    .await
+    .map_err(|_| "Не удалось удалить сессию Wizard")?;
     log::info!("hub logout");
     clear_profile(&app);
     HubTokensManager::clear(&app);
     publish(&app, false, None);
     Ok(())
+}
+
+/// Selects an accessible hub without changing any agent configuration.
+#[tauri::command]
+pub(crate) async fn select_hub(app: tauri::AppHandle, hub_id: String) -> Result<(), String> {
+    let profile = load_profile(&app)
+        .await
+        .map_err(|_| "Не удалось загрузить хабы")?;
+    let session = settings::get_state(&app)
+        .map_err(|_| "Настройки недоступны")?
+        .hub_session;
+    if session.is_empty() {
+        return Err("Войдите в CoreInfra Hub".into());
+    }
+    if !profile.hubs.iter().any(|hub| hub.hub_id == hub_id) {
+        return Err("Хаб недоступен этому аккаунту".into());
+    }
+    settings::update_state(&app, move |s| {
+        if s.hub_session == session {
+            s.active_hub_id = hub_id;
+        }
+    })
+    .await
+    .map_err(|_| "Не удалось сохранить выбранный хаб")?;
+    HubTokensManager::clear(&app);
+    republish(&app);
+    HubTokensManager::refresh(&app).await;
+    Ok(())
+}
+
+/// Opens only the configured Hub origin in the system browser.
+#[tauri::command]
+pub(crate) async fn open_hub(app: tauri::AppHandle, theme: String) -> Result<(), String> {
+    let mut url = Url::parse(hub::HUB_ORIGIN).map_err(|_| "Некорректный адрес хаба")?;
+    let account = HubAccount::saved(&app, false, None);
+    if let Some(id) = account.active_hub_id {
+        url.query_pairs_mut().append_pair("hub_id", &id);
+    }
+    if matches!(theme.as_str(), "light" | "dark" | "system") {
+        url.query_pairs_mut().append_pair("app_theme", &theme);
+    }
+    login::open_browser(&url)
+        .await
+        .map_err(|error| error.message().to_owned())
 }
 
 /// Republishes the saved account after a session change, keeping `pending` and `error`.
@@ -272,9 +331,12 @@ async fn run_login(app: &tauri::AppHandle) -> Result<(), LoginError> {
             return Err(error);
         }
     };
-    if settings::update_state(app, move |s| s.hub_session = session)
-        .await
-        .is_err()
+    if settings::update_state(app, move |s| {
+        s.hub_session = session;
+        s.active_hub_id.clear();
+    })
+    .await
+    .is_err()
     {
         callback.reply(Reply::Failed).await;
         return Err(LoginError::Save);

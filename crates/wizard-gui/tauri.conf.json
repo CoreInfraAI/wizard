@@ -18,6 +18,8 @@
     "windows": [
       {
         "title": "CoreInfra Wizard",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "create": false,
         "width": 1100,
         "height": 720

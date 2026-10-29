@@ -121,7 +121,7 @@ function TokenField({ token, hub, disabled }: {
           </ListboxOption>
         ))}
       </Listbox>
-      {!hub.signedIn && <Description>Войдите в CoreInfra Hub для выбора токена.</Description>}
+      {!hub.signedIn && <Description>Войдите в CoreInfra Hub для выбора ключа.</Description>}
       {hub.status === "error" && (
         <ErrorMessage>
           {hub.error}{" "}
@@ -250,17 +250,17 @@ function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boole
 // The selected agent's page. Plan preparation and the plan dialog outlive page switches.
 export function AgentPage({ agents, page, proxy, account }: {
   agents: AgentStates;
-  page: AgentId;
+  page: AgentId | null;
   proxy: ReturnType<typeof useProxy>;
   account: HubAccountControl;
 }) {
   const [preparedChange, setPreparedChange] = useState<PreparedAgentChange>();
   const [isPreparingPlan, setIsPreparingPlan] = useState(false);
   // Tagged with the page that prepared the change, so it never shows on another agent's page.
-  const [error, setError] = useState<{ page: AgentId; message: string }>();
+  const [error, setError] = useState<{ page: AgentId | null; message: string }>();
   const pageError = error?.page === page ? error.message : undefined;
   const isChangeInProgress = isPreparingPlan || preparedChange !== undefined;
-  const hub: Hub = { ...useHubTokens(), signedIn: account.signedIn };
+  const hub: Hub = { ...useHubTokens(account.account?.active_hub_id), signedIn: account.signedIn };
   const claudeDesktopToken = useTokenMenu("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
   const claudeInstall = useClaudeDesktopInstall();
 
@@ -299,21 +299,25 @@ export function AgentPage({ agents, page, proxy, account }: {
 
   let content: ReactNode;
   switch (page) {
+    // Keep a prepared plan alive while the settings page is selected.
+    case null:
+      content = null;
+      break;
     case "codex": {
       const codex = agents.codex;
       const chatGptProxyStopped = proxy.proxy?.chatgpt === false && codex.status === "found"
         && codex.data.desktop.status === "found" && codex.data.routing_mode !== "disabled";
       content = (
         <>
-          <PageHeading title="Codex и ChatGPT" actions={<BackupButton agent="codex" disabled={isChangeInProgress} />} />
+          <PageHeading title="ChatGPT / Codex" actions={<BackupButton agent="codex" disabled={isChangeInProgress} />} />
           {codex.status === "error" ? (
-            <div className="mt-8"><ErrorText>Не удалось получить состояние Codex / ChatGPT: {codex.data}</ErrorText></div>
+            <div className="mt-8"><ErrorText>Не удалось получить состояние ChatGPT / Codex: {codex.data}</ErrorText></div>
           ) : (
             <DescriptionList className="mt-8 sm:mt-10">
-              <DescriptionTerm>Codex CLI</DescriptionTerm>
-              <DescriptionDetails><Version detection={codex.status === "found" ? codex.data.cli : codex} /></DescriptionDetails>
               <DescriptionTerm>ChatGPT</DescriptionTerm>
               <DescriptionDetails><Version detection={codex.status === "found" ? codex.data.desktop : codex} /></DescriptionDetails>
+              <DescriptionTerm>Codex CLI</DescriptionTerm>
+              <DescriptionDetails><Version detection={codex.status === "found" ? codex.data.cli : codex} /></DescriptionDetails>
               <DescriptionTerm>Прокси для ChatGPT</DescriptionTerm>
               <DescriptionDetails>
                 <ProxyStatus proxy={proxy} app="chatgpt" />
@@ -328,7 +332,7 @@ export function AgentPage({ agents, page, proxy, account }: {
           {codex.status === "found" && (
             <RoutingFieldset agent="codex" modes={routingModes("ChatGPT")} mode={codex.data.routing_mode}
               toChange={(mode) => ({ CodexSetRouting: mode })} agentToken={codex.data.token} hub={hub}
-              note="Настройка общая для Codex и ChatGPT." disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
+              note="Настройка общая для ChatGPT и Codex." disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
         </>
       );

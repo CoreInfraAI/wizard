@@ -1,5 +1,4 @@
 use anyhow::{Context as _, Result};
-use tauri::Manager as _;
 use tauri::menu::{Menu, MenuEvent, MenuItem};
 use tauri::tray::TrayIconBuilder;
 
@@ -33,10 +32,8 @@ pub(crate) fn set_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<()> {
 fn set_enabled_on_main_thread(app: &tauri::AppHandle, enabled: bool) -> Result<()> {
     // Removing the registry entry drops the native icon; AppKit requires the main thread.
     if !enabled {
-        let removed = app.remove_tray_by_id(TRAY_ID).is_some();
-        if removed && app.webview_windows().is_empty() {
-            app.exit(0);
-        }
+        // The settings writer decides whether to exit after all OS effects finish.
+        app.remove_tray_by_id(TRAY_ID);
         return Ok(());
     }
     if is_enabled(app) {

@@ -87,12 +87,13 @@ pub fn run_application() -> Result<()> {
             hub_tokens::HubTokensManager::initialize(app.handle())?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let tray_enabled = {
-                let proxy_enabled = settings::get_state(app.handle())?.local_proxy_enabled();
+                let preferences = settings::get_state(app.handle())?.application;
                 autostart::initialize(app.handle())?;
-                autostart::set_enabled(app.handle(), proxy_enabled)?;
+                let autostart = autostart::set_enabled(app.handle(), preferences.autostart_enabled);
 
                 app.on_menu_event(|app, event| tray::on_menu_event(app, &event));
-                tray::set_enabled(app.handle(), proxy_enabled)?;
+                let tray = tray::set_enabled(app.handle(), preferences.tray_enabled);
+                autostart.and(tray)?;
                 tray::is_enabled(app.handle())
             };
             #[cfg(target_os = "linux")]
@@ -116,6 +117,8 @@ pub fn run_application() -> Result<()> {
             claude_desktop_install::check_claude_desktop_release,
             claude_desktop_install::download_claude_desktop_release,
             claude_desktop_install::install_claude_desktop_release,
+            settings::get_application_settings,
+            settings::set_application_setting,
             logs::open_logs,
             logs::read_logs,
             updater::get_update_state,
@@ -124,7 +127,10 @@ pub fn run_application() -> Result<()> {
             hub_auth::get_hub_account_state,
             hub_auth::login_hub_account,
             hub_auth::logout_hub_account,
+            hub_auth::select_hub,
+            hub_auth::open_hub,
             hub_tokens::get_hub_tokens_state,
+            hub_tokens::get_configured_token_info,
             hub_tokens::refresh_hub_tokens,
             proxy::get_proxy_state,
             agents::get_agent_state,

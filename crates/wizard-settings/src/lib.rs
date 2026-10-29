@@ -21,8 +21,29 @@ pub struct Settings {
     /// Account session, independent of agent tokens. Never expose through IPC.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub hub_session: String,
+    /// Selected Hub for listing and creating agent tokens; empty uses the personal hub.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub active_hub_id: String,
+    /// Application lifecycle preferences, independent of proxy demand.
+    pub application: ApplicationSettings,
     /// Kept last: it serializes as a TOML table, written after plain keys.
     pub last_paths: LastPaths,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ApplicationSettings {
+    pub tray_enabled: bool,
+    pub autostart_enabled: bool,
+}
+
+impl Default for ApplicationSettings {
+    fn default() -> Self {
+        Self {
+            tray_enabled: true,
+            autostart_enabled: true,
+        }
+    }
 }
 
 /// Last found agent paths: first search candidates, not cached detection results.
@@ -103,4 +124,70 @@ pub fn update_file(edit: impl FnOnce(&mut Settings)) -> Result<()> {
         return Ok(());
     }
     save_to_file(&settings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn application_defaults_and_partial_tables() {
+        for text in ["", "[last_paths]\n", "[application]\n"] {
+            let settings: Settings = toml_edit::de::from_str(text).expect("valid settings");
+            assert!(settings.application.tray_enabled);
+            assert!(settings.application.autostart_enabled);
+        }
+        let settings: Settings = toml_edit::de::from_str("[application]\ntray_enabled = false\n")
+            .expect("partial application settings");
+        assert!(!settings.application.tray_enabled);
+        assert!(settings.application.autostart_enabled);
+        assert!(Settings::default().application.tray_enabled);
+        assert!(Settings::default().application.autostart_enabled);
+    }
+
+    #[test]
+    fn application_preferences_round_trip_independently_of_proxy_demand() {
+        for tray_enabled in [false, true] {
+            for autostart_enabled in [false, true] {
+                let settings = Settings {
+                    application: ApplicationSettings {
+                        tray_enabled,
+                        autostart_enabled,
+                    },
+                    claude_proxy_enabled: Some("fixture".into()),
+                    ..Settings::default()
+                };
+                let text = toml_edit::ser::to_string_pretty(&settings).expect("serialize settings");
+                let restored: Settings = toml_edit::de::from_str(&text).expect("read settings");
+                assert_eq!(restored.application.tray_enabled, tray_enabled);
+                assert_eq!(restored.application.autostart_enabled, autostart_enabled);
+                assert!(restored.local_proxy_enabled());
+            }
+        }
+    }
+
+    #[test]
+    fn existing_settings_default_to_personal_hub() {
+        let settings: Settings = toml_edit::de::from_str("hub_session = 'session'\n[last_paths]\n")
+            .expect("settings without a selected hub should deserialize");
+        assert!(settings.active_hub_id.is_empty());
+    }
+
+    #[test]
+    fn selected_hub_round_trips_with_discovered_paths() {
+        let settings = Settings {
+            active_hub_id: "team".into(),
+            last_paths: LastPaths {
+                codex: Some(PathBuf::from("/usr/local/bin/codex")),
+                ..LastPaths::default()
+            },
+            ..Settings::default()
+        };
+        let text = toml_edit::ser::to_string_pretty(&settings)
+            .expect("settings with a selected hub and paths should serialize");
+        let restored: Settings =
+            toml_edit::de::from_str(&text).expect("serialized settings should deserialize");
+        assert_eq!(restored.active_hub_id, "team");
+        assert_eq!(restored.last_paths.codex, settings.last_paths.codex);
+    }
 }
