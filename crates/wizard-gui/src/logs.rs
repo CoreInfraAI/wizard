@@ -1,4 +1,4 @@
-//! Read-only viewer for the current GUI log file.
+//! Read-only viewer for the current GUI and proxy log files.
 
 use anyhow::{Context as _, Result};
 use std::{
@@ -10,6 +10,13 @@ use tauri::Manager as _;
 
 const WINDOW_LABEL: &str = "logs";
 const MAX_LOG_BYTES: u64 = 256 * 1024;
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LogSource {
+    Wizard,
+    Proxy,
+}
 
 #[tauri::command]
 pub(crate) async fn open_logs(app: tauri::AppHandle) -> Result<(), String> {
@@ -41,10 +48,13 @@ pub(crate) async fn open_logs(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) async fn read_logs() -> Result<String, String> {
+pub(crate) async fn read_logs(source: LogSource) -> Result<String, String> {
     let path = wizard_settings::paths::logs_dir()
         .map_err(|error| error.to_string())?
-        .join("Wizard.log");
+        .join(match source {
+            LogSource::Wizard => "Wizard.log",
+            LogSource::Proxy => "Proxy.log",
+        });
     tauri::async_runtime::spawn_blocking(move || read_tail(&path))
         .await
         .map_err(|error| format!("log reader task failed: {error}"))?
