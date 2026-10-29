@@ -5501,7 +5501,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-proxy-daemon"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "block2",
  "chrono",
@@ -5510,7 +5510,9 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "objc2-service-management",
+ "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
  "wizard-proxy",
  "wizard-settings",
 ]

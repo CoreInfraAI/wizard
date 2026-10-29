@@ -6,7 +6,7 @@ use std::{
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -58,6 +58,45 @@ async fn disabling_reload_replies_before_exit() -> io::Result<()> {
     assert_eq!(response.status.version, env!("CARGO_PKG_VERSION"));
     assert!(!response.status.enabled());
     task.await.map_err(io::Error::other)??;
+    Ok(())
+}
+
+async fn shutdown_replies_before_exit_and_preserves_settings() -> io::Result<()> {
+    settings(Some("shutdown-fixture"), None);
+    let state = state();
+    assert!(state.reload_with_lock().await.error.is_none());
+    let claude = TcpListener::bind("127.0.0.1:0").await?;
+    let chatgpt = TcpListener::bind("127.0.0.1:0").await?;
+    let address = claude.local_addr()?;
+    let task = tokio::spawn(run_listeners(
+        state,
+        claude,
+        chatgpt,
+        core::future::pending(),
+    ));
+
+    let destination = TcpListener::bind("127.0.0.1:0").await?;
+    let target = destination.local_addr()?;
+    let mut client = TcpStream::connect(address).await?;
+    client
+        .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+        .await?;
+    let (mut remote, _) = destination.accept().await?;
+
+    let response: control::ShutdownResponse =
+        control::request(&address.to_string(), control::Command::Shutdown).await?;
+    assert_eq!(response.pid, std::process::id());
+    task.await.map_err(io::Error::other)??;
+    // A completed Shutdown closes both ends of an active direct tunnel.
+    let mut reply = Vec::new();
+    client.read_to_end(&mut reply).await?;
+    assert!(reply.starts_with(b"HTTP/1.1 200"));
+    assert_eq!(remote.read(&mut [0_u8; 1]).await?, 0);
+    assert!(
+        wizard_settings::load_from_file()
+            .expect("saved settings")
+            .local_proxy_enabled()
+    );
     Ok(())
 }
 
@@ -139,6 +178,9 @@ fn isolated_http_management() {
                     disabling_reload_replies_before_exit()
                         .await
                         .expect("disabling Reload response");
+                    shutdown_replies_before_exit_and_preserves_settings()
+                        .await
+                        .expect("graceful Shutdown response");
                     accepted_reload_survives_disconnect_and_shutdown()
                         .await
                         .expect("shutdown during disconnected Reload");

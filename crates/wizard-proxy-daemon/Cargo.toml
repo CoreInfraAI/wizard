@@ -18,6 +18,10 @@ tokio = { workspace = true, features = ["rt", "macros", "signal"] }
 wizard-proxy.workspace = true
 wizard-settings.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+tempfile.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2.workspace = true
 objc2.workspace = true

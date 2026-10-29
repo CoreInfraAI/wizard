@@ -6,6 +6,8 @@ use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use std::{io, process::Stdio, sync::mpsc};
 use tokio::process::Command;
 
+pub(super) use super::unix::shutdown_signal;
+
 const SERVICE_LABEL: &str = "ai.coreinfra.wizard.proxy";
 const PLIST_NAME: &str = "ai.coreinfra.wizard.proxy.plist";
 
@@ -59,11 +61,18 @@ pub async fn start_daemon() -> io::Result<()> {
     Ok(())
 }
 
+pub async fn create_daemon() -> io::Result<()> {
+    tokio::task::spawn_blocking(register_daemon)
+        .await
+        .inspect_err(|error| wizard_proxy::diagnostics::error("proxy registration worker", error))
+        .map_err(|_| io::Error::other("proxy service registration worker failed"))?
+}
+
 #[expect(
     unsafe_code,
     reason = "SMAppService bindings require checked native calls"
 )]
-pub fn create_daemon() -> io::Result<()> {
+fn register_daemon() -> io::Result<()> {
     if !objc2::available!(macos = 13.0) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -87,12 +96,18 @@ pub fn create_daemon() -> io::Result<()> {
                 // SAFETY: SMAppService supplies either null or an NSError valid
                 // during this callback. Only its numeric code leaves the callback.
                 let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| {
+                    log::error!(
+                        "proxy service unregistration failed: native_code={}",
+                        error.code()
+                    );
                     Err(io::Error::other(format!(
                         "proxy service unregistration failed (code {})",
                         error.code(),
                     )))
                 });
-                let _ = finished.try_send(result);
+                if finished.try_send(result).is_err() {
+                    log::error!("proxy unregistration completion could not reach its caller");
+                }
             });
             // SAFETY: service is live; SMAppService retains the escaping block
             // and invokes it on a dispatch queue after termination or an error.
@@ -128,6 +143,10 @@ pub fn create_daemon() -> io::Result<()> {
             {
                 // Keep diagnostics useful without exposing NSError descriptions.
                 registration.map_err(|error| {
+                    log::error!(
+                        "proxy service registration failed: native_code={}",
+                        error.code()
+                    );
                     io::Error::other(format!(
                         "proxy service registration failed (code {})",
                         error.code(),

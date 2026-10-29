@@ -10,6 +10,7 @@ use std::io;
 use tokio::net::TcpStream;
 
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(2);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RESPONSE: usize = 1024;
 
 /// Current runtime permission to proxy, not upstream health or token validity.
@@ -37,10 +38,17 @@ pub struct ReloadResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShutdownResponse {
+    pub pid: u32,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Command {
     Status,
     Reload,
+    Shutdown,
 }
 
 /// An unreachable server is an error, never a disabled-proxy report.
@@ -54,16 +62,25 @@ pub async fn reload() -> io::Result<ReloadResponse> {
     request(crate::CLAUDE_DESKTOP_ADDRESS, Command::Reload).await
 }
 
+/// Request graceful exit without changing saved settings. The reply precedes
+/// process exit; callers must wait for the returned PID separately. Do not retry
+/// automatically after an ambiguous exchange failure.
+pub async fn shutdown() -> io::Result<ShutdownResponse> {
+    request(crate::CLAUDE_DESKTOP_ADDRESS, Command::Shutdown).await
+}
+
 pub(crate) async fn request<T: DeserializeOwned>(address: &str, command: Command) -> io::Result<T> {
-    tokio::time::timeout(TIMEOUT, async {
+    tokio::time::timeout(REQUEST_TIMEOUT, async {
         // Connect directly, without HTTP_PROXY, redirects, or retries.
         let stream = TcpStream::connect(address).await?;
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
-            .map_err(|_| io::Error::other("management HTTP handshake failed"))?;
+            .inspect_err(|error| crate::diagnostics::error("management HTTP handshake", error))
+            .map_err(io::Error::other)?;
         let (method, path) = match command {
             Command::Status => ("GET", "/status"),
             Command::Reload => ("POST", "/reload"),
+            Command::Shutdown => ("POST", "/shutdown"),
         };
         let request = Request::builder()
             .method(method)
@@ -77,19 +94,32 @@ pub(crate) async fn request<T: DeserializeOwned>(address: &str, command: Command
             let response = sender
                 .send_request(request)
                 .await
-                .map_err(|_| io::Error::other("management HTTP request failed"))?;
+                .inspect_err(|error| crate::diagnostics::error("management HTTP request", error))
+                .map_err(io::Error::other)?;
             if response.status() != hyper::StatusCode::OK {
+                log::error!(
+                    "management HTTP request rejected: status={}",
+                    response.status().as_u16()
+                );
                 return Err(io::Error::other("management HTTP request rejected"));
             }
             let bytes = Limited::new(response.into_body(), MAX_RESPONSE)
                 .collect()
                 .await
-                .map_err(|_| io::Error::other("invalid management response body"))?
+                .inspect_err(|error| {
+                    crate::diagnostics::error("management response body", error.as_ref());
+                })
+                .map_err(io::Error::other)?
                 .to_bytes();
-            serde_json::from_slice(&bytes)
-                .map_err(|_| io::Error::other("invalid management JSON response"))
+            serde_json::from_slice(&bytes).map_err(|_| {
+                log::error!("invalid management JSON response");
+                io::Error::other("invalid management JSON response")
+            })
         };
-        let (_, result) = tokio::join!(connection, exchange);
+        let (connection, result) = tokio::join!(connection, exchange);
+        if let Err(error) = connection {
+            crate::diagnostics::error("management HTTP connection", &error);
+        }
         result
     })
     .await

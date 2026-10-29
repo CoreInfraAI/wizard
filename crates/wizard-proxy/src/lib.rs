@@ -16,6 +16,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_rustls::rustls::ClientConfig;
 
 pub mod control;
+pub mod diagnostics;
 
 mod destination;
 mod http;
@@ -89,6 +90,15 @@ impl ServerState {
         }
     }
 
+    async fn shutdown_with_lock(&self) -> control::ShutdownResponse {
+        let _guard = self.reload_lock.lock().await;
+        log::info!("graceful proxy shutdown requested through HTTP");
+        self.stopping.send_replace(true);
+        control::ShutdownResponse {
+            pid: std::process::id(),
+        }
+    }
+
     async fn reload_with_lock(&self) -> control::ReloadResponse {
         let _guard = self.reload_lock.lock().await;
         let started = std::time::Instant::now();
@@ -97,8 +107,9 @@ impl ServerState {
             if *self.stopping.borrow() {
                 return Err("proxy server is stopping");
             }
-            let mut settings =
-                wizard_settings::load_from_file().map_err(|_| "failed to load Wizard settings")?;
+            let mut settings = wizard_settings::load_from_file()
+                .inspect_err(|error| diagnostics::error("proxy settings load", error.as_ref()))
+                .map_err(|_| "failed to load Wizard settings")?;
             let claude_token = settings.claude_proxy_enabled.take();
             let chatgpt_token = settings.codex_proxy_enabled.take();
             drop(settings);
@@ -108,12 +119,14 @@ impl ServerState {
                 .claude_desktop
                 .set_token(claude_token.as_deref(), &self.tls)
                 .await
+                .inspect_err(|error| diagnostics::error("Claude Desktop generation update", error))
                 .map_err(|_| "failed to update Claude Desktop proxy");
             log::info!("applying ChatGPT proxy settings");
             let chatgpt = self
                 .chatgpt
                 .set_token(chatgpt_token.as_deref(), &self.tls)
                 .await
+                .inspect_err(|error| diagnostics::error("ChatGPT generation update", error))
                 .map_err(|_| "failed to update ChatGPT proxy");
             // Attempt both, retaining the first error without rolling back success.
             claude.and(chatgpt)
@@ -237,7 +250,8 @@ impl Proxy {
 }
 
 /// Read Wizard settings and run both fixed-address listeners with unauthenticated
-/// GET /status and POST /reload. With both proxies disabled, return without binding.
+/// GET /status, POST /reload and POST /shutdown. With both proxies disabled,
+/// return without binding.
 /// TLS roots load once for the pair; disabled proxy traffic receives HTTP 503.
 /// Accepted management commands and bounded reply attempts finish before shutdown.
 /// This function does not register OS services or change saved settings.
@@ -245,6 +259,7 @@ pub async fn run_managed(shutdown: impl Future<Output = ()>) -> io::Result<()> {
     // Avoid loading system certificates when no proxy is needed. Reload rereads
     // after the potentially slow TLS initialization, using the latest settings.
     if !wizard_settings::load_from_file()
+        .inspect_err(|error| diagnostics::error("proxy startup settings load", error.as_ref()))
         .map_err(|_| io::Error::other("failed to load Wizard settings"))?
         .local_proxy_enabled()
     {
@@ -269,15 +284,12 @@ pub async fn run_managed(shutdown: impl Future<Output = ()>) -> io::Result<()> {
     let claude = TcpListener::bind(CLAUDE_DESKTOP_ADDRESS)
         .await
         .inspect_err(|error| {
-            log::error!(
-                "Claude Desktop listener bind failed: kind={:?}",
-                error.kind()
-            );
+            diagnostics::error("Claude Desktop listener bind", error);
         })?;
     let chatgpt = TcpListener::bind(CHATGPT_ADDRESS)
         .await
         .inspect_err(|error| {
-            log::error!("ChatGPT listener bind failed: kind={:?}", error.kind());
+            diagnostics::error("ChatGPT listener bind", error);
         })?;
     log::info!(
         "proxy listeners bound: claude_desktop={CLAUDE_DESKTOP_ADDRESS}, chatgpt={CHATGPT_ADDRESS}"
@@ -314,7 +326,7 @@ async fn run_listeners(
             Ok(())
         },
         _ = stopping.wait_for(|stopping| *stopping) => {
-            log::info!("proxy shutdown requested by settings reload");
+            log::info!("proxy shutdown requested through management");
             Ok(())
         },
         () = claude.stopped() => {
@@ -334,13 +346,11 @@ async fn run_listeners(
     drop(state.management.write().await);
     log::info!("stopping proxy listeners and draining connections");
     let (claude, chatgpt) = tokio::join!(claude.stop(), chatgpt.stop());
-    let result = result.and(claude).and(chatgpt);
+    // Prefer the original listener failure to a synthetic stopped notification.
+    let result = claude.and(chatgpt).and(result);
     match &result {
         Ok(()) => log::info!("proxy listeners stopped"),
-        Err(error) => log::error!(
-            "proxy listeners stopped with error: kind={:?}",
-            error.kind()
-        ),
+        Err(error) => diagnostics::error("proxy listeners shutdown", error),
     }
     result
 }
@@ -411,7 +421,11 @@ async fn serve(
         tokio::select! {
             biased;
             _ = &mut shutdown => break Ok(()),
-            Some(_) = connections.join_next(), if !connections.is_empty() => {},
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(error) = result {
+                    diagnostics::error("proxy connection task", &error);
+                }
+            },
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _)) => {
@@ -419,7 +433,10 @@ async fn serve(
                             stream, Arc::clone(&slot), management.clone(),
                         ));
                     }
-                    Err(error) => break Err(error),
+                    Err(error) => {
+                        diagnostics::error("proxy listener accept", &error);
+                        break Err(error);
+                    }
                 }
             }
         }
@@ -435,7 +452,13 @@ async fn serve(
         drop(state.management.write().await);
     }
     connections.abort_all();
-    while connections.join_next().await.is_some() {}
+    while let Some(result) = connections.join_next().await {
+        if let Err(error) = result
+            && !error.is_cancelled()
+        {
+            diagnostics::error("proxy connection task during shutdown", &error);
+        }
+    }
     result
 }
 

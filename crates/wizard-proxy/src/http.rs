@@ -2,7 +2,7 @@ use crate::{
     ProxySlot, ServerState,
     control::{Command, TIMEOUT},
     destination::{Route, route},
-    run_proxy_session,
+    diagnostics, run_proxy_session,
     upstream::Upstream,
 };
 use alloc::sync::Arc;
@@ -56,7 +56,13 @@ pub(crate) async fn serve_client(
     management: Option<Arc<ServerState>>,
 ) {
     let managed = management.is_some();
-    let address = stream.local_addr().ok().map(|address| address.to_string());
+    let address = match stream.local_addr() {
+        Ok(address) => Some(address.to_string()),
+        Err(error) => {
+            diagnostics::error("proxy local socket address lookup", &error);
+            None
+        }
+    };
     let (dispatch, mut requests) = mpsc::channel(1);
     let (driver_sender, mut drivers) = mpsc::channel::<Driver>(1);
     let (tunnel_sender, mut tunnels) = mpsc::channel::<Tunnel>(1);
@@ -128,26 +134,48 @@ pub(crate) async fn serve_client(
     let mut session = Box::pin(async move {
         tokio::pin!(connection);
         let driver = tokio::select! {
-            _ = &mut connection => None,
+            result = &mut connection => {
+                if let Err(error) = result {
+                    diagnostics::error("client HTTP connection", &error);
+                }
+                None
+            },
             driver = drivers.recv() => driver,
         };
         if let Some(mut driver) = driver {
             tokio::select! {
-                _ = &mut connection => {},
-                _ = &mut driver => { let _ = (&mut connection).await; },
+                result = &mut connection => {
+                    if let Err(error) = result {
+                        diagnostics::error("client HTTP connection", &error);
+                    }
+                },
+                result = &mut driver => {
+                    if let Err(error) = result {
+                        diagnostics::error("remote HTTP connection", &error);
+                    }
+                    if let Err(error) = (&mut connection).await {
+                        diagnostics::error("client HTTP connection", &error);
+                    }
+                },
             }
         }
-        if let Ok(tunnel) = tunnels.try_recv()
-            && let Ok(client) = tunnel.client.await
-        {
+        if let Ok(tunnel) = tunnels.try_recv() {
+            let client = match tunnel.client.await {
+                Ok(client) => client,
+                Err(error) => {
+                    diagnostics::error("client CONNECT upgrade", &error);
+                    return;
+                }
+            };
             let mut client = TokioIo::new(client);
-            match tunnel.remote {
-                Remote::Direct(mut remote) => {
-                    let _ = copy_bidirectional(&mut client, &mut remote).await;
-                }
+            let result = match tunnel.remote {
+                Remote::Direct(mut remote) => copy_bidirectional(&mut client, &mut remote).await,
                 Remote::Upstream(remote) => {
-                    let _ = copy_bidirectional(&mut client, &mut TokioIo::new(remote)).await;
+                    copy_bidirectional(&mut client, &mut TokioIo::new(remote)).await
                 }
+            };
+            if let Err(error) = result {
+                diagnostics::error("proxy tunnel transfer", &error);
             }
         }
     });
@@ -161,12 +189,16 @@ pub(crate) async fn serve_client(
             if let Some(generation) = generation {
                 let upstream = Arc::clone(&generation.upstream);
                 run_proxy_session(generation, async move {
-                    let _ = ready.send(Some(upstream));
+                    if ready.send(Some(upstream)).is_err() {
+                        log::error!("proxy dispatch receiver closed before generation delivery");
+                    }
                     session.await;
                 })
                 .await;
             } else {
-                let _ = ready.send(None);
+                if ready.send(None).is_err() {
+                    log::error!("proxy dispatch receiver closed before disabled response");
+                }
                 session.await;
             }
         }
@@ -184,12 +216,17 @@ pub(crate) async fn serve_client(
                     match command {
                         Command::Status => json_response(&state.status_with_lock().await),
                         Command::Reload => json_response(&state.reload_with_lock().await),
+                        Command::Shutdown => json_response(&state.shutdown_with_lock().await),
                     }
                 };
                 // Do not race accepted work against client disconnects. Only the
                 // reply attempt is bounded; shutdown waits on the active guard.
-                let _ = reply.send(response);
-                let _ = timeout(TIMEOUT, session).await;
+                if reply.send(response).is_err() {
+                    log::error!("management response receiver closed");
+                }
+                if timeout(TIMEOUT, session).await.is_err() {
+                    log::error!("management reply timed out");
+                }
             }
         }
         None => {}
@@ -217,12 +254,13 @@ fn management_command(
     let (method, command) = match request.uri().path_and_query().map(PathAndQuery::as_str) {
         Some("/status") => (Method::GET, Command::Status),
         Some("/reload") => (Method::POST, Command::Reload),
+        Some("/shutdown") => (Method::POST, Command::Shutdown),
         _ => return Err((StatusCode::NOT_FOUND, None)),
     };
     if request.method() != method {
         let allow = match command {
             Command::Status => "GET",
-            Command::Reload => "POST",
+            Command::Reload | Command::Shutdown => "POST",
         };
         return Err((StatusCode::METHOD_NOT_ALLOWED, Some(allow)));
     }
@@ -282,7 +320,10 @@ async fn handle(
         let remote = match result {
             Ok(Ok(remote)) => remote,
             Ok(Err(status)) => return error_response(status),
-            Err(_) => return error_response(StatusCode::GATEWAY_TIMEOUT),
+            Err(_) => {
+                log::error!("CONNECT establishment timed out");
+                return error_response(StatusCode::GATEWAY_TIMEOUT);
+            }
         };
         let tunnel = Tunnel {
             client: hyper::upgrade::on(&mut request),
@@ -351,15 +392,25 @@ async fn handle(
     };
     let mut sender = match timeout(CONNECT_TIMEOUT, connection).await {
         Ok(Ok(sender)) => sender,
-        Ok(Err(_)) => return error_response(StatusCode::BAD_GATEWAY),
-        Err(_) => return error_response(StatusCode::GATEWAY_TIMEOUT),
+        Ok(Err(error)) => {
+            diagnostics::error("direct HTTP connection establishment", &error);
+            return error_response(StatusCode::BAD_GATEWAY);
+        }
+        Err(_) => {
+            log::error!("direct HTTP connection establishment timed out");
+            return error_response(StatusCode::GATEWAY_TIMEOUT);
+        }
     };
     // Do not impose the connection deadline on streaming request/response bodies.
     let response = sender
         .send_request(request.map(BodyExt::boxed_unsync))
         .await;
-    let Ok(mut response) = response else {
-        return error_response(StatusCode::BAD_GATEWAY);
+    let mut response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            diagnostics::error("direct HTTP request", &error);
+            return error_response(StatusCode::BAD_GATEWAY);
+        }
     };
     if response.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED
         || response.status() == StatusCode::SWITCHING_PROTOCOLS
@@ -406,7 +457,10 @@ async fn connect_remote(
             connect_tunnel(target, upstream, driver)
                 .await
                 .map(Remote::Upstream)
-                .map_err(|_| StatusCode::BAD_GATEWAY)
+                .map_err(|error| {
+                    diagnostics::error("upstream CONNECT establishment", &error);
+                    StatusCode::BAD_GATEWAY
+                })
         }
         Route::Direct => {
             let authority = target.authority().ok_or(StatusCode::BAD_REQUEST)?;
@@ -414,7 +468,10 @@ async fn connect_remote(
             connect_direct(authority, port)
                 .await
                 .map(Remote::Direct)
-                .map_err(|_| StatusCode::BAD_GATEWAY)
+                .map_err(|error| {
+                    diagnostics::error("direct CONNECT establishment", &error);
+                    StatusCode::BAD_GATEWAY
+                })
         }
     }
 }
@@ -464,6 +521,10 @@ async fn connect_tunnel(
         .await
         .map_err(io::Error::other)?;
     if !response.status().is_success() {
+        log::error!(
+            "upstream rejected CONNECT: status={}",
+            response.status().as_u16()
+        );
         return Err(io::Error::other("upstream rejected CONNECT"));
     }
     hyper::upgrade::on(&mut response)
@@ -508,6 +569,7 @@ fn empty_body() -> Body {
 }
 
 fn error_response(status: StatusCode) -> Response<Body> {
+    log::warn!("proxy request rejected: status={}", status.as_u16());
     // Never expose upstream response bodies, credentials, or request details in errors.
     let message = status.canonical_reason().unwrap_or("Proxy error");
     let mut response = Response::new(

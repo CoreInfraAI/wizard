@@ -20,7 +20,9 @@ pub(crate) fn initialize() -> Result<(), &'static str> {
     };
     let directory =
         wizard_settings::paths::logs_dir().map_err(|_| "failed to resolve proxy log directory")?;
-    fs::create_dir_all(&directory).map_err(|_| "failed to create proxy log directory")?;
+    fs::create_dir_all(&directory)
+        .inspect_err(|error| report_stderr("proxy log directory creation", error))
+        .map_err(|_| "failed to create proxy log directory")?;
     let mut options = OpenOptions::new();
     options.read(true).create(true).append(true);
     #[cfg(unix)]
@@ -33,6 +35,7 @@ pub(crate) fn initialize() -> Result<(), &'static str> {
     drop(
         options
             .open(&path)
+            .inspect_err(|error| report_stderr("proxy log file open", error))
             .map_err(|_| "failed to open proxy log file")?,
     );
     let output = FileRotate::new(
@@ -50,6 +53,15 @@ pub(crate) fn initialize() -> Result<(), &'static str> {
     Ok(())
 }
 
+pub(crate) fn report_stderr(operation: &'static str, error: &(dyn core::error::Error + 'static)) {
+    // If stderr also fails there is no remaining diagnostic sink; do not recurse.
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "{operation} failed:{}",
+        wizard_proxy::diagnostics::summary(error)
+    );
+}
+
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
         metadata.level() <= log::max_level() && metadata.target().starts_with("wizard_proxy")
@@ -59,9 +71,10 @@ impl Log for Logger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let Ok(mut output) = self.output.lock() else {
-            return;
-        };
+        let mut output = self
+            .output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Match Wizard.log's default UTC timestamps and field layout.
         // One buffer per record prevents size-based rotation from splitting a line.
         let line = format!(
@@ -71,12 +84,20 @@ impl Log for Logger {
             record.level(),
             record.args(),
         );
-        let _ = output.write_all(line.as_bytes());
+        if let Err(error) = output.write_all(line.as_bytes()) {
+            report_stderr("proxy log write", &error);
+            // Never recurse through the logger when its output is failing.
+            let _ = std::io::stderr().lock().write_all(line.as_bytes());
+        }
     }
 
     fn flush(&self) {
-        if let Ok(mut output) = self.output.lock() {
-            let _ = output.flush();
+        let mut output = self
+            .output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = output.flush() {
+            report_stderr("proxy log flush", &error);
         }
     }
 }
