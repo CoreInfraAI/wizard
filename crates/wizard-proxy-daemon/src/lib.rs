@@ -144,6 +144,49 @@ async fn wait_for_proxy() -> io::Result<()> {
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "proxy daemon did not become ready"))?
 }
 
+/// Hold for the GUI lifetime so uninstall cannot race GUI synchronization.
+#[cfg(windows)]
+pub fn gui_guard() -> io::Result<File> {
+    let file = uninstall_lock_file()?;
+    file.try_lock_shared().map_err(io::Error::from)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn uninstall_lock_file() -> io::Result<File> {
+    let directory = wizard_settings::paths::config_dir()
+        .map_err(|_| io::Error::other("failed to resolve uninstall lock directory"))?;
+    fs::create_dir_all(&directory)?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("proxy-uninstall.lock"))
+}
+
+/// Remove the current installation's Windows proxy task without changing settings.
+#[cfg(windows)]
+#[must_use]
+pub fn uninstall() -> ExitCode {
+    let result = (|| -> io::Result<()> {
+        let guard = uninstall_lock_file()?;
+        guard.try_lock().map_err(io::Error::from)?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(windows::uninstall())
+    })();
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("proxy uninstall failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Run the proxy process without initializing the GUI.
 /// Call once at process startup, before any other logger or Tokio runtime.
 #[must_use]

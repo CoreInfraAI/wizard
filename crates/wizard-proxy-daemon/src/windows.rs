@@ -66,6 +66,61 @@ pub(super) async fn create_daemon() -> io::Result<()> {
     run_schtasks(&mut command, "registration").await
 }
 
+pub(super) async fn uninstall() -> io::Result<()> {
+    let sid = current_user_sid().await?;
+    let executable = std::env::current_exe()?;
+    if !update_uninstall_task(&sid, &executable, "disable").await? {
+        // Without a task we cannot establish installation ownership. Do not
+        // send shutdown to an arbitrary process on the management port.
+        let _instance = super::acquire_instance_lock().map_err(io::Error::other)?;
+        return Ok(());
+    }
+
+    match wizard_proxy::control::status().await {
+        Ok(_) => {
+            let response = wizard_proxy::control::shutdown().await?;
+            tokio::task::spawn_blocking(move || wait_for_exit(response.pid))
+                .await
+                .map_err(|_| io::Error::other("proxy exit worker failed"))??;
+        }
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {}
+        Err(error) => return Err(error),
+    }
+
+    let _instance = super::acquire_instance_lock().map_err(io::Error::other)?;
+    update_uninstall_task(&sid, &executable, "delete").await?;
+    Ok(())
+}
+
+async fn update_uninstall_task(
+    sid: &str,
+    executable: &std::path::Path,
+    operation: &str,
+) -> io::Result<bool> {
+    let status = tokio::time::timeout(
+        Duration::from_secs(15),
+        Command::new(system_executable(r"WindowsPowerShell\v1.0\powershell.exe")?)
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+            .arg(include_str!("windows-uninstall.ps1"))
+            .env("WIZARD_UNINSTALL_TASK", task_name(sid))
+            .env("WIZARD_UNINSTALL_EXE", executable)
+            .env("WIZARD_UNINSTALL_OPERATION", operation)
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status(),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "proxy task cleanup timed out"))??;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(10) => Ok(false),
+        _ => Err(io::Error::other("proxy task cleanup failed")),
+    }
+}
+
 pub(super) async fn start_daemon() -> io::Result<()> {
     let sid = current_user_sid().await?;
     let mut command = Command::new(system_executable("schtasks.exe")?);
@@ -221,4 +276,41 @@ async fn current_user_sid() -> io::Result<String> {
         )));
     }
     super::windows_task::sid_from_whoami(&output.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn uninstall_task_ownership_and_idempotency() -> io::Result<()> {
+        let output = tokio::time::timeout(
+            Duration::from_secs(60),
+            Command::new(system_executable(r"WindowsPowerShell\v1.0\powershell.exe")?)
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/windows-uninstall.ps1"
+                ))
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdin(Stdio::null())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "task cleanup test timed out"))??;
+        assert!(
+            output.status.success(),
+            "task cleanup test failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        Ok(())
+    }
 }

@@ -54,6 +54,12 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": false,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    },
     "macOS": {
       "signingIdentity": "-",
       "files": {
