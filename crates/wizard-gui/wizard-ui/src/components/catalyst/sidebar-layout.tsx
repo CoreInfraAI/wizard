@@ -39,7 +39,7 @@ function MobileSidebar({
       />
       <Headless.DialogPanel
         transition
-        className="fixed inset-y-0 w-full max-w-80 p-2 transition duration-300 ease-in-out data-closed:-translate-x-full"
+        className="fixed inset-y-0 w-full max-w-80 p-2 mac-window:pt-8 transition duration-300 ease-in-out data-closed:-translate-x-full"
       >
         <div className="flex h-full flex-col rounded-lg bg-white shadow-xs ring-1 ring-zinc-950/5 dark:bg-zinc-900 dark:ring-white/10">
           <div className="-mb-3 px-4 pt-3">
@@ -84,7 +84,7 @@ export function SidebarLayout({
 
       {/* Navbar on mobile */}
       <header
-        className={clsx("flex items-center px-4 lg:hidden", fill && "shrink-0")}
+        className={clsx("flex items-center px-4 mac-window:pt-8 lg:hidden", fill && "shrink-0")}
       >
         <div className="py-2.5">
           <NavbarItem

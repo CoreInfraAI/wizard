@@ -1,11 +1,9 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { DocumentTextIcon } from "@heroicons/react/20/solid";
 import { Button } from "../components/catalyst/button";
-import { SidebarItem, SidebarLabel } from "../components/catalyst/sidebar";
 import { ErrorText } from "../components/ErrorText";
 
-function useOpenLogs() {
+export function useOpenLogs() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -34,19 +32,5 @@ export function OpenLogsButton() {
       </Button>
       {error && <ErrorText>{error}</ErrorText>}
     </div>
-  );
-}
-
-export function OpenLogsItem() {
-  const { pending, error, open } = useOpenLogs();
-
-  return (
-    <>
-      <SidebarItem disabled={pending} onClick={open} className="*:data-disabled:opacity-50">
-        <DocumentTextIcon />
-        <SidebarLabel>Журнал</SidebarLabel>
-      </SidebarItem>
-      {error && <div className="px-2"><ErrorText>{error}</ErrorText></div>}
-    </>
   );
 }

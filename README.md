@@ -25,7 +25,7 @@ An application for configuring agents to use CoreInfra.
 4. Install dependencies:
 
    ```sh
-   npm ci --prefix crates/wizard-gui/wizard-ui
+   npm ci --include=dev --prefix crates/wizard-gui/wizard-ui
    ```
 
 5. Choose a bundle format for your system:
@@ -57,6 +57,32 @@ The generated files are located at these paths relative to the repository root:
 | `rpm` | `target/release/bundle/rpm/*.rpm` |
 
 `*` represents the filename, which depends on the application version and architecture.
+
+### Working on the interface on macOS
+
+Run these commands from the repository root. Quit any running Wizard first: the
+application allows only one instance, including development builds.
+
+For UI development with Vite hot reload and Rust file watching:
+
+```sh
+node crates/wizard-gui/wizard-ui/node_modules/@tauri-apps/cli/tauri.js dev
+```
+
+For a standalone local application (a faster debug build, signed ad hoc):
+
+```sh
+node crates/wizard-gui/wizard-ui/node_modules/@tauri-apps/cli/tauri.js build --debug --bundles app
+open "target/debug/bundle/macos/CoreInfra Wizard.app"
+```
+
+Omit `--debug` for the release build described above. Neither command installs the
+bundle into `/Applications`. Local builds use the same saved account and proxy
+settings as the installed Wizard. Quit and reopen the bundle after rebuilding it.
+
+The interface reference is the Hub in the neighboring `thinker` repository:
+`crates/ff-hub/hub-ui/src/modules/App.tsx` (agent order and divider) and
+`packages/coreinfra-ui/src/hub-sidebar-footer.tsx` (account menu and theme controls).
 
 ## License
 

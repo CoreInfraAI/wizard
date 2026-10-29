@@ -16,7 +16,7 @@ use reqwest::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wizard_settings::Settings;
 
-const HUB_ORIGIN: &str = "https://hub.coreinfra.ai";
+pub const HUB_ORIGIN: &str = "https://hub.coreinfra.ai";
 const PROFILE_PATH: &str = "/hub/api/profile";
 const HUB_INFO_PATH: &str = "/hub/api/hub/info";
 const ISSUE_TOKEN_PATH: &str = "/hub/api/agent-token/issue";
@@ -68,7 +68,10 @@ impl SessionUpdate {
         match self {
             Self::Unchanged => {}
             Self::Refreshed(session) => settings.hub_session = session,
-            Self::Rejected => settings.hub_session.clear(),
+            Self::Rejected => {
+                settings.hub_session.clear();
+                settings.active_hub_id.clear();
+            }
         }
     }
 }
@@ -103,13 +106,9 @@ pub async fn fetch_profile(
     struct ProfileResponse {
         personal_hub_id: String,
         hubs: Vec<ProfileHub>,
-    }
-
-    #[derive(Deserialize)]
-    struct ProfileHub {
-        hub_id: String,
-        hub_name: String,
-        display_name: Option<String>,
+        #[serde(default)]
+        username: String,
+        verified_email: Option<String>,
     }
 
     let (update, response) =
@@ -120,17 +119,21 @@ pub async fn fetch_profile(
         }
         let hub = response
             .hubs
-            .into_iter()
+            .iter()
             .find(|hub| hub.hub_id == response.personal_hub_id)
             .ok_or(HubError::Response)?;
         let personal_hub_name = hub
             .display_name
+            .as_ref()
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty())
-            .unwrap_or(hub.hub_name);
+            .unwrap_or_else(|| hub.hub_name.clone());
         Ok(HubProfile {
             personal_hub_id: response.personal_hub_id,
             personal_hub_name,
+            hubs: response.hubs,
+            username: response.username,
+            verified_email: response.verified_email,
         })
     });
     (update, profile)
@@ -185,10 +188,33 @@ async fn request<T: DeserializeOwned>(
 /// Non-secret Hub account details, constructed explicitly by `fetch_profile`.
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct HubProfile {
-    /// Hub whose agent tokens Wizard lists and creates.
+    /// Default hub when no accessible hub has been selected.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub personal_hub_id: String,
     pub personal_hub_name: String,
+    pub hubs: Vec<ProfileHub>,
+    pub username: String,
+    pub verified_email: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProfileHub {
+    pub hub_id: String,
+    pub hub_name: String,
+    pub display_name: Option<String>,
+    pub is_personal: bool,
+}
+
+impl HubProfile {
+    /// Ignore a saved hub that is no longer in this account's memberships.
+    #[must_use]
+    pub fn active_hub_id<'a>(&'a self, selected: &'a str) -> &'a str {
+        if self.hubs.iter().any(|hub| hub.hub_id == selected) {
+            selected
+        } else {
+            &self.personal_hub_id
+        }
+    }
 }
 
 /// Agent token of a Hub hub. `token` is a secret: no `Debug`, never logged.
@@ -290,4 +316,58 @@ fn session_from_headers(headers: &HeaderMap) -> Result<Option<String>, ()> {
         }
     }
     Ok(session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile() -> HubProfile {
+        HubProfile {
+            personal_hub_id: "personal".into(),
+            hubs: vec![ProfileHub {
+                hub_id: "team".into(),
+                hub_name: "Team".into(),
+                display_name: None,
+                is_personal: false,
+            }],
+            ..HubProfile::default()
+        }
+    }
+
+    #[test]
+    fn selected_hub_must_belong_to_profile() {
+        let profile = profile();
+        assert_eq!(profile.active_hub_id("team"), "team");
+        assert_eq!(profile.active_hub_id(""), "personal");
+        assert_eq!(profile.active_hub_id("removed-membership"), "personal");
+    }
+
+    #[test]
+    fn rejected_session_forgets_hub_without_changing_agent_routing() {
+        let mut settings = Settings {
+            hub_session: "old-session".into(),
+            active_hub_id: "team".into(),
+            codex_proxy_enabled: Some("test-token".into()),
+            ..Settings::default()
+        };
+        SessionUpdate::Rejected.apply(&mut settings, "old-session");
+        assert!(settings.hub_session.is_empty());
+        assert!(settings.active_hub_id.is_empty());
+        assert_eq!(settings.codex_proxy_enabled.as_deref(), Some("test-token"));
+    }
+
+    #[test]
+    fn stale_rejection_does_not_clear_new_account_or_hub() {
+        let mut settings = Settings {
+            hub_session: "new-session".into(),
+            active_hub_id: "team".into(),
+            ..Settings::default()
+        };
+        SessionUpdate::Rejected.apply(&mut settings, "old-session");
+        assert_eq!(settings.hub_session, "new-session");
+        assert_eq!(settings.active_hub_id, "team");
+        SessionUpdate::Refreshed("refreshed-session".into()).apply(&mut settings, "new-session");
+        assert_eq!(settings.active_hub_id, "team");
+    }
 }

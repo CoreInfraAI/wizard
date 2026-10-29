@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+@custom-variant mac-window (&:where([data-mac-window], [data-mac-window] *));
 
 /* Hub fonts (hub-ui/src/styles/style.css), variable upright only. */
 @font-face {
@@ -24,7 +26,11 @@
 
 @layer base {
   :root {
-    color-scheme: light dark;
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
   }
 
   html {

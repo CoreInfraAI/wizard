@@ -4,6 +4,8 @@
   "windows": ["main", "logs"],
   "permissions": [
     "core:default",
+    "core:window:allow-set-theme",
+    "core:window:allow-start-dragging",
     "log:allow-log"
   ]
 }
