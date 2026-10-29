@@ -67,10 +67,9 @@ pub struct DownloadedRelease {
 pub fn detect_target(last_path: Option<&Path>) -> Result<Target> {
     let (path, version) = match detection::detect_desktop(DesktopAgent::Claude, last_path) {
         AgentDetection::Found(info) => {
-            // let version = info
-            //     .version
-            //     .context("Не удалось определить установленную версию Claude")?;
-            let version = "4.21.0".to_owned();
+            let version = info
+                .version
+                .context("Не удалось определить установленную версию Claude")?;
 
             (
                 if cfg!(any(target_os = "windows", target_os = "linux")) {
