@@ -4,10 +4,7 @@ use super::{
 };
 use crate::{
     config_files::{self, changes::FileChange},
-    platform::{
-        append_command_path, command_output, command_output_with_stdin, env_var_not_empty,
-        find_executable,
-    },
+    platform::{append_node_path, command_output, command_output_with_stdin, env_var_not_empty},
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
 };
 use anyhow::{Context as _, Result, bail, ensure};
@@ -310,12 +307,7 @@ pub fn install_plugin(executable: &Path, config_dir: &Path) -> Result<()> {
     let cwd = tempfile::tempdir().context("failed to create OpenCode install working directory")?;
 
     let mut command = tokio::process::Command::new(executable);
-    if let Some(node) = find_executable("node", vec![], None)? {
-        append_command_path(
-            &mut command,
-            &[node.parent().context("Node executable has no parent")?],
-        )?;
-    }
+    append_node_path(&mut command)?;
     command
         .args(["--pure", "plugin", "-g", "--force", INSTALL_SOURCE])
         .env(
@@ -477,6 +469,7 @@ fn run_cli(
     let cwd = tempfile::tempdir().context("failed to create OpenCode working directory")?;
 
     let mut command = tokio::process::Command::new(executable);
+    append_node_path(&mut command)?;
     command
         .args(args)
         .env_remove("OPENCODE_CONFIG")
@@ -517,6 +510,7 @@ pub fn add_plugin(executable: &Path, config_dir: &Path) -> Result<()> {
     let cwd = tempfile::tempdir().context("failed to create OpenCode install working directory")?;
 
     let mut command = tokio::process::Command::new(executable);
+    append_node_path(&mut command)?;
     command
         .args(["plugin", "add", INSTALL_SOURCE])
         .env(

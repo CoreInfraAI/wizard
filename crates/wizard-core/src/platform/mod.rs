@@ -42,6 +42,22 @@ pub(crate) fn append_command_path(
     Ok(())
 }
 
+/// Appends the program's directory and Node's to the command's PATH, so npm launchers
+/// (`#!/usr/bin/env node`) also start from a GUI app with a minimal PATH. Version managers
+/// (nvm, fnm, Volta) keep node next to the CLI.
+pub(crate) fn append_node_path(command: &mut tokio::process::Command) -> Result<()> {
+    let program = PathBuf::from(command.as_std().get_program());
+    let mut directories: Vec<&Path> = program.parent().into_iter().collect();
+    let node = find_executable("node", vec![], None)?;
+    if let Some(node) = &node {
+        directories.push(
+            node.parent()
+                .context("Node executable has no parent directory")?,
+        );
+    }
+    append_command_path(command, &directories)
+}
+
 /// Checks the last found executable first, then searches common directories,
 /// extra directories, the per-user Nix profile, and PATH.
 /// Expands a leading `~` path component. On Windows, also expands leading `%VAR%/`
