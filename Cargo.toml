@@ -59,6 +59,10 @@ objc2 = "0.6.4"
 objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation", "block2"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSArray"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFString"] }
+objc2-security = { version = "0.3.2", default-features = false, features = ["std", "Authorization"] }
+objc2-system-configuration = { version = "0.3.2", default-features = false, features = ["std", "SCNetworkConfiguration", "SCPreferences", "SCSchemaDefinitions", "objc2-security"] }
+windows = "0.61.3"
 plist = "1.10.1"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }

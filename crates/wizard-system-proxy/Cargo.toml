@@ -1,0 +1,23 @@
+[package]
+name = "wizard-system-proxy"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+wizard-proxy.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation.workspace = true
+objc2-security.workspace = true
+objc2-system-configuration.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true, features = ["Win32_Networking_WinInet", "Win32_Foundation"] }
