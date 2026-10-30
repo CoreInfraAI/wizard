@@ -29,6 +29,8 @@ const CALLBACK_PATH: &str = "/callback";
 const LOGIN_LINK_PARAMETER: &str = "login_link";
 const LOGIN_PATH: &str = "/hub/api/login";
 const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// A browser's callback request is small; never buffer an endless one.
+const MAX_REQUEST_HEAD: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginError {
@@ -201,6 +203,9 @@ async fn read_request_head(stream: &mut TcpStream) -> Option<Vec<u8>> {
         }
         let searched = head.len().saturating_sub(3);
         head.extend_from_slice(&buffer[..size]);
+        if head.len() > MAX_REQUEST_HEAD {
+            return None;
+        }
         if let Some(end) = head[searched..]
             .windows(4)
             .position(|part| part == b"\r\n\r\n")
