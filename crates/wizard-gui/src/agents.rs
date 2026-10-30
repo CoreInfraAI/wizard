@@ -42,12 +42,15 @@ pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateS
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
     let state = collect_agent_state(&settings).await;
 
+    // Only a cache for the next detection: never fail the state because it was not saved.
     let detected = state.clone();
-    settings::update_state(&app, move |settings| {
+    if let Err(error) = settings::update_state(&app, move |settings| {
         detected.update_settings_paths(settings);
     })
     .await
-    .map_err(|error| format!("failed to save discovered agent paths: {error:#}"))?;
+    {
+        log::error!("failed to save discovered agent paths: {error:#}");
+    }
 
     log::debug!("agent state collected at revision {revision}");
     Ok(AgentStateSnapshot { revision, state })
