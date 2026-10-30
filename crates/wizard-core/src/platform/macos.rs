@@ -24,19 +24,27 @@ pub(crate) fn app_is_running(bundle_id: &str) -> bool {
 }
 
 #[derive(Deserialize)]
-struct AppInfo {
+pub(crate) struct AppInfo {
+    #[serde(rename = "CFBundleIdentifier")]
+    pub identifier: Option<String>,
     #[serde(rename = "CFBundleShortVersionString")]
-    version: Option<String>,
+    pub version: Option<String>,
+}
+
+/// Reads an app bundle's identifier and version without launching the application.
+/// `plist` handles both XML and binary Info.plist files.
+pub(crate) fn read_app_info(app: &Path) -> Result<AppInfo> {
+    let path = app.join("Contents/Info.plist");
+    log::debug!("reading application metadata: {}", path.display());
+    let mut info: AppInfo =
+        plist::from_file(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    info.version = info.version.filter(|version| !version.trim().is_empty());
+    Ok(info)
 }
 
 /// Reads an app bundle's version without launching the application.
-/// `plist` handles both XML and binary Info.plist files.
 pub(crate) fn read_app_version(app: &Path) -> Result<Option<String>> {
-    let path = app.join("Contents/Info.plist");
-    log::debug!("reading application metadata: {}", path.display());
-    let info: AppInfo =
-        plist::from_file(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(info.version.filter(|version| !version.trim().is_empty()))
+    Ok(read_app_info(app)?.version)
 }
 
 #[cfg(test)]

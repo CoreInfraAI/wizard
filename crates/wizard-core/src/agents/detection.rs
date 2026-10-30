@@ -125,10 +125,12 @@ pub(super) fn detect_desktop(
 ) -> AgentDetection<AgentInfo> {
     #[cfg(target_os = "macos")]
     {
-        let app_path = Path::new(match agent {
-            DesktopAgent::Codex => "/Applications/ChatGPT.app",
-            DesktopAgent::Claude => CLAUDE_APP_PATH,
-        });
+        let (app_path, bundle_id) = match agent {
+            // The classic ChatGPT app (com.openai.chat) has the same name.
+            DesktopAgent::Codex => ("/Applications/ChatGPT.app", Some("com.openai.codex")),
+            DesktopAgent::Claude => (CLAUDE_APP_PATH, None),
+        };
+        let app_path = Path::new(app_path);
         let app_name = app_path
             .file_name()
             .expect("desktop app path has a filename");
@@ -144,10 +146,17 @@ pub(super) fn detect_desktop(
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return AgentDetection::failed(&path, &error),
             }
-            return match crate::platform::macos::read_app_version(&path) {
-                Ok(version) => AgentDetection::Found(AgentInfo { path, version }),
-                Err(error) => AgentDetection::failed(&path, &error),
+            let info = match crate::platform::macos::read_app_info(&path) {
+                Ok(info) => info,
+                Err(error) => return AgentDetection::failed(&path, &error),
             };
+            if bundle_id.is_some_and(|id| info.identifier.as_deref() != Some(id)) {
+                continue;
+            }
+            return AgentDetection::Found(AgentInfo {
+                path,
+                version: info.version,
+            });
         }
         AgentDetection::NotFound
     }

@@ -315,7 +315,13 @@ fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
     use serde_json::json;
 
     let mut change = FileChange::read(std::path::absolute(path)?)?;
+    // ChatGPT creates its profile on first launch; until then there is nothing to clean up.
     if matches!(change.after, FileSnapshot::Missing) {
+        // Linux detection accepts any `chatgpt` executable, which may be another program.
+        ensure!(
+            !enabled || cfg!(target_os = "linux"),
+            "ChatGPT ещё не запускался: откройте его один раз и повторите."
+        );
         log::info!("ChatGPT proxy configuration skipped: profile Preferences file is missing");
         return Ok(change);
     }
