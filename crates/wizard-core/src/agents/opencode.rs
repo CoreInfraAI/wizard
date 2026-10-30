@@ -235,7 +235,7 @@ pub fn prepare_hub(mode: HubMode, token: &str, settings: &Settings) -> Result<Pr
             if mode == HubMode::Hub {
                 credentials.insert(INTEGRATION.into(), json!({"type": "api", "key": token}));
             } else {
-                credentials.remove(INTEGRATION);
+                credentials.shift_remove(INTEGRATION);
             }
             Ok(())
         })?;

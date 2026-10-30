@@ -24,6 +24,7 @@ pub(crate) fn parse(snapshot: &FileSnapshot) -> Result<Value> {
 }
 
 /// Edits only the working snapshot. A semantic no-op preserves the original text.
+/// Keys keep their order; remove them with `shift_remove`, since `remove` moves the last key.
 pub(crate) fn update(
     after: &mut FileSnapshot,
     edit: impl FnOnce(&mut Value) -> Result<()>,

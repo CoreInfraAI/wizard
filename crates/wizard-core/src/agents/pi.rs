@@ -122,7 +122,7 @@ pub fn prepare_hub(mode: HubMode, token: &str, settings: &Settings) -> Result<Pr
                 json!({"type": "api_key", "key": token}),
             );
         } else {
-            object.remove("coreinfra");
+            object.shift_remove("coreinfra");
         }
         Ok(())
     })?;
