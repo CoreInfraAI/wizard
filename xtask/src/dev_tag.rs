@@ -57,35 +57,31 @@ pub(crate) fn parse_version(value: &str) -> Result<Version> {
 
 fn find(repository: &str, stable: &Version) -> Result<Vec<DevTag>> {
     let prefix = format!("v{stable}-dev.");
+    // This endpoint is not paginated: it ignores `page` and returns all matching refs at once.
+    let response = gh_api_json(&format!(
+        "repos/{repository}/git/matching-refs/tags/{prefix}"
+    ))?;
+    let refs = response
+        .as_array()
+        .context("GitHub matching refs response must be an array")?;
     let mut tags = Vec::new();
-    for page in 1.. {
-        let endpoint =
-            format!("repos/{repository}/git/matching-refs/tags/{prefix}?per_page=100&page={page}");
-        let response = gh_api_json(&endpoint)?;
-        let refs = response
-            .as_array()
-            .context("GitHub matching refs response must be an array")?;
-        for reference in refs {
-            let Some(sequence) = reference["ref"]
-                .as_str()
-                .and_then(|value| value.strip_prefix("refs/tags/"))
-                .and_then(|value| value.strip_prefix(&prefix))
-                .and_then(|value| value.parse::<u64>().ok())
-            else {
-                continue;
-            };
-            let Some(commit) = reference["object"]["sha"].as_str() else {
-                continue;
-            };
-            tags.push(DevTag {
-                version: Version::parse(&format!("{stable}-dev.{sequence}"))?,
-                sequence,
-                commit: commit.to_owned(),
-            });
-        }
-        if refs.len() < 100 {
-            break;
-        }
+    for reference in refs {
+        let Some(sequence) = reference["ref"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("refs/tags/"))
+            .and_then(|value| value.strip_prefix(&prefix))
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let Some(commit) = reference["object"]["sha"].as_str() else {
+            continue;
+        };
+        tags.push(DevTag {
+            version: Version::parse(&format!("{stable}-dev.{sequence}"))?,
+            sequence,
+            commit: commit.to_owned(),
+        });
     }
     Ok(tags)
 }
