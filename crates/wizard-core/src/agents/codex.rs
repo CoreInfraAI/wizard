@@ -245,18 +245,33 @@ pub fn prepare_routing_for_gui(
             settings.last_paths.codex_desktop.as_deref(),
         ) {
             AgentDetection::Found(_) => true,
-            AgentDetection::NotFound => return Ok(plan),
+            // Clean up a configuration left from before ChatGPT was removed.
+            AgentDetection::NotFound => false,
             AgentDetection::Error(error) => {
                 anyhow::bail!("failed to detect ChatGPT for local proxy: {error}")
             }
         }
     };
-    let path = desktop_preferences_path()?.context("ChatGPT profile location is unavailable")?;
-    let change = prepare_desktop_proxy(path, enabled)?;
-    plan.steps.insert(0, PreparedStep::ChangeFile { change });
-    plan.steps.push(PreparedStep::SetCodexProxyEnabled {
-        token: enabled.then(|| token.to_owned()),
-    });
+    // Without ChatGPT installed (Windows), there is no profile to clean up when disabling.
+    match desktop_preferences_path()? {
+        Some(path) => {
+            let change = prepare_desktop_proxy(path, enabled)?;
+            plan.steps.insert(0, PreparedStep::ChangeFile { change });
+        }
+        None => ensure!(!enabled, "ChatGPT profile location is unavailable"),
+    }
+    // Before the daemon restart: it can fail after Preferences already points at the listener.
+    let restart = plan
+        .steps
+        .iter()
+        .position(|step| matches!(step, PreparedStep::CodexRestartDaemon { .. }))
+        .unwrap_or(plan.steps.len());
+    plan.steps.insert(
+        restart,
+        PreparedStep::SetCodexProxyEnabled {
+            token: enabled.then(|| token.to_owned()),
+        },
+    );
     Ok(plan)
 }
 
