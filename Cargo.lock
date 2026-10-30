@@ -5386,7 +5386,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wizard-cli"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -5398,7 +5398,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-core"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5427,7 +5427,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-gui"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "libc",
@@ -5448,7 +5448,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-proxy"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "base64 0.22.1",
  "http-body-util",
@@ -5464,7 +5464,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-settings"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -5556,7 +5556,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
