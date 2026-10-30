@@ -138,21 +138,22 @@ export function useAgentState(): DetectionState {
     let stopped = false;
 
     async function observe() {
-      try {
-        while (!stopped) {
+      while (!stopped) {
+        try {
           const snapshot = await getSnapshot();
           if (stopped) return;
           debug(`received agent state at revision ${snapshot.revision}`);
           setState({ status: "ready", data: snapshot });
           await invoke<number>("wait_for_update", { lastRevision: snapshot.revision });
+        } catch (cause: unknown) {
+          if (stopped) return;
+          reportError("failed to observe agent state", cause);
+          setState({
+            status: "error",
+            message: cause instanceof Error ? cause.message : String(cause),
+          });
+          await new Promise((resolve) => setTimeout(resolve, 1000)); // 1 sec
         }
-      } catch (cause: unknown) {
-        if (stopped) return;
-        reportError("failed to observe agent state", cause);
-        setState({
-          status: "error",
-          message: cause instanceof Error ? cause.message : String(cause),
-        });
       }
     }
 
