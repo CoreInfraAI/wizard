@@ -16,7 +16,7 @@ pub(crate) struct Proxy {
 }
 
 #[derive(Clone, Copy)]
-enum App {
+pub(crate) enum App {
     ClaudeDesktop,
     ChatGpt,
 }
@@ -132,19 +132,28 @@ pub(crate) fn raise_open_file_limit() {
     );
 }
 
-/// Called at startup and after a change of either app's proxy setting. Each listener runs while
-/// its app has a token and is restarted when that token changes; one failure does not skip the other.
+/// Called at startup for both apps; one failure does not skip the other.
 pub(crate) async fn sync(app: &tauri::AppHandle) -> Result<()> {
+    let mut results = Vec::new();
+    for proxy_app in App::ALL {
+        results.push(sync_one(app, proxy_app).await);
+    }
+    combine(results)
+}
+
+/// Called after applying the app's proxy setting. Its listener runs while the app has a token and
+/// is restarted when that token changes; a stopped or failed listener is started again.
+pub(crate) async fn sync_one(app: &tauri::AppHandle, proxy_app: App) -> Result<()> {
     let state = app.state::<ProxyState>();
     let mut listeners = state.0.lock().await;
     let settings = settings::get_state(app)?;
-
-    let mut results = Vec::new();
-    for proxy_app in App::ALL {
-        let token = proxy_app.token(&settings);
-        results.push(sync_app(app, listeners.get(proxy_app), proxy_app, token).await);
-    }
-    combine(results)
+    sync_app(
+        app,
+        listeners.get(proxy_app),
+        proxy_app,
+        proxy_app.token(&settings),
+    )
+    .await
 }
 
 async fn sync_app(

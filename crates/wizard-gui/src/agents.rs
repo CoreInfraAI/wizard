@@ -1,6 +1,6 @@
 //! Tauri commands for agent discovery and configuration.
 
-use crate::{hub_tokens, revision_signal::RevisionSignal, settings};
+use crate::{hub_tokens, proxy, revision_signal::RevisionSignal, settings};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
@@ -188,22 +188,28 @@ pub(crate) async fn apply_agent_plan(
 
     let proxy_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        // Sync even when the setting is unchanged: «Применить» restarts a stopped listener.
+        // Also sync after a failed save: tray or autostart can fail after the setting is saved.
         plan.apply_with_proxies(
             |token| {
-                tauri::async_runtime::block_on(settings::update_state(
-                    &proxy_app,
-                    move |settings| {
+                tauri::async_runtime::block_on(async {
+                    let saved = settings::update_state(&proxy_app, move |settings| {
                         settings.claude_proxy_enabled = token;
-                    },
-                ))
+                    })
+                    .await;
+                    let synced = proxy::sync_one(&proxy_app, proxy::App::ClaudeDesktop).await;
+                    saved.and(synced)
+                })
             },
             |token| {
-                tauri::async_runtime::block_on(settings::update_state(
-                    &proxy_app,
-                    move |settings| {
+                tauri::async_runtime::block_on(async {
+                    let saved = settings::update_state(&proxy_app, move |settings| {
                         settings.codex_proxy_enabled = token;
-                    },
-                ))
+                    })
+                    .await;
+                    let synced = proxy::sync_one(&proxy_app, proxy::App::ChatGpt).await;
+                    saved.and(synced)
+                })
             },
         )
     })
