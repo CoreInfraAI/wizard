@@ -1087,6 +1087,12 @@ fn install_release_inner(download: &DownloadedRelease) -> Result<()> {
         )?;
 
         verify_bundle(&staged, &release.version)?;
+        // Claude may have updated itself since the check; never replace a different version.
+        let installed = detect_target(release.target.path.as_deref())?;
+        ensure!(
+            installed.version == release.target.version,
+            "Claude Desktop изменился после проверки обновления; проверьте обновление снова"
+        );
         // Check all Claude instances, including a running app at a different path. Never terminate them.
         ensure!(
             !app_is_running(BUNDLE_ID),
