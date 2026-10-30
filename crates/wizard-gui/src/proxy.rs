@@ -13,6 +13,16 @@ pub(crate) struct Proxy {
     chatgpt: bool,
 }
 
+pub(crate) fn claude_desktop_running(app: &tauri::AppHandle) -> bool {
+    // Report the observed daemon state, not saved demand or a GUI-owned listener.
+    // Unknown status must not be presented as a working proxy.
+    app.state::<ProxyState>()
+        .signal
+        .current()
+        .state
+        .is_ok_and(|proxy| proxy.claude_desktop)
+}
+
 pub(crate) struct ProxyState {
     // Serialize observations with sync so an earlier status cannot overwrite a
     // status fetched after Reload. This does not own the daemon's lifecycle.
