@@ -171,18 +171,15 @@ pub(super) fn detect_desktop(
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            let output = match command_output(command, Duration::from_secs(5)) {
-                Ok(output) => output,
-                Err(error) => return AgentDetection::failed(&path, &error),
-            };
-            if output.status.success() {
-                String::from_utf8(output.stdout).ok().and_then(|text| {
+            // The version is optional: without dpkg-query (non-Debian systems) it is unknown.
+            command_output(command, Duration::from_secs(5))
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .and_then(|text| {
                     text.strip_prefix("install ok installed ")
                         .map(|version| version.trim().to_owned())
                 })
-            } else {
-                None
-            }
         } else {
             None
         };
