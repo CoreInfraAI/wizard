@@ -10,7 +10,6 @@ fn main() -> ExitCode {
         return wizard_proxy_daemon::main();
     }
 
-    #[cfg(windows)]
     if std::env::args_os()
         .nth(1)
         .is_some_and(|arg| arg == "--uninstall-proxy")
@@ -19,7 +18,6 @@ fn main() -> ExitCode {
     }
 
     // Shared across GUI instances; uninstall requires exclusive access.
-    #[cfg(windows)]
     let _uninstall_guard = match wizard_proxy_daemon::gui_guard() {
         Ok(guard) => guard,
         Err(error) => {

@@ -23,6 +23,124 @@ fn state() -> Arc<ServerState> {
     Arc::new(ServerState::new(tls))
 }
 
+#[tokio::test]
+async fn accept_errors_preserve_tunnels_and_resume_requests_after_backoff() -> io::Result<()> {
+    timeout(Duration::from_secs(5), async {
+        let state = state();
+        state
+            .claude_desktop
+            .set_token(Some("fixture"), &state.tls)
+            .await?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let destination = TcpListener::bind("127.0.0.1:0").await?;
+        let target = destination.local_addr()?;
+        let attempts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&attempts);
+        let (stop, mut shutdown) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            accept_connections(
+                || {
+                    let attempt = {
+                        let mut times = recorded.lock().expect("attempt times");
+                        times.push(tokio::time::Instant::now());
+                        times.len()
+                    };
+                    let listener = &listener;
+                    async move {
+                        match attempt {
+                            2 => Err(io::Error::from(io::ErrorKind::OutOfMemory)),
+                            3 => Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
+                            _ => listener.accept().await.map(|(stream, _)| stream),
+                        }
+                    }
+                },
+                &state.claude_desktop,
+                Some(&state),
+                &mut shutdown,
+                &mut connections,
+            )
+            .await;
+            connections.abort_all();
+            while let Some(result) = connections.join_next().await {
+                if let Err(error) = result {
+                    assert!(
+                        error.is_cancelled(),
+                        "unexpected connection failure: {error}"
+                    );
+                }
+            }
+        });
+
+        let mut client = TcpStream::connect(address).await?;
+        client
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await?;
+        let (mut remote, _) = destination.accept().await?;
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            header.push(client.read_u8().await?);
+            assert!(header.len() < 8192);
+        }
+        assert!(header.starts_with(b"HTTP/1.1 200"));
+        // The first accepted connection survives subsequent accept failures.
+        client.write_all(b"live").await?;
+        let mut bytes = [0; 4];
+        remote.read_exact(&mut bytes).await?;
+        assert_eq!(&bytes, b"live");
+
+        let response: control::Status =
+            control::request(&address.to_string(), control::Command::Status).await?;
+        assert!(response.claude_desktop_enabled);
+        {
+            let times = attempts.lock().expect("attempt times");
+            assert!(times.len() >= 4);
+            assert!(times[2] - times[1] >= ACCEPT_RETRY_DELAY);
+            assert!(times[3] - times[2] >= ACCEPT_RETRY_DELAY);
+        }
+        remote.write_all(b"back").await?;
+        client.read_exact(&mut bytes).await?;
+        assert_eq!(&bytes, b"back");
+        let _ = stop.send(());
+        task.await.map_err(io::Error::other)?;
+        assert_eq!(client.read(&mut bytes).await?, 0);
+        Ok(())
+    })
+    .await
+    .expect("accept recovery timed out")
+}
+
+#[tokio::test]
+async fn shutdown_interrupts_accept_backoff() {
+    let state = state();
+    let (stop, mut shutdown) = oneshot::channel();
+    let (failed, mut failure) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        let mut connections = JoinSet::new();
+        accept_connections(
+            || async {
+                failed.send(()).expect("report injected failure");
+                Err(io::Error::from(io::ErrorKind::OutOfMemory))
+            },
+            &state.claude_desktop,
+            None,
+            &mut shutdown,
+            &mut connections,
+        )
+        .await;
+    });
+    timeout(Duration::from_secs(2), failure.recv())
+        .await
+        .expect("injected failure");
+    let _ = stop.send(());
+    timeout(Duration::from_millis(250), task)
+        .await
+        .expect("shutdown must not wait for the retry delay")
+        .expect("accept task");
+    assert!(failure.try_recv().is_err(), "must not retry in a hot loop");
+}
+
 fn settings(claude: Option<&str>, chatgpt: Option<&str>) {
     wizard_settings::save_to_file(&wizard_settings::Settings {
         claude_proxy_enabled: claude.map(str::to_owned),
@@ -153,6 +271,72 @@ async fn accepted_reload_survives_disconnect_and_shutdown() -> io::Result<()> {
     Ok(())
 }
 
+async fn failed_reload_keeps_working_configuration() -> io::Result<()> {
+    settings(Some("working"), Some("working-chatgpt"));
+    let state = state();
+    assert!(state.reload_with_lock().await.error.is_none());
+    let original = state
+        .claude_desktop
+        .current
+        .read()
+        .await
+        .clone()
+        .expect("generation");
+    let claude = TcpListener::bind("127.0.0.1:0").await?;
+    let chatgpt = TcpListener::bind("127.0.0.1:0").await?;
+    let address = claude.local_addr()?.to_string();
+    let (stop, shutdown) = oneshot::channel();
+    let task = tokio::spawn(run_listeners(Arc::clone(&state), claude, chatgpt, async {
+        let _ = shutdown.await;
+    }));
+    fs::write(
+        wizard_settings::paths::settings_path().expect("settings path"),
+        "invalid = [",
+    )?;
+    let failed: control::ReloadResponse =
+        control::request(&address, control::Command::Reload).await?;
+    assert!(failed.error.is_some());
+    assert!(failed.status.claude_desktop_enabled && failed.status.chatgpt_enabled);
+
+    // Preserve an invalid slot's generation; the other slot may still update.
+    settings(Some(""), Some("updated-chatgpt"));
+    let failed: control::ReloadResponse =
+        control::request(&address, control::Command::Reload).await?;
+    assert!(failed.error.is_some());
+    assert!(Arc::ptr_eq(
+        &original,
+        state
+            .claude_desktop
+            .current
+            .read()
+            .await
+            .as_ref()
+            .expect("retained generation")
+    ));
+    assert!(!*original.cancelled.borrow());
+    assert_eq!(
+        state
+            .chatgpt
+            .current
+            .read()
+            .await
+            .as_ref()
+            .expect("updated generation")
+            .token,
+        "updated-chatgpt"
+    );
+
+    settings(Some("repaired"), Some("updated-chatgpt"));
+    let repaired: control::ReloadResponse =
+        control::request(&address, control::Command::Reload).await?;
+    assert!(repaired.error.is_none());
+    let status: control::Status = control::request(&address, control::Command::Status).await?;
+    assert!(status.claude_desktop_enabled && status.chatgpt_enabled);
+    let _ = stop.send(());
+    task.await.map_err(io::Error::other)??;
+    Ok(())
+}
+
 // Windows Known Folder resolution ignores HOME; never use a real user profile.
 // The test and all shared protocol code still compile on Windows.
 #[test]
@@ -175,6 +359,9 @@ fn isolated_http_management() {
             .expect("test runtime")
             .block_on(async {
                 timeout(Duration::from_secs(30), async {
+                    failed_reload_keeps_working_configuration()
+                        .await
+                        .expect("failed Reload preserves service and permits recovery");
                     disabling_reload_replies_before_exit()
                         .await
                         .expect("disabling Reload response");

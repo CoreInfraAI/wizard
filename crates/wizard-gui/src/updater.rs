@@ -112,11 +112,34 @@ async fn check_and_install_update(
         .await
         .context("Не удалось скачать обновление")?;
 
-    tauri::async_runtime::spawn_blocking(move || update.install(bytes))
+    // download() verifies the update signature before service removal begins.
+    let update_guard = wizard_proxy_daemon::prepare_update()
         .await
-        .context("Не удалось выполнить задачу установки обновления")?
-        .context("Не удалось установить обновление")?;
+        .context("Не удалось подготовить прокси к обновлению; установка отменена")?;
 
+    let (update_guard, installation) = tauri::async_runtime::spawn_blocking(move || {
+        // Keep lifecycle locked even if the awaiting task is cancelled while the
+        // blocking installer runs. Catch installer panics so recovery retains the guard.
+        let installation =
+            std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| update.install(bytes)))
+                .map_err(|_| anyhow::anyhow!("Задача установки обновления завершилась с panic"))
+                .and_then(|result| result.context("Не удалось установить обновление"));
+        (update_guard, installation)
+    })
+    .await
+    .context("Не удалось выполнить задачу установки обновления")?;
+
+    if let Err(error) = installation {
+        if let Err(recovery) = update_guard.restore_after_failure().await {
+            return Err(error.context(format!(
+                "Также не удалось восстановить сервис прокси: {recovery}"
+            )));
+        }
+        return Err(error);
+    }
+
+    // Keep update_guard until process restart; queued lifecycle calls must not
+    // start a daemon from the new bundle while the old GUI is still running.
     log::info!("application update installed; restarting");
     app.restart();
 }

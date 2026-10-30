@@ -354,8 +354,8 @@ async fn run_listeners(
     };
 
     state.stopping.send_replace(true);
-    // Release the barrier before joining listeners: an accept-failure path may
-    // also be waiting for this barrier. stopping already prevents new work.
+    // Finish accepted management work before cancelling connection tasks.
+    // stopping already prevents new work.
     log::info!("waiting for accepted management commands before shutdown");
     drop(state.management.write().await);
     log::info!("stopping proxy listeners and draining connections");
@@ -431,40 +431,17 @@ async fn serve(
     mut shutdown: oneshot::Receiver<()>,
 ) -> io::Result<()> {
     let mut connections = JoinSet::new();
-    let result = loop {
-        tokio::select! {
-            biased;
-            _ = &mut shutdown => break Ok(()),
-            Some(result) = connections.join_next(), if !connections.is_empty() => {
-                if let Err(error) = result {
-                    diagnostics::error("proxy connection task", &error);
-                }
-            },
-            accepted = listener.accept() => {
-                match accepted {
-                    Ok((stream, _)) => {
-                        connections.spawn(http::serve_client(
-                            stream, Arc::clone(&slot), management.clone(),
-                        ));
-                    }
-                    Err(error) => {
-                        diagnostics::error("proxy listener accept", &error);
-                        break Err(error);
-                    }
-                }
-            }
-        }
-    };
+    accept_connections(
+        || async { listener.accept().await.map(|(stream, _)| stream) },
+        &slot,
+        management.as_ref(),
+        &mut shutdown,
+        &mut connections,
+    )
+    .await;
 
     drop(listener);
-    // An accept failure must not cancel a Reload already accepted on this port.
-    // Normal shutdown is quiesced by run_listeners before stop() is called.
-    if result.is_err()
-        && let Some(state) = &management
-    {
-        state.stopping.send_replace(true);
-        drop(state.management.write().await);
-    }
+    // Managed shutdown is quiesced by run_listeners before stop() is called.
     connections.abort_all();
     while let Some(result) = connections.join_next().await {
         if let Err(error) = result
@@ -473,7 +450,57 @@ async fn serve(
             diagnostics::error("proxy connection task during shutdown", &error);
         }
     }
-    result
+    Ok(())
+}
+
+const ACCEPT_RETRY_DELAY: core::time::Duration = core::time::Duration::from_millis(500);
+
+// Keep the accept operation injectable so resource exhaustion can be tested
+// without changing process limits or exhausting the machine's descriptors.
+async fn accept_connections<F>(
+    mut accept: impl FnMut() -> F,
+    slot: &Arc<ProxySlot>,
+    management: Option<&Arc<ServerState>>,
+    shutdown: &mut oneshot::Receiver<()>,
+    connections: &mut JoinSet<()>,
+) where
+    F: Future<Output = io::Result<TcpStream>>,
+{
+    let mut retry_at = None;
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut *shutdown => break,
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(error) = result {
+                    diagnostics::error("proxy connection task", &error);
+                }
+            },
+            accepted = async {
+                if let Some(deadline) = retry_at {
+                    tokio::time::sleep_until(deadline).await;
+                }
+                accept().await
+            } => {
+                match accepted {
+                    Ok(stream) => {
+                        retry_at = None;
+                        connections.spawn(http::serve_client(
+                            stream, Arc::clone(slot), management.cloned(),
+                        ));
+                    }
+                    Err(error) => {
+                        diagnostics::error("proxy listener accept; retrying after 500 ms", &error);
+                        // accept errors do not invalidate the owned listener. Keep
+                        // sessions alive and retry without rebinding or spinning.
+                        // Store the deadline outside the select future: completed
+                        // connections must not bypass or extend this backoff.
+                        retry_at = Some(tokio::time::Instant::now() + ACCEPT_RETRY_DELAY);
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn run_proxy_session(generation: Arc<Generation>, session: impl Future<Output = ()>) {
