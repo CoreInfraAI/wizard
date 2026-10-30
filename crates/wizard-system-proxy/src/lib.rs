@@ -1,0 +1,152 @@
+//! System HTTP/HTTPS proxy settings, independent of the listener's lifecycle.
+//!
+//! Blocking API: callers must use a worker thread. macOS mutations may request
+//! authorization. No API starts the proxy, changes its token, or checks its health.
+//! Settings are identified by endpoint, not proof of ownership: another program
+//! using exactly the same endpoint is indistinguishable from Wizard.
+
+use anyhow::{Context as _, Result, ensure};
+use std::sync::Mutex;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
+mod windows_config;
+
+#[cfg(target_os = "macos")]
+use macos::Native;
+#[cfg(target_os = "windows")]
+use windows::Native;
+
+#[cfg(test)]
+mod tests;
+
+static LOCK: Mutex<()> = Mutex::new(());
+
+/// Configuration state, not listener availability or application traffic routing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyState {
+    Disabled,
+    Wizard,
+    Foreign,
+}
+
+/// No endpoints, PAC URLs, credentials or complete OS settings are exposed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceStatus {
+    pub id: String,
+    pub http: ProxyState,
+    pub https: ProxyState,
+    pub conflict: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemProxyStatus {
+    pub services: Vec<ServiceStatus>,
+}
+
+/// Read supported services. Does not request authorization.
+pub fn status() -> Result<SystemProxyStatus> {
+    let _guard = LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("system proxy lock poisoned"))?;
+    native_status()
+}
+
+/// Set HTTP and HTTPS to the Claude Desktop endpoint, refusing active conflicts.
+/// Existing bypass rules and inactive settings are preserved except for the HTTP/
+/// HTTPS endpoints being replaced. There is no persistent backup or rollback.
+pub fn enable() -> Result<()> {
+    update(true)
+}
+
+/// Disable only HTTP/HTTPS entries pointing to Wizard. Preserve foreign entries.
+pub fn disable() -> Result<()> {
+    update(false)
+}
+
+fn update(enabled: bool) -> Result<()> {
+    let _guard = LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("system proxy lock poisoned"))?;
+    native_update(enabled)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn native_status() -> Result<SystemProxyStatus> {
+    let snapshot = Native::read()?;
+    Ok(SystemProxyStatus {
+        services: Native::services(&snapshot)?,
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn native_update(enabled: bool) -> Result<()> {
+    change::<Native>(enabled)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn native_status() -> Result<SystemProxyStatus> {
+    anyhow::bail!("system proxy configuration is supported only on macOS and Windows")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn native_update(_: bool) -> Result<()> {
+    anyhow::bail!("system proxy configuration is supported only on macOS and Windows")
+}
+
+// The boundary lets regression tests exercise the entire mutation flow without
+// touching the network configuration, authorization UI or native APIs.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows", test)),
+    expect(dead_code)
+)]
+trait Backend {
+    type Snapshot: PartialEq;
+    fn read() -> Result<Self::Snapshot>;
+    fn services(snapshot: &Self::Snapshot) -> Result<Vec<ServiceStatus>>;
+    fn prepare(snapshot: &Self::Snapshot, enabled: bool) -> Result<Self::Snapshot>;
+    fn write(before: &Self::Snapshot, after: &Self::Snapshot) -> Result<()>;
+}
+
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows", test)),
+    expect(dead_code)
+)]
+fn change<B: Backend>(enabled: bool) -> Result<()> {
+    let before = B::read()?;
+    let services = B::services(&before)?;
+    ensure!(!services.is_empty(), "no supported network services");
+    ensure!(
+        !enabled || !services.iter().any(|s| s.conflict),
+        "active system proxy, PAC or auto-discovery conflicts with Wizard"
+    );
+    let after = B::prepare(&before, enabled)?;
+    if before == after {
+        return Ok(());
+    }
+
+    ensure!(
+        B::read()? == before,
+        "system proxy settings changed; try again"
+    );
+    B::write(&before, &after)
+        .context("system proxy update failed; settings may be partially applied")?;
+    ensure!(
+        B::read().context("cannot verify system proxy update; settings may already be applied")?
+            == after,
+        "system proxy verification failed; settings may be partially applied or changed externally"
+    );
+    Ok(())
+}
+
+fn endpoint_state(enabled: bool, endpoint: &str) -> ProxyState {
+    if !enabled {
+        ProxyState::Disabled
+    } else if endpoint == wizard_proxy::CLAUDE_DESKTOP_ADDRESS {
+        ProxyState::Wizard
+    } else {
+        ProxyState::Foreign
+    }
+}

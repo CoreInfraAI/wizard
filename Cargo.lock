@@ -2599,6 +2599,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-system-configuration"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396"
+dependencies = [
+ "bitflags 2.13.1",
+ "objc2-core-foundation",
+ "objc2-security",
+]
+
+[[package]]
 name = "objc2-ui-kit"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5529,6 +5540,18 @@ dependencies = [
  "serde",
  "tempfile",
  "toml_edit 0.25.15+spec-1.1.0",
+]
+
+[[package]]
+name = "wizard-system-proxy"
+version = "0.2.10"
+dependencies = [
+ "anyhow",
+ "objc2-core-foundation",
+ "objc2-security",
+ "objc2-system-configuration",
+ "windows",
+ "wizard-proxy",
 ]
 
 [[package]]
