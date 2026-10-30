@@ -35,8 +35,10 @@ pub async fn start_daemon() -> io::Result<()> {
     // Registration may already have launched the agent. Without -k, kickstart
     // does not kill an existing instance. Never bypass approval via enable or
     // launch the executable directly as a fallback.
+    // launchd's default throttle can defer a rapid restart for 10 seconds.
+    // kickstart waits for that launch; allow the throttle plus scheduling slack.
     let status = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         Command::new("/bin/launchctl")
             .arg("kickstart")
             .arg(format!("gui/{uid}/{SERVICE_LABEL}"))
@@ -58,6 +60,85 @@ pub async fn start_daemon() -> io::Result<()> {
             "launchd rejected the proxy service start request",
         ));
     }
+    Ok(())
+}
+
+// Returns whether a registration was removed, for update-failure recovery.
+pub(super) async fn uninstall() -> io::Result<bool> {
+    tokio::task::spawn_blocking(unregister_daemon)
+        .await
+        .inspect_err(|error| wizard_proxy::diagnostics::error("proxy unregistration worker", error))
+        .map_err(|_| io::Error::other("proxy service unregistration worker failed"))?
+}
+
+#[expect(
+    unsafe_code,
+    reason = "SMAppService bindings require checked native calls"
+)]
+fn unregister_daemon() -> io::Result<bool> {
+    if !objc2::available!(macos = 13.0) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "proxy service removal requires macOS 13 or later",
+        ));
+    }
+
+    autoreleasepool(|_| {
+        let name = NSString::from_str(PLIST_NAME);
+        // SAFETY: macOS availability is checked; the fixed plist belongs to this bundle.
+        let service = unsafe { SMAppService::agentServiceWithPlistName(&name) };
+        // SAFETY: service is retained and valid for this call.
+        let status = unsafe { service.status() };
+        if status != SMAppServiceStatus::NotRegistered {
+            // Includes pending approval. Do not treat NotFound as successful removal:
+            // ask SMAppService for the authoritative unregistration result.
+            unregister_service(&service)?;
+        }
+        // Confirm process cleanup without shutting down an unrelated loopback listener.
+        let _instance = super::acquire_instance_lock().map_err(io::Error::other)?;
+        Ok(status != SMAppServiceStatus::NotRegistered)
+    })
+}
+
+#[expect(
+    unsafe_code,
+    reason = "unregister a retained SMAppService and read its completion error"
+)]
+fn unregister_service(service: &SMAppService) -> io::Result<()> {
+    log::info!("unregistering proxy service and waiting for termination");
+    let (finished, completion) = mpsc::sync_channel(1);
+    let handler = RcBlock::new(move |error: *mut NSError| {
+        // SAFETY: SMAppService supplies null or an NSError valid during this callback.
+        // Only the numeric code is reported; native descriptions may contain private data.
+        let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| {
+            log::error!(
+                "proxy service unregistration failed: native_code={}",
+                error.code()
+            );
+            Err(io::Error::other(format!(
+                "proxy service unregistration failed (code {})",
+                error.code(),
+            )))
+        });
+        if finished.try_send(result).is_err() {
+            log::error!("proxy unregistration completion could not reach its caller");
+        }
+    });
+    // SAFETY: callers hold a live service on macOS 13+. SMAppService retains the
+    // escaping block and invokes it on a dispatch queue after termination or error.
+    unsafe { service.unregisterWithCompletionHandler(&handler) };
+    completion
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => io::Error::new(
+                io::ErrorKind::TimedOut,
+                "proxy service unregistration timed out",
+            ),
+            mpsc::RecvTimeoutError::Disconnected => {
+                io::Error::other("proxy service unregistration callback was lost")
+            }
+        })??;
+    log::info!("proxy service unregistration completed");
     Ok(())
 }
 
@@ -90,42 +171,9 @@ fn register_daemon() -> io::Result<()> {
         let mut status = unsafe { service.status() };
         log::info!("proxy service status before registration: {}", status.0);
         if status == SMAppServiceStatus::Enabled {
-            log::info!("unregistering proxy service and waiting for termination");
-            let (finished, completion) = mpsc::sync_channel(1);
-            let handler = RcBlock::new(move |error: *mut NSError| {
-                // SAFETY: SMAppService supplies either null or an NSError valid
-                // during this callback. Only its numeric code leaves the callback.
-                let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| {
-                    log::error!(
-                        "proxy service unregistration failed: native_code={}",
-                        error.code()
-                    );
-                    Err(io::Error::other(format!(
-                        "proxy service unregistration failed (code {})",
-                        error.code(),
-                    )))
-                });
-                if finished.try_send(result).is_err() {
-                    log::error!("proxy unregistration completion could not reach its caller");
-                }
-            });
-            // SAFETY: service is live; SMAppService retains the escaping block
-            // and invokes it on a dispatch queue after termination or an error.
-            unsafe { service.unregisterWithCompletionHandler(&handler) };
-            completion
-                .recv_timeout(Duration::from_secs(10))
-                .map_err(|error| match error {
-                    mpsc::RecvTimeoutError::Timeout => io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "proxy service unregistration timed out",
-                    ),
-                    mpsc::RecvTimeoutError::Disconnected => {
-                        io::Error::other("proxy service unregistration callback was lost")
-                    }
-                })??;
             // Never register before successful completion, including on timeout:
             // the native unregistration may still finish after we return an error.
-            log::info!("proxy service unregistration completed");
+            unregister_service(&service)?;
             status = SMAppServiceStatus::NotRegistered;
         }
         if status == SMAppServiceStatus::NotRegistered || status == SMAppServiceStatus::NotFound {

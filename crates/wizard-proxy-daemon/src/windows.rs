@@ -66,14 +66,15 @@ pub(super) async fn create_daemon() -> io::Result<()> {
     run_schtasks(&mut command, "registration").await
 }
 
-pub(super) async fn uninstall() -> io::Result<()> {
+// Returns whether this installation had a task, for update-failure recovery.
+pub(super) async fn uninstall() -> io::Result<bool> {
     let sid = current_user_sid().await?;
     let executable = std::env::current_exe()?;
     if !update_uninstall_task(&sid, &executable, "disable").await? {
         // Without a task we cannot establish installation ownership. Do not
         // send shutdown to an arbitrary process on the management port.
         let _instance = super::acquire_instance_lock().map_err(io::Error::other)?;
-        return Ok(());
+        return Ok(false);
     }
 
     match wizard_proxy::control::status().await {
@@ -89,7 +90,7 @@ pub(super) async fn uninstall() -> io::Result<()> {
 
     let _instance = super::acquire_instance_lock().map_err(io::Error::other)?;
     update_uninstall_task(&sid, &executable, "delete").await?;
-    Ok(())
+    Ok(true)
 }
 
 async fn update_uninstall_task(

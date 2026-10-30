@@ -64,6 +64,64 @@ pub async fn create_daemon() -> io::Result<()> {
 
 static SYNC_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// Exclusive access to service lifecycle operations while replacing the application.
+/// Keep this guard until restart, or consume it to recover after an installation error.
+/// Unlike CLI uninstall, this is used inside a GUI holding the shared GUI lifetime lock.
+#[must_use = "keep the guard alive throughout installation and until application restart"]
+pub struct UpdateGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    restore_service: bool,
+}
+
+/// Stop and unregister the service after downloading and verifying an update.
+/// Failure must abort installation. Await completion: native work may outlive cancellation.
+pub async fn prepare_update() -> io::Result<UpdateGuard> {
+    prepare_update_with(platform::uninstall()).await
+}
+
+async fn prepare_update_with(
+    uninstall: impl Future<Output = io::Result<bool>>,
+) -> io::Result<UpdateGuard> {
+    let lock = SYNC_LOCK.lock().await;
+    log::info!("preparing proxy service for application update");
+    let restore_service = uninstall
+        .await
+        .inspect_err(|error| diagnostics::error("proxy update preparation", error))?;
+    log::info!("proxy update preparation completed: registration_removed={restore_service}");
+    Ok(UpdateGuard {
+        _lock: lock,
+        restore_service,
+    })
+}
+
+impl UpdateGuard {
+    /// Best-effort restoration from the bundle left by a failed installer.
+    /// Never reacquire `SYNC_LOCK` here: this guard already owns it.
+    pub async fn restore_after_failure(self) -> io::Result<()> {
+        self.restore_with(async {
+            platform::create_daemon().await?;
+            sync_with_settings().await
+        })
+        .await
+    }
+
+    async fn restore_with(self, restore: impl Future<Output = io::Result<()>>) -> io::Result<()> {
+        if !self.restore_service {
+            log::info!("proxy recovery skipped: no platform service was removed");
+            return Ok(());
+        }
+        log::info!("restoring proxy service after failed application update");
+        let result = restore.await;
+        match &result {
+            Ok(()) => log::info!("proxy service restored after failed application update"),
+            Err(error) => {
+                diagnostics::error("proxy recovery after failed application update", error);
+            }
+        }
+        result
+    }
+}
+
 /// Synchronize the independent proxy process with saved settings.
 /// Only a refused connection permits starting a process: a timeout or failed
 /// Reload may already have applied changes and must not trigger a second launch.
@@ -147,37 +205,43 @@ async fn wait_for_proxy() -> io::Result<()> {
 }
 
 /// Hold for the GUI lifetime so uninstall cannot race GUI synchronization.
-#[cfg(windows)]
 pub fn gui_guard() -> io::Result<File> {
     let file = uninstall_lock_file()?;
     file.try_lock_shared().map_err(io::Error::from)?;
     Ok(file)
 }
 
-#[cfg(windows)]
 fn uninstall_lock_file() -> io::Result<File> {
     let directory = wizard_settings::paths::config_dir()
         .map_err(|_| io::Error::other("failed to resolve uninstall lock directory"))?;
     fs::create_dir_all(&directory)?;
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join("proxy-uninstall.lock"))
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(directory.join("proxy-uninstall.lock"))
 }
 
-/// Remove the current installation's Windows proxy task without changing settings.
-#[cfg(windows)]
+/// Remove the current installation's proxy service without changing settings.
+/// On macOS, run from the application bundle that registered the service.
+/// On macOS and Windows, close GUI instances first. Linux is a successful no-op.
 #[must_use]
 pub fn uninstall() -> ExitCode {
     let result = (|| -> io::Result<()> {
-        let guard = uninstall_lock_file()?;
-        guard.try_lock().map_err(io::Error::from)?;
+        #[cfg(any(target_os = "macos", windows))]
+        let _guard = {
+            let guard = uninstall_lock_file()?;
+            guard.try_lock().map_err(io::Error::from)?;
+            guard
+        };
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(windows::uninstall())
+            .block_on(platform::uninstall())
+            .map(|_| ())
     })();
 
     match result {
@@ -263,4 +327,70 @@ fn acquire_instance_lock() -> Result<File, &'static str> {
         }
     })?;
     Ok(file)
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::{SYNC_LOCK, prepare_update_with};
+    use std::io;
+
+    #[tokio::test]
+    async fn update_guard_serializes_preparation_installation_and_recovery() {
+        // Fake removal: no registration, process, or user settings are touched.
+        let guard = prepare_update_with(async {
+            assert!(SYNC_LOCK.try_lock().is_err(), "lock must precede removal");
+            Ok(false)
+        })
+        .await
+        .expect("prepare update");
+        assert!(
+            SYNC_LOCK.try_lock().is_err(),
+            "installation must remain exclusive"
+        );
+        // The guard can be owned by a blocking installer without unlocking lifecycle operations.
+        let guard = tokio::task::spawn_blocking(move || {
+            assert!(SYNC_LOCK.try_lock().is_err());
+            guard
+        })
+        .await
+        .expect("fake installer");
+        assert!(SYNC_LOCK.try_lock().is_err());
+        // No service was removed: recovery must not call platform registration.
+        guard
+            .restore_with(async { panic!("must not create an absent service") })
+            .await
+            .expect("no-op recovery");
+        assert!(SYNC_LOCK.try_lock().is_ok());
+
+        let guard = prepare_update_with(async { Ok(true) })
+            .await
+            .expect("fake service removal");
+        let error = guard
+            .restore_with(async {
+                assert!(
+                    SYNC_LOCK.try_lock().is_err(),
+                    "recovery must remain exclusive"
+                );
+                tokio::task::yield_now().await;
+                assert!(SYNC_LOCK.try_lock().is_err());
+                Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+            })
+            .await
+            .expect_err("recovery failure must be reported");
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+        assert!(SYNC_LOCK.try_lock().is_ok());
+
+        let error = prepare_update_with(async {
+            assert!(SYNC_LOCK.try_lock().is_err());
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        })
+        .await
+        .err()
+        .expect("preparation must fail");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            SYNC_LOCK.try_lock().is_ok(),
+            "failed preparation must release the lock"
+        );
+    }
 }
