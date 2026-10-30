@@ -68,7 +68,7 @@ pub(crate) fn find_executable(
     last_found: Option<&Path>,
 ) -> Result<Option<PathBuf>> {
     if let Some(path) = last_found
-        && is_executable(path)?
+        && is_executable(path)
     {
         return Ok(Some(std::path::absolute(path)?));
     }
@@ -155,7 +155,7 @@ pub(crate) fn find_executable(
         };
         for filename in &filenames {
             let candidate = directory.join(filename);
-            if is_executable(&candidate)? {
+            if is_executable(&candidate) {
                 return Ok(Some(std::path::absolute(candidate)?));
             }
         }
@@ -164,25 +164,23 @@ pub(crate) fn find_executable(
     Ok(None)
 }
 
-pub(crate) fn is_executable(path: &Path) -> Result<bool> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
-        }
+/// Any error means not executable: a PATH entry may be missing, a file or unreadable, and a
+/// shell skips it too.
+pub(crate) fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
     };
     if !metadata.is_file() {
-        return Ok(false);
+        return false;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         if metadata.permissions().mode() & 0o111 == 0 {
-            return Ok(false);
+            return false;
         }
     }
-    Ok(true)
+    true
 }
 
 /// Runs a prepared command with bounded execution time and no stdin.
