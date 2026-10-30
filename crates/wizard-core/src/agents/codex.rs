@@ -376,7 +376,7 @@ fn daemon_executable(settings: &Settings) -> Result<PathBuf> {
 
     for relative in candidates {
         let path = resources.join(relative);
-        if is_executable(&path)? {
+        if is_executable(&path) {
             return std::path::absolute(path).context("failed to resolve bundled Codex executable");
         }
     }
