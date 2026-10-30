@@ -7,6 +7,7 @@ import { Switch, SwitchField, SwitchGroup } from "../components/catalyst/switch"
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 import { type ApplicationSetting, setApplicationSetting, useApplicationSettings } from "./application_settings";
+import { setSystemProxy, useSystemProxy } from "./system_proxy";
 
 export function SettingsPage() {
   const { settings, error: loadError } = useApplicationSettings();
@@ -62,6 +63,60 @@ export function SettingsPage() {
           </>
         )}
       </div>
+      <SystemProxySettings />
     </>
+  );
+}
+
+function SystemProxySettings() {
+  const { state, error: loadError } = useSystemProxy();
+  const inFlight = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [commandError, setCommandError] = useState<string>();
+  const hasOurs = state?.status === "on" || state?.status === "partial";
+  const known = hasOurs || state?.status === "off";
+  const busy = submitting || state?.busy === true;
+  const disabled = busy || Boolean(loadError) || !known || (!hasOurs && state?.conflict === true);
+
+  async function change(enabled: boolean) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    setCommandError(undefined);
+    try {
+      await setSystemProxy(enabled);
+    } catch (cause: unknown) {
+      setCommandError(typeof cause === "string" ? cause : "Не удалось изменить системный прокси");
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="mt-8 max-w-2xl">
+      <SwitchField disabled={disabled}>
+        <Label>Системный прокси</Label>
+        <Description>Wizard будет проксировать сайты OpenAI и Claude, остальной интернет будет работать как раньше.</Description>
+        <Switch checked={hasOurs} onChange={(enabled) => { void change(enabled); }} />
+      </SwitchField>
+      <div className="mt-3 space-y-2" aria-live="polite">
+        {busy && <Text>Применение системных настроек… На macOS может потребоваться авторизация.</Text>}
+        {(!state || (state.status === "unknown" && !state.read_error)) && !loadError && <Text>Определение состояния…</Text>}
+        {state?.status === "unsupported" && <Text>Системный прокси пока доступен только на macOS и Windows.</Text>}
+        {state?.status === "unavailable" && <Text>Нет поддерживаемых сетевых сервисов.</Text>}
+        {state?.status === "partial" && (
+          <Text>Частично включён: настройки Wizard действуют не для всех протоколов или сетевых сервисов либо конфликтуют с другими настройками. Выключение уберёт только настройки Wizard.</Text>
+        )}
+        {state?.conflict && <Text>Обнаружены другие настройки прокси, PAC или автоопределение. Wizard не перезаписывает их; сначала отключите их в настройках ОС.</Text>}
+        {known && !state?.listener_running && (
+          <Text className="text-amber-700! dark:text-amber-400!">Локальный прокси Claude Desktop остановлен. Включение разрешено, но приложения с системным прокси могут потерять доступ к сети.</Text>
+        )}
+        {hasOurs && <Text>После выхода из Wizard приложения с системным прокси могут остаться без сети до запуска локального прокси или отключения этой настройки.</Text>}
+        {loadError && <ErrorText>{loadError}</ErrorText>}
+        {state?.read_error && <ErrorText>{state.read_error}</ErrorText>}
+        {(state?.operation_error || commandError) && <ErrorText>{state?.operation_error || commandError}</ErrorText>}
+      </div>
+    </div>
   );
 }

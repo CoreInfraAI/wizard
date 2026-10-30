@@ -17,6 +17,7 @@ mod logs;
 mod proxy;
 mod revision_signal;
 mod settings;
+mod system_proxy;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod tray;
 mod updater;
@@ -72,6 +73,9 @@ pub fn run_application() -> Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(claude_desktop_install::InstallManager::default()))
         .manage(proxy::ProxyState::default())
+        .manage(revision_signal::RevisionSignal::new(
+            system_proxy::State::default(),
+        ))
         .manage(Arc::new(revision_signal::RevisionSignal::new(
             updater::UpdateState::Checking,
         )))
@@ -86,6 +90,7 @@ pub fn run_application() -> Result<()> {
             hub_tokens::HubTokensManager::initialize(app.handle())?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let tray_enabled = {
+                app.manage(tray::TrayState::default());
                 let preferences = settings::get_state(app.handle())?.application;
                 autostart::initialize(app.handle())?;
                 let autostart = autostart::set_enabled(app.handle(), preferences.autostart_enabled);
@@ -106,6 +111,7 @@ pub fn run_application() -> Result<()> {
             }
             proxy::start_observer(app.handle());
 
+            system_proxy::start(app.handle());
             if !minimized || !tray_enabled {
                 request_main_window(app.handle());
             }
@@ -118,6 +124,8 @@ pub fn run_application() -> Result<()> {
             claude_desktop_install::check_claude_desktop_release,
             claude_desktop_install::download_claude_desktop_release,
             claude_desktop_install::install_claude_desktop_release,
+            system_proxy::get_system_proxy_state,
+            system_proxy::set_system_proxy,
             settings::get_application_settings,
             settings::set_application_setting,
             logs::open_logs,
@@ -154,23 +162,38 @@ pub fn run_application() -> Result<()> {
         }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => request_main_window(app),
-        tauri::RunEvent::Exit => proxy::stop_observer(app),
+        tauri::RunEvent::Exit => {
+            system_proxy::stop(app);
+            proxy::stop_observer(app);
+        }
         _ => {}
     });
     Ok(())
 }
 
 fn request_main_window(app: &tauri::AppHandle) {
+    request_window(app, false);
+}
+
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    expect(dead_code)
+)]
+fn request_settings_window(app: &tauri::AppHandle) {
+    request_window(app, true);
+}
+
+fn request_window(app: &tauri::AppHandle, show_settings: bool) {
     let app = app.clone();
     // WebView2 creation must not block a synchronous event callback on Windows.
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = open_main_window(&app) {
+        if let Err(error) = open_main_window(&app, show_settings) {
             log::error!("failed to open main window: {error:#}");
         }
     });
 }
 
-fn open_main_window(app: &tauri::AppHandle) -> Result<()> {
+fn open_main_window(app: &tauri::AppHandle, show_settings: bool) -> Result<()> {
     let _guard = MAIN_WINDOW_LOCK
         .lock()
         .map_err(|_| anyhow!("main window lock poisoned"))?;
@@ -181,9 +204,20 @@ fn open_main_window(app: &tauri::AppHandle) -> Result<()> {
         .iter()
         .find(|window| window.label == MAIN_WINDOW_NAME)
         .context("main window configuration not found")?;
-    let window = match app.get_webview_window(MAIN_WINDOW_NAME) {
-        Some(window) => window,
-        None => WebviewWindowBuilder::from_config(app, config)?.build()?,
+    let window = if let Some(window) = app.get_webview_window(MAIN_WINDOW_NAME) {
+        if show_settings {
+            // Static trusted-local navigation, never interpolate command data.
+            window.eval("window.location.hash = '/settings';")?;
+        }
+        window
+    } else {
+        let mut builder = WebviewWindowBuilder::from_config(app, config)?;
+        if show_settings {
+            // Runs before React reads the initial hash, including on a newly
+            // recreated WebView. No event can be lost before UI subscription.
+            builder = builder.initialization_script("window.location.hash = '/settings';");
+        }
+        builder.build()?
     };
 
     window.set_title(&format!("{} v{}", config.title, app.package_info().version))?;

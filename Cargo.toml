@@ -39,6 +39,7 @@ wizard-core = { path = "crates/wizard-core" }
 wizard-proxy = { path = "crates/wizard-proxy" }
 wizard-proxy-daemon = { path = "crates/wizard-proxy-daemon" }
 wizard-settings = { path = "crates/wizard-settings" }
+wizard-system-proxy = { path = "crates/wizard-system-proxy" }
 
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock"] }

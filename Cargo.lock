@@ -5491,6 +5491,7 @@ dependencies = [
  "wizard-proxy",
  "wizard-proxy-daemon",
  "wizard-settings",
+ "wizard-system-proxy",
 ]
 
 [[package]]
