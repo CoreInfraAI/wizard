@@ -12,6 +12,11 @@ export type HubTokensState =
   | { status: "error"; tokens: HubToken[]; error: string }
   | { status: "ready"; tokens: HubToken[] };
 
+// Reloads the list after a failed load; the result arrives through `useHubTokens`.
+export function refreshHubTokens(): Promise<void> {
+  return invoke<void>("refresh_hub_tokens");
+}
+
 export function useHubTokens(): HubTokensState {
   const [state, setState] = useState<HubTokensState>({ status: "loading", tokens: [] });
 

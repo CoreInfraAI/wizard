@@ -3,7 +3,7 @@ import { type AgentChange, type AgentDetection, type AgentId, type AgentStates, 
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { ClaudeDesktopInstall, useClaudeDesktopInstall } from "./ClaudeDesktopInstall";
-import { type HubTokensState, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
+import { type HubTokensState, refreshHubTokens, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
 import type { HubAccountControl } from "../settings/HubAccount";
 import { type Proxy, useProxy } from "./proxy";
 import { reportError } from "../logs/log";
@@ -122,7 +122,16 @@ function TokenField({ token, hub, disabled }: {
         ))}
       </Listbox>
       {!hub.signedIn && <Description>Войдите в CoreInfra Hub для выбора токена.</Description>}
-      {hub.status === "error" && <ErrorMessage>{hub.error}</ErrorMessage>}
+      {hub.status === "error" && (
+        <ErrorMessage>
+          {hub.error}{" "}
+          <button type="button" className="underline" onClick={() => {
+            void refreshHubTokens().catch((cause: unknown) => reportError("Не удалось загрузить токены CoreInfra Hub", cause));
+          }}>
+            Повторить
+          </button>
+        </ErrorMessage>
+      )}
     </Field>
   );
 }
