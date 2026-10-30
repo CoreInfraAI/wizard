@@ -154,7 +154,7 @@ pub fn prepare_hub(mode: HubMode, token: &str, settings: &Settings) -> Result<Pr
         });
     }
 
-    if !steps.is_empty() && auth.is_changed() {
+    if auth.is_changed() {
         steps.push(PreparedStep::PiApplyAuth { dir, change: auth });
     }
     Ok(PreparedPlan::new(PreparedAgent::Pi, steps))
