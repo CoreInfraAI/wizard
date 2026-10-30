@@ -91,6 +91,11 @@ pub(crate) fn run(
         AgentCommand::Codex { command } => {
             let (mode, args) = routing_mode(&command);
             let settings = settings::load_from_file()?;
+            // The CLI cannot update ChatGPT's profile or the GUI's listener that it uses.
+            ensure!(
+                settings.codex_proxy_enabled.is_none(),
+                "Настройка Codex доступна только в GUI, пока в нём включён прокси для ChatGPT."
+            );
             let Some(token) = resolve_token(
                 runtime,
                 yes,
