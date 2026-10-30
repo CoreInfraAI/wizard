@@ -173,8 +173,11 @@ impl PreparedPlan {
             let changes: Vec<_> = self
                 .steps
                 .iter()
+                // Only changed files: restoring an untouched file would roll back unrelated edits.
                 .filter_map(|step| match step {
-                    PreparedStep::ChangeFile { change } => Some(change.clone()),
+                    PreparedStep::ChangeFile { change } if change.is_changed() => {
+                        Some(change.clone())
+                    }
                     _ => None,
                 })
                 .collect();
