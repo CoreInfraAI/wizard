@@ -95,6 +95,8 @@ impl HubTokensManager {
         if let Err(error) = result {
             log::warn!("hub tokens load failed: {error:?}");
         }
+        // A 401 for a session that was replaced meanwhile is an error, not a sign-out.
+        let signed_out = settings::get_state(app).is_ok_and(|s| s.hub_session.is_empty());
         signal.update(|tokens| {
             if tokens.generation != generation {
                 return None;
@@ -107,7 +109,7 @@ impl HubTokensManager {
                     generation,
                 },
                 // A rejected session is signed out, which clears the list without an error.
-                Err(TokensError::Request(HubError::SignedOut)) => HubTokens {
+                Err(TokensError::Request(HubError::SignedOut)) if signed_out => HubTokens {
                     generation,
                     ..HubTokens::default()
                 },
@@ -151,14 +153,14 @@ pub(crate) async fn issue(app: &tauri::AppHandle, name: &str) -> Result<String, 
     }
     let token = result.map_err(|_| "Не удалось создать токен CoreInfra Hub".to_owned())?;
     log::info!("hub token '{name}' issued");
+    HubTokensManager::refresh(app).await;
 
-    // A cleared list belongs to a signed-out session: the token is not used there.
+    // A cleared list belongs to a signed-out session: the token is not used there. Check after
+    // the refresh, which a logout can also interrupt.
     if signal.current().state.generation != generation {
         log::warn!("hub token '{name}' issued for a cleared session");
         return Err("Сессия CoreInfra Hub изменилась во время создания токена".into());
     }
-
-    HubTokensManager::refresh(app).await;
     Ok(token)
 }
 
@@ -201,7 +203,13 @@ where
     }
 
     let signing_out = update == SessionUpdate::Rejected;
+    let cleanup_app = app.clone();
     if settings::update_state(app, move |s| {
+        // A later login may have replaced the rejected session; keep that account's state.
+        if signing_out && s.hub_session == session {
+            hub_auth::clear_profile(&cleanup_app);
+            HubTokensManager::clear(&cleanup_app);
+        }
         update.apply(s, &session);
     })
     .await
@@ -210,8 +218,6 @@ where
         log::error!("hub session update failed");
     }
     if signing_out {
-        hub_auth::clear_profile(app);
-        HubTokensManager::clear(app);
         hub_auth::republish(app);
     }
     result
