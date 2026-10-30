@@ -171,8 +171,14 @@ pub fn remove_plugin(executable: &Path, agent_dir: &Path) -> Result<()> {
 }
 
 fn run_package_command(executable: &Path, dir: &Path, action: &str) -> Result<()> {
-    let node = find_executable("node", vec![], None)?.context("Node executable not found")?;
-    let npm = find_executable("npm", vec![], None)?.context("npm executable not found")?;
+    // Version managers (nvm, fnm, Volta) keep node and npm next to the Pi CLI.
+    let near: Vec<_> = executable
+        .parent()
+        .map(Path::to_owned)
+        .into_iter()
+        .collect();
+    let node = find_executable("node", near.clone(), None)?.context("Node executable not found")?;
+    let npm = find_executable("npm", near, None)?.context("npm executable not found")?;
     let paths = [
         node.parent().context("Node executable has no parent")?,
         npm.parent().context("npm executable has no parent")?,

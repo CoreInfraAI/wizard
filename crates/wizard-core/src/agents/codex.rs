@@ -9,7 +9,8 @@ use crate::{
         changes::{FileChange, FileSnapshot},
     },
     platform::{
-        command_output, daemon_command_status, env_var_not_empty, find_executable, is_executable,
+        append_node_path, command_output, daemon_command_status, env_var_not_empty,
+        find_executable, is_executable,
     },
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
 };
@@ -119,6 +120,7 @@ pub fn restart_daemon(executable: &Path, codex_home: &Path) -> Result<()> {
     // daemon on updates. It keeps variables later removed from `.env`, and one started by an
     // older Wizard stays attributed to Wizard by macOS. Bootstrap resets remote control, though.
     let mut command = tokio::process::Command::new(executable);
+    append_node_path(&mut command)?;
     command
         .args(["app-server", "daemon", "bootstrap"])
         .env("CODEX_HOME", codex_home);
@@ -163,7 +165,8 @@ fn managed_daemon_running(executable: &Path, codex_home: &Path) -> bool {
     // TODO: Distinguish an absent daemon from command failures and unsupported versions.
     // For now, spawn errors, timeouts, nonzero exit statuses and unmanaged servers all mean
     // "no daemon".
-    command_output(probe, Duration::from_secs(15))
+    append_node_path(&mut probe)
+        .and_then(|()| command_output(probe, Duration::from_secs(15)))
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| serde_json::from_slice::<Version>(&output.stdout).ok())

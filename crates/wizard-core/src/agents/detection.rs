@@ -3,7 +3,7 @@
 use super::AgentDetection;
 #[cfg(target_os = "macos")]
 use crate::platform::env_var_not_empty;
-use crate::platform::{append_command_path, command_output, find_executable};
+use crate::platform::{append_node_path, command_output, find_executable};
 use anyhow::{Context as _, Result};
 use core::time::Duration;
 use serde::Serialize;
@@ -90,12 +90,7 @@ fn cli_version(agent: Agent, path: &Path) -> Result<String> {
         .arg("--version")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(node) = find_executable("node", vec![], None)? {
-        let directory = node
-            .parent()
-            .context("Node executable has no parent directory")?;
-        append_command_path(&mut command, &[directory])?;
-    }
+    append_node_path(&mut command)?;
     let output = command_output(command, Duration::from_secs(5))?;
     anyhow::ensure!(
         output.status.success(),
