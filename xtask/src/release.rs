@@ -322,7 +322,7 @@ pub(crate) fn build(
     }
 
     fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
-    let release_name = format!("{}-{version}", product_name.replace(' ', "-"));
+    let release_name = product_name.replace(' ', "-");
     let copy =
         |source, destination| move_artifact(&bundle_dir.join(source), &output.join(destination));
 
@@ -487,7 +487,7 @@ pub(crate) fn generate_latest_json(
     let product_name = config["productName"]
         .as_str()
         .context("tauri.conf.json productName must be a string")?;
-    let release_name = format!("{}-{version}", product_name.replace(' ', "-"));
+    let release_name = product_name.replace(' ', "-");
     // RELEASE_TARGETS: update when adding a release target.
     let platforms = json!({
         "darwin-aarch64": updater_entry(
