@@ -188,7 +188,7 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
             object.insert("inferenceGatewayAuthScheme".into(), json!("x-api-key"));
         } else if remove {
             for key in CONNECTION_KEYS {
-                object.remove(key);
+                object.shift_remove(key);
             }
         }
 

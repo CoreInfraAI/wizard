@@ -329,7 +329,7 @@ fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
             config
                 .as_object_mut()
                 .context("ChatGPT Preferences must contain an object")?
-                .remove("proxy");
+                .shift_remove("proxy");
         }
         Ok(())
     })?;

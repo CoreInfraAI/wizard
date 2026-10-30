@@ -189,7 +189,7 @@ fn remove_inactive_routing_settings(env: &mut Map<String, Value>, current_mode: 
         ],
     };
     for key in previous_keys {
-        env.remove(*key);
+        env.shift_remove(*key);
     }
 }
 
