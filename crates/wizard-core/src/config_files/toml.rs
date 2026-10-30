@@ -24,15 +24,6 @@ pub(crate) fn get_string<'a>(doc: &'a DocumentMut, keys: &[&str]) -> Option<&'a 
     item.as_str()
 }
 
-#[expect(dead_code)]
-pub(crate) fn get_value<'a>(doc: &'a DocumentMut, keys: &[&str]) -> Option<&'a Value> {
-    let mut item = doc.as_item();
-    for key in keys {
-        item = item.as_table_like()?.get(key)?;
-    }
-    item.as_value()
-}
-
 /// Updates a value, preserving its comments and unrelated table entries.
 pub(crate) fn set_value(
     doc: &mut DocumentMut,

@@ -41,7 +41,6 @@ export type BackupAgent = "codex" | "claude";
 
 export type Backup = {
   id: number;
-  backup_version: number;
   time_created: string;
   files: Record<string, { content: string; mode?: string } | null>;
 };

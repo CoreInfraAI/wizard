@@ -121,7 +121,6 @@ pub fn run_application() -> Result<()> {
             updater::get_update_state,
             updater::request_update,
             updater::retry_update_check,
-            settings::get_settings_state,
             hub_auth::get_hub_account_state,
             hub_auth::login_hub_account,
             hub_auth::logout_hub_account,

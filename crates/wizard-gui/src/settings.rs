@@ -1,4 +1,4 @@
-use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
+use crate::revision_signal::RevisionSignal;
 use anyhow::{Context as _, Result, anyhow, bail};
 use std::sync::Mutex;
 use tauri::Manager as _;
@@ -15,20 +15,6 @@ pub(crate) async fn initialize_state(app: &tauri::AppHandle) -> Result<()> {
         bail!("settings already initialized");
     }
     Ok(())
-}
-
-#[tauri::command]
-pub(crate) async fn get_settings_state(
-    last_revision: Option<u32>,
-    signal: tauri::State<'_, RevisionSignal<Settings>>,
-) -> Result<RevisionSnapshot<Settings>, String> {
-    let mut snapshot = signal
-        .wait(last_revision)
-        .await
-        .map_err(|error| format!("{error:#}"))?;
-    // Clear only the IPC copy; the persisted session remains backend-only.
-    snapshot.state.hub_session.clear();
-    Ok(snapshot)
 }
 
 /// TODO: maybe update state when file changes
