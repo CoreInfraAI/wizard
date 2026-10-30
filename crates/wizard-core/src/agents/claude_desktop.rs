@@ -172,9 +172,12 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     }
 
     let proxy_url = format!("http://{}", wizard_proxy::CLAUDE_DESKTOP_ADDRESS);
+    // Wizard points every profile it configures at its proxy.
+    let managed = json::parse(&config.after)?["egressProxyUrl"] == proxy_url;
     json::update(&mut config.after, |config| {
-        let remove = mode != RoutingMode::Hub;
-        let remove_proxy = mode == RoutingMode::Disabled && config["egressProxyUrl"] == proxy_url;
+        // Remove only CoreInfra's connection; another gateway belongs to the user and is not
+        // backed up. Claude ignores inference settings in the 1p mode that Sub selects.
+        let remove = mode != RoutingMode::Hub && has_hub_connection(config);
 
         let object = config
             .as_object_mut()
@@ -194,21 +197,25 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
 
         if mode == RoutingMode::Sub {
             object.insert("disableAutoUpdates".into(), json!(true));
+        } else if managed {
+            // Undo Sub's override only in a profile Wizard configured.
+            object.shift_remove("disableAutoUpdates");
         }
 
         if mode != RoutingMode::Disabled {
             object.insert("egressProxyUrl".into(), json!(proxy_url));
-            object.remove("egressProxyPacUrl");
-        } else if remove_proxy {
-            object.remove("egressProxyUrl");
+            object.shift_remove("egressProxyPacUrl");
+        } else if managed {
+            object.shift_remove("egressProxyUrl");
         }
         Ok(())
     })?;
 
-    if mode != RoutingMode::Disabled {
+    // Disabled returns a Wizard profile to the Claude account (1p), where sign-in works.
+    if mode != RoutingMode::Disabled || managed {
         json::update(&mut preferences.after, |preferences| {
             preferences["deploymentMode"] =
-                json!(if mode == RoutingMode::Sub { "1p" } else { "3p" });
+                json!(if mode == RoutingMode::Hub { "3p" } else { "1p" });
             Ok(())
         })?;
     }
