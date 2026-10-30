@@ -60,18 +60,14 @@ impl FileSnapshot {
         }
     }
 
-    /// Reads the current UTF-8 file and its permissions without changing it.
+    /// Reads the current UTF-8 file and its permissions without changing it, following symlinks.
     /// A missing file is distinct from an existing empty file.
     pub(crate) fn read(path: &Path) -> Result<Self> {
-        let metadata = match fs::symlink_metadata(path) {
+        let metadata = match fs::metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::Missing),
             Err(error) => return Err(error).context("failed to inspect file"),
         };
-        ensure!(
-            !metadata.file_type().is_symlink(),
-            "file is a symlink; refusing to read it"
-        );
         ensure!(metadata.is_file(), "file must be a regular file");
 
         let mut file = fs::File::open(path).context("failed to open file")?;
@@ -157,7 +153,14 @@ impl FileChange {
         &self.path
     }
 
-    fn verify_before(&self) -> Result<()> {
+    pub(crate) fn verify_before(&self) -> Result<()> {
+        // Replacing a symlink would turn it into a regular file, so writes refuse symlinks.
+        let symlink = fs::symlink_metadata(&self.path).is_ok_and(|metadata| metadata.is_symlink());
+        ensure!(
+            !symlink,
+            "{} is a symlink; refusing to change it",
+            self.path.display()
+        );
         let current = FileSnapshot::read(&self.path)
             .with_context(|| format!("failed to reread {}", self.path.display()))?;
         ensure!(
