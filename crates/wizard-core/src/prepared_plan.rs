@@ -153,6 +153,17 @@ impl PreparedPlan {
     ) -> Result<()> {
         let _guard = self.agent.lock()?;
 
+        // Refuse a write (symlink, file changed since preparation) before an install step runs.
+        // Each write checks again.
+        for step in &self.steps {
+            if let PreparedStep::ChangeFile { change } | PreparedStep::PiApplyAuth { change, .. } =
+                step
+                && change.is_changed()
+            {
+                change.verify_before()?;
+            }
+        }
+
         let backup_agent = match self.agent {
             PreparedAgent::Codex => Some(AgentKind::Codex),
             PreparedAgent::Claude => Some(AgentKind::Claude),
