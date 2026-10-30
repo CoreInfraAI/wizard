@@ -91,9 +91,7 @@ impl BackupManager {
             return Ok(());
         }
 
-        let mut state = State::load(agent)?;
-        state.create_backup_if_needed(changes)?;
-        state.save()
+        State::load(agent)?.create_backup_if_needed(changes)
     }
 
     pub fn save_last_written(agent: AgentKind, changes: &[FileChange]) -> Result<()> {
@@ -120,6 +118,8 @@ impl BackupManager {
             change.after = snapshot.clone();
             changes.push(change);
         }
+        // Like a plan, back up only what the restore changes.
+        changes.retain(FileChange::is_changed);
         // Restore existing files first; delete files absent from the backup last.
         changes.sort_by_key(|change| matches!(change.after, FileSnapshot::Missing));
         Self::apply_changes(agent, &changes).context("failed to restore backup")
@@ -193,10 +193,10 @@ impl State {
             return Ok(());
         }
 
+        // Save the next ID first, so a failed state save can never reuse an existing backup's ID.
         let id = self.get_next_backup_id();
-        let backup = Backup::from_changes(id, changes);
-        backup.save(self.agent)?;
-        Ok(())
+        self.save()?;
+        Backup::from_changes(id, changes).save(self.agent)
     }
 }
 
@@ -251,6 +251,12 @@ impl Backup {
         let directory = agent.ensure_directory()?;
 
         let mut change = FileChange::read(directory.join(format!("{}.json", self.id)))?;
+        // Another Wizard process may have used this ID; never replace its backup.
+        ensure!(
+            matches!(change.before(), FileSnapshot::Missing),
+            "backup {} already exists",
+            self.id
+        );
         change.after = FileSnapshot::new(content, 0o600);
         FileChange::apply_all(&[change]).context("failed to save backup")
     }
