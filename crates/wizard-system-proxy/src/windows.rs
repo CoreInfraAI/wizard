@@ -9,9 +9,9 @@ use windows::{
         Foundation::{GlobalFree, HGLOBAL},
         Networking::WinInet::{
             INTERNET_OPTION_PER_CONNECTION_OPTION, INTERNET_OPTION_PROXY_SETTINGS_CHANGED,
-            INTERNET_OPTION_REFRESH, INTERNET_PER_CONN_AUTOCONFIG_URL, INTERNET_PER_CONN_FLAGS,
-            INTERNET_PER_CONN_FLAGS_UI, INTERNET_PER_CONN_OPTION_LISTW, INTERNET_PER_CONN_OPTIONW,
-            INTERNET_PER_CONN_OPTIONW_0, INTERNET_PER_CONN_PROXY_BYPASS,
+            INTERNET_OPTION_REFRESH, INTERNET_PER_CONN, INTERNET_PER_CONN_AUTOCONFIG_URL,
+            INTERNET_PER_CONN_FLAGS, INTERNET_PER_CONN_FLAGS_UI, INTERNET_PER_CONN_OPTION_LISTW,
+            INTERNET_PER_CONN_OPTIONW, INTERNET_PER_CONN_OPTIONW_0, INTERNET_PER_CONN_PROXY_BYPASS,
             INTERNET_PER_CONN_PROXY_SERVER, InternetQueryOptionW, InternetSetOptionW,
         },
     },
@@ -24,7 +24,7 @@ fn native_result(result: windows::core::Result<()>) -> Result<()> {
     result.map_err(|error| anyhow::anyhow!("WinINet operation failed (HRESULT {})", error.code().0))
 }
 
-fn option(kind: u32) -> INTERNET_PER_CONN_OPTIONW {
+fn option(kind: INTERNET_PER_CONN) -> INTERNET_PER_CONN_OPTIONW {
     INTERNET_PER_CONN_OPTIONW {
         dwOption: kind,
         Value: INTERNET_PER_CONN_OPTIONW_0::default(),
@@ -77,7 +77,7 @@ impl Backend for Native {
 
     fn read() -> Result<Config> {
         let mut query = Query([
-            option(INTERNET_PER_CONN_FLAGS_UI),
+            option(INTERNET_PER_CONN(INTERNET_PER_CONN_FLAGS_UI)),
             option(INTERNET_PER_CONN_PROXY_SERVER),
             option(INTERNET_PER_CONN_PROXY_BYPASS),
             option(INTERNET_PER_CONN_AUTOCONFIG_URL),

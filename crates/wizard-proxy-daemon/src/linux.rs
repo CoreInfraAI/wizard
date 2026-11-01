@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unused_async,
+    reason = "Linux stubs retain the async contract shared with Windows and macOS"
+)]
+
 use std::io;
 
 pub(super) use super::unix::shutdown_signal;
