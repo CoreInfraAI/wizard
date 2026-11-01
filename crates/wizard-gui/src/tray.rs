@@ -72,7 +72,7 @@ fn set_enabled_on_main_thread(app: &tauri::AppHandle, enabled: bool) -> Result<(
     let warning = MenuItem::with_id(
         app,
         PROXY_WARNING_ID,
-        "Локальный прокси Claude Desktop остановлен",
+        "ОС использует Wizard, но локальный прокси недоступен",
         false,
         None::<&str>,
     )?;
@@ -105,6 +105,9 @@ fn system_proxy_label(state: &crate::system_proxy::State) -> &'static str {
     if state.busy {
         return "Системный прокси — применение…";
     }
+    if state.requested {
+        return "Выключить системный прокси";
+    }
     match state.status {
         Status::Unknown => "Системный прокси — состояние неизвестно",
         Status::Unavailable => "Системный прокси — нет сетевых сервисов",
@@ -126,9 +129,7 @@ fn update_proxy_menu(items: &ProxyMenu, state: &crate::system_proxy::State) -> R
     let show_warning = !state.listener_running
         && matches!(
             state.status,
-            crate::system_proxy::Status::Off
-                | crate::system_proxy::Status::On
-                | crate::system_proxy::Status::Partial
+            crate::system_proxy::Status::On | crate::system_proxy::Status::Partial
         );
     if show_warning && !warning_visible {
         items.menu.insert(&items.warning, 2)?;

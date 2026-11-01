@@ -40,6 +40,13 @@ fn aggregates_os_settings_without_treating_a_stopped_listener_as_a_conflict() {
     observe(&mut state, Ok(SystemProxyStatus { services: vec![] }), true);
     assert_eq!(state.status, Status::Unavailable);
     assert!(!state.can_toggle());
+
+    // External OS changes must not erase saved demand or prevent cancelling it.
+    state.requested = true;
+    observe(&mut state, Ok(snapshot(Foreign, Foreign, true)), false);
+    assert_eq!(state.status, Status::Off);
+    assert!(state.requested);
+    assert!(state.can_toggle());
 }
 
 #[test]

@@ -1,16 +1,20 @@
 use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use tauri::Manager as _;
 use wizard_settings::{self as settings, ApplicationSettings, Settings};
 
 static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) async fn initialize_state(app: &tauri::AppHandle) -> Result<()> {
-    let settings = tauri::async_runtime::spawn_blocking(settings::load_from_file)
-        .await
-        .context("settings initialization task failed")??;
+    let settings = tauri::async_runtime::spawn_blocking(|| {
+        // TODO: remove migration
+        settings::migrate()?;
+        settings::load_from_file()
+    })
+    .await
+    .context("settings initialization task failed")??;
 
     if !app.manage(RevisionSignal::new(settings)) {
         bail!("settings already initialized");
@@ -30,43 +34,41 @@ pub(crate) async fn update_state(
     app: &tauri::AppHandle,
     edit: impl FnOnce(&mut Settings) + Send + 'static,
 ) -> Result<()> {
-    update_state_with_application_sync(app, edit, false).await
-}
-
-async fn update_state_with_application_sync(
-    app: &tauri::AppHandle,
-    edit: impl FnOnce(&mut Settings) + Send + 'static,
-    sync_application: bool,
-) -> Result<()> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = SETTINGS_WRITE_LOCK
-            .lock()
-            .map_err(|_| anyhow!("settings write lock poisoned"))?;
-        let signal = app
-            .try_state::<RevisionSignal<Settings>>()
-            .context("settings not initialized")?;
-        let current = signal.current().state;
-        let mut next = current.clone();
-        edit(&mut next);
-        let application = next.application;
-        let sync_application = sync_application || application != current.application;
-        if next != current {
-            settings::save_to_file(&next)
-                .context("Не удалось сохранить настройки; изменения не применены")?;
-            signal.notify(next);
-        }
-
-        // Proxy changes never control the application's lifecycle. Explicit
-        // retries synchronize OS effects even when the saved values are unchanged.
-        if sync_application {
-            sync_application_settings(&app, application)
-                .context("Настройки сохранены, но не удалось применить их в системе")?;
-        }
-        Ok(())
+        let guard = lock_state()?;
+        update_state_locked(&app, &guard, edit)
     })
     .await
     .context("settings save task failed")?
+}
+
+/// Blocking callers can keep the account/Hub stable across an entire agent plan.
+pub(crate) fn lock_state() -> Result<MutexGuard<'static, ()>> {
+    SETTINGS_WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow!("settings write lock poisoned"))
+}
+
+/// Requires the guard from `lock_state`; never reacquires it from a proxy callback.
+pub(crate) fn update_state_locked(
+    app: &tauri::AppHandle,
+    _guard: &MutexGuard<'_, ()>,
+    edit: impl FnOnce(&mut Settings),
+) -> Result<()> {
+    let signal = app
+        .try_state::<RevisionSignal<Settings>>()
+        .context("settings not initialized")?;
+    let current = signal.current().state;
+    let mut next = current.clone();
+    edit(&mut next);
+    if next != current {
+        settings::save_to_file(&next)
+            .context("Не удалось сохранить настройки; изменения не применены")?;
+        signal.notify(next);
+    }
+
+    Ok(())
 }
 
 fn sync_application_settings(app: &tauri::AppHandle, settings: ApplicationSettings) -> Result<()> {
@@ -143,12 +145,19 @@ pub(crate) async fn set_application_setting(
     if !cfg!(any(target_os = "macos", target_os = "windows")) {
         return Err("Работа в трее и автозапуск пока доступны только на macOS и Windows".into());
     }
-    update_state_with_application_sync(
-        &app,
-        move |settings| set_preference(settings, setting, enabled),
-        true,
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = lock_state()?;
+        update_state_locked(&app, &guard, |settings| {
+            set_preference(settings, setting, enabled);
+        })?;
+
+        // Retry OS effects even when the saved preferences are unchanged.
+        sync_application_settings(&app, get_state(&app)?.application)
+            .context("Настройки сохранены, но не удалось применить их в системе")
+    })
     .await
+    .context("application settings task failed")
+    .flatten()
     .map_err(|error| format!("{error:#}"))
 }
 
@@ -160,7 +169,8 @@ mod tests {
     fn ipc_exposes_only_application_preferences() {
         let settings = Settings {
             hub_session: "fixture-session".into(),
-            claude_proxy_enabled: Some("fixture-token".into()),
+            claude_proxy_enabled: true,
+            proxy_token: Some("fixture-token".into()),
             ..Settings::default()
         };
         let snapshot = application_snapshot(&RevisionSnapshot {
@@ -179,7 +189,8 @@ mod tests {
     fn preference_updates_preserve_other_settings() {
         let mut settings = Settings {
             hub_session: "fixture-session".into(),
-            codex_proxy_enabled: Some("fixture-token".into()),
+            codex_proxy_enabled: true,
+            proxy_token: Some("fixture-token".into()),
             ..Settings::default()
         };
         set_preference(&mut settings, ApplicationSetting::TrayEnabled, false);
@@ -189,9 +200,6 @@ mod tests {
         assert!(!settings.application.tray_enabled);
         assert!(!settings.application.autostart_enabled);
         assert_eq!(settings.hub_session, "fixture-session");
-        assert_eq!(
-            settings.codex_proxy_enabled.as_deref(),
-            Some("fixture-token")
-        );
+        assert_eq!(settings.proxy_token.as_deref(), Some("fixture-token"));
     }
 }

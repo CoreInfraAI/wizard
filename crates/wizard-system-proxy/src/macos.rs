@@ -168,12 +168,17 @@ impl Backend for Native {
         snapshot.services.iter().map(service_status).collect()
     }
 
-    fn prepare(snapshot: &Snapshot, enabled: bool) -> Result<Snapshot> {
+    fn prepare(snapshot: &Snapshot, enabled: bool, forced: bool) -> Result<Snapshot> {
         let address: SocketAddr = wizard_proxy::CLAUDE_DESKTOP_ADDRESS.parse()?;
         let host = CFString::from_str(&address.ip().to_string());
         let port = CFNumber::new_i32(i32::from(address.port()));
         let mut after = snapshot.clone();
         for service in &mut after.services {
+            if enabled && forced {
+                for key in ["ProxyAutoConfigEnable", "ProxyAutoDiscoveryEnable"] {
+                    service.config = replacing(&service.config, key, &CFNumber::new_i32(0));
+                }
+            }
             for prefix in ["HTTP", "HTTPS"] {
                 if enabled {
                     service.config = replacing(&service.config, &format!("{prefix}Proxy"), &host);
@@ -303,7 +308,7 @@ mod tests {
                 config,
             }],
         };
-        let enabled = Native::prepare(&before, true)?;
+        let enabled = Native::prepare(&before, true, false)?;
         assert_eq!(Native::services(&enabled)?[0].http, ProxyState::Wizard);
         assert_eq!(
             value(&before.services[0].config, "ExceptionsList"),
@@ -315,7 +320,7 @@ mod tests {
             "HTTPSProxy",
             &CFString::from_str("foreign.example"),
         );
-        let disabled = Native::prepare(&foreign, false)?;
+        let disabled = Native::prepare(&foreign, false, false)?;
         let status = Native::services(&disabled)?;
         assert_eq!(status[0].http, ProxyState::Disabled);
         assert_eq!(status[0].https, ProxyState::Foreign);

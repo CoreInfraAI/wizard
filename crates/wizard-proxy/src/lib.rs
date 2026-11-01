@@ -30,9 +30,9 @@ mod server_tests;
 
 pub use upstream::{HOST as UPSTREAM_HOST, PORT as UPSTREAM_PORT, USERNAME as UPSTREAM_USERNAME};
 
-/// Listener of Claude Desktop, with its own token.
+/// Listener used by Claude Desktop; shares configuration with the other managed port.
 pub const CLAUDE_DESKTOP_ADDRESS: &str = "127.0.0.1:33787";
-/// Listener of `ChatGPT`, with its own token.
+/// Listener used by `ChatGPT`; shares configuration with the other managed port.
 pub const CHATGPT_ADDRESS: &str = "127.0.0.1:33788";
 
 // Idle WebSocket and streaming connections remain valid; detect vanished peers
@@ -67,12 +67,11 @@ pub struct Proxy {
 }
 
 // Shared configuration, never listener handles: tasks must not own themselves
-// through this state. No Debug because the slots contain credentials.
+// through this state. No Debug because the slot contains credentials.
 struct ServerState {
     reload_lock: Mutex<()>,
     tls: ClientConfig,
-    claude_desktop: Arc<ProxySlot>,
-    chatgpt: Arc<ProxySlot>,
+    slot: Arc<ProxySlot>,
     // Shutdown waits for accepted commands and their bounded reply attempts.
     management: RwLock<()>,
     stopping: watch::Sender<bool>,
@@ -83,8 +82,7 @@ impl ServerState {
         Self {
             reload_lock: Mutex::new(()),
             tls,
-            claude_desktop: Arc::new(ProxySlot::default()),
-            chatgpt: Arc::new(ProxySlot::default()),
+            slot: Arc::new(ProxySlot::default()),
             management: RwLock::new(()),
             stopping: watch::channel(false).0,
         }
@@ -95,12 +93,11 @@ impl ServerState {
         self.current_status().await
     }
 
-    // Called with reload_lock held, so the pair cannot be observed mid-update.
+    // Called with reload_lock held, after any previous generation has drained.
     async fn current_status(&self) -> control::Status {
         control::Status {
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            claude_desktop_enabled: self.claude_desktop.current.read().await.is_some(),
-            chatgpt_enabled: self.chatgpt.current.read().await.is_some(),
+            enabled: self.slot.current.read().await.is_some(),
         }
     }
 
@@ -121,48 +118,44 @@ impl ServerState {
             if *self.stopping.borrow() {
                 return Err("proxy server is stopping");
             }
-            let mut settings = wizard_settings::load_from_file()
+            let settings = wizard_settings::load_from_file()
                 .inspect_err(|error| diagnostics::error("proxy settings load", error.as_ref()))
                 .map_err(|_| "failed to load Wizard settings")?;
-            let claude_token = settings.claude_proxy_enabled.take();
-            let chatgpt_token = settings.codex_proxy_enabled.take();
-            drop(settings);
 
-            log::info!("applying Claude Desktop proxy settings");
-            let claude = self
-                .claude_desktop
-                .set_token(claude_token.as_deref(), &self.tls)
+            let token = if settings.local_proxy_enabled() {
+                Some(
+                    settings
+                        .proxy_token
+                        .as_deref()
+                        .filter(|token| !token.is_empty())
+                        .ok_or("Wizard proxy token is not configured")?,
+                )
+            } else {
+                None
+            };
+
+            self.slot
+                .set_token(token, &self.tls)
                 .await
-                .inspect_err(|error| diagnostics::error("Claude Desktop generation update", error))
-                .map_err(|_| "failed to update Claude Desktop proxy");
-            log::info!("applying ChatGPT proxy settings");
-            let chatgpt = self
-                .chatgpt
-                .set_token(chatgpt_token.as_deref(), &self.tls)
-                .await
-                .inspect_err(|error| diagnostics::error("ChatGPT generation update", error))
-                .map_err(|_| "failed to update ChatGPT proxy");
-            // Attempt both, retaining the first error without rolling back success.
-            claude.and(chatgpt)
+                .inspect_err(|error| diagnostics::error("proxy generation update", error))
+                .map_err(|_| "failed to update proxy")
         }
         .await;
         let status = self.current_status().await;
         match &result {
             Ok(()) => log::info!(
-                "proxy settings reload completed: claude_desktop={}, chatgpt={}, elapsed_ms={}",
-                status.claude_desktop_enabled,
-                status.chatgpt_enabled,
+                "proxy settings reload completed: enabled={}, elapsed_ms={}",
+                status.enabled,
                 started.elapsed().as_millis(),
             ),
             // These errors are static diagnostics, never settings or credentials.
             Err(error) => log::error!(
-                "proxy settings reload failed: {error}; claude_desktop={}, chatgpt={}, elapsed_ms={}",
-                status.claude_desktop_enabled,
-                status.chatgpt_enabled,
+                "proxy settings reload failed: {error}; enabled={}, elapsed_ms={}",
+                status.enabled,
                 started.elapsed().as_millis(),
             ),
         }
-        if result.is_ok() && !status.enabled() {
+        if result.is_ok() && !status.enabled {
             // Prevent later queued Reloads from re-enabling during shutdown.
             // run_listeners still waits for the current HTTP reply to finish.
             self.stopping.send_replace(true);
@@ -190,7 +183,7 @@ struct Generation {
 impl ProxySlot {
     // Writers must be serialized through the whole update, including draining.
     // The standalone handle enforces this with &mut self; the managed server
-    // holds ServerState::reload_lock across both slot updates.
+    // holds ServerState::reload_lock across the update.
     async fn set_token(&self, token: Option<&str>, tls: &ClientConfig) -> io::Result<()> {
         let mut current = self.current.write().await;
         if current.as_ref().map(|generation| generation.token.as_str()) == token {
@@ -264,8 +257,8 @@ impl Proxy {
 }
 
 /// Read Wizard settings and run both fixed-address listeners with unauthenticated
-/// GET /status, POST /reload and POST /shutdown. With both proxies disabled,
-/// return without binding.
+/// GET /status, POST /reload and POST /shutdown. With no proxy demand,
+/// return without binding. Both ports use the same configuration and generation.
 /// TLS roots load once for the pair; disabled proxy traffic receives HTTP 503.
 /// Accepted management commands and bounded reply attempts finish before shutdown.
 /// This function does not register OS services or change saved settings.
@@ -277,7 +270,7 @@ pub async fn run_managed(shutdown: impl Future<Output = ()>) -> io::Result<()> {
         .map_err(|_| io::Error::other("failed to load Wizard settings"))?
         .local_proxy_enabled()
     {
-        log::info!("proxy startup skipped: both proxies are disabled");
+        log::info!("proxy startup skipped: no consumers are enabled");
         return Ok(());
     }
     log::info!("loading proxy TLS roots");
@@ -289,12 +282,12 @@ pub async fn run_managed(shutdown: impl Future<Output = ()>) -> io::Result<()> {
     if let Some(error) = response.error {
         return Err(io::Error::other(error));
     }
-    if !response.status.enabled() {
+    if !response.status.enabled {
         return Ok(());
     }
 
     // Bind both before starting tasks. If the second bind fails, the first
-    // listener is dropped too; a disabled app's port must also be available.
+    // listener is dropped too: both ports must be available.
     let claude = TcpListener::bind(CLAUDE_DESKTOP_ADDRESS)
         .await
         .inspect_err(|error| {
@@ -320,13 +313,13 @@ async fn run_listeners(
     // Handles stay private. Only ServerState::reload changes managed tokens.
     let claude = spawn(
         claude,
-        Arc::clone(&state.claude_desktop),
+        Arc::clone(&state.slot),
         state.tls.clone(),
         Some(Arc::clone(&state)),
     );
     let chatgpt = spawn(
         chatgpt,
-        Arc::clone(&state.chatgpt),
+        Arc::clone(&state.slot),
         state.tls.clone(),
         Some(Arc::clone(&state)),
     );

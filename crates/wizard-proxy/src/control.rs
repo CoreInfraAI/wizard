@@ -18,17 +18,8 @@ const MAX_RESPONSE: usize = 1024;
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
-    /// Empty for older responses without a version; current servers report their crate version.
-    #[serde(default)]
     pub version: String,
-    pub claude_desktop_enabled: bool,
-    pub chatgpt_enabled: bool,
-}
-
-impl Status {
-    pub(crate) fn enabled(&self) -> bool {
-        self.claude_desktop_enabled || self.chatgpt_enabled
-    }
+    pub enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -131,19 +122,14 @@ mod tests {
     use super::Status;
 
     #[test]
-    fn legacy_status_has_unknown_version_but_malformed_status_is_rejected() {
-        let status: Status =
-            serde_json::from_str(r#"{"claude_desktop_enabled":true,"chatgpt_enabled":false}"#)
-                .expect("legacy status");
-        assert!(status.version.is_empty());
-        assert!(status.claude_desktop_enabled);
-        assert!(!status.chatgpt_enabled);
-
+    fn malformed_status_is_rejected() {
         for response in [
-            r#"{"version":null,"claude_desktop_enabled":true,"chatgpt_enabled":false}"#,
-            r#"{"version":42,"claude_desktop_enabled":true,"chatgpt_enabled":false}"#,
-            r#"{"claude_desktop_enabled":true}"#,
-            r#"{"claude_desktop_enabled":true,"chatgpt_enabled":false,"unexpected":true}"#,
+            r#"{"version":null,"enabled":true}"#,
+            r#"{"version":42,"enabled":true}"#,
+            r#"{"enabled":true}"#,
+            r#"{"version":"test"}"#,
+            r#"{"version":"test","enabled":"true"}"#,
+            r#"{"version":"test","enabled":true,"unexpected":true}"#,
         ] {
             assert!(serde_json::from_str::<Status>(response).is_err());
         }

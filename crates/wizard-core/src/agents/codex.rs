@@ -266,12 +266,8 @@ pub fn prepare_routing_for_gui(
         .iter()
         .position(|step| matches!(step, PreparedStep::CodexRestartDaemon { .. }))
         .unwrap_or(plan.steps.len());
-    plan.steps.insert(
-        restart,
-        PreparedStep::SetCodexProxyEnabled {
-            token: enabled.then(|| token.to_owned()),
-        },
-    );
+    plan.steps
+        .insert(restart, PreparedStep::SetCodexProxyEnabled { enabled });
     Ok(plan)
 }
 

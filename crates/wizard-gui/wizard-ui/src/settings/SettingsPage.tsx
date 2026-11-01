@@ -74,17 +74,21 @@ function SystemProxySettings() {
   const [submitting, setSubmitting] = useState(false);
   const [commandError, setCommandError] = useState<string>();
   const hasOurs = state?.status === "on" || state?.status === "partial";
-  const known = hasOurs || state?.status === "off";
+  const requested = state?.requested === true;
+  const checked = requested || hasOurs;
   const busy = submitting || state?.busy === true;
-  const disabled = busy || Boolean(loadError) || !known || (!hasOurs && state?.conflict === true);
+  const disabled = busy || Boolean(loadError) || !state || state.status === "unsupported"
+    || (!checked && (state.status !== "off" || state.conflict));
 
-  async function change(enabled: boolean) {
+  const forceDisabled = busy || Boolean(loadError) || !(hasOurs || state?.status === "off");
+
+  async function change(enabled: boolean, forced = false) {
     if (inFlight.current) return;
     inFlight.current = true;
     setSubmitting(true);
     setCommandError(undefined);
     try {
-      await setSystemProxy(enabled);
+      await setSystemProxy(enabled, forced);
     } catch (cause: unknown) {
       setCommandError(typeof cause === "string" ? cause : "Не удалось изменить системный прокси");
     } finally {
@@ -98,7 +102,7 @@ function SystemProxySettings() {
       <SwitchField disabled={disabled}>
         <Label>Системный прокси</Label>
         <Description>Wizard будет проксировать сайты OpenAI и Claude, остальной интернет будет работать как раньше.</Description>
-        <Switch checked={hasOurs} onChange={(enabled) => { void change(enabled); }} />
+        <Switch checked={checked} onChange={(enabled) => { void change(enabled); }} />
       </SwitchField>
       <div className="mt-3 space-y-2" aria-live="polite">
         {busy && <Text>Применение системных настроек… На macOS может потребоваться авторизация.</Text>}
@@ -108,11 +112,15 @@ function SystemProxySettings() {
         {state?.status === "partial" && (
           <Text>Частично включён: настройки Wizard действуют не для всех протоколов или сетевых сервисов либо конфликтуют с другими настройками. Выключение уберёт только настройки Wizard.</Text>
         )}
-        {state?.conflict && <Text>Обнаружены другие настройки прокси, PAC или автоопределение. Wizard не перезаписывает их; сначала отключите их в настройках ОС.</Text>}
-        {known && !state?.listener_running && (
-          <Text className="text-amber-700! dark:text-amber-400!">Локальный прокси Claude Desktop остановлен. Включение разрешено, но приложения с системным прокси могут потерять доступ к сети.</Text>
+        {state?.conflict && <Text>Обнаружены другие настройки прокси, PAC или автоопределение. Обычное включение не изменяет конфликтующие настройки.</Text>}
+        {(state?.conflict || state?.status === "partial") && (
+          <Button outline disabled={forceDisabled} onClick={() => { void change(true, true); }}>Применить принудительно</Button>
         )}
-        {hasOurs && <Text>После выхода из Wizard приложения с системным прокси могут остаться без сети до запуска локального прокси или отключения этой настройки.</Text>}
+        {requested && state?.status === "off" && <Text>Спрос на локальный прокси сохранён, но в ОС он выключен. Выключите переключатель, чтобы снять спрос.</Text>}
+        {hasOurs && !state?.listener_running && (
+          <Text className="text-amber-700! dark:text-amber-400!">ОС использует Wizard, но локальный прокси недоступен. Приложения могут потерять доступ к сети.</Text>
+        )}
+        {checked && <Text>Прокси продолжит работать после выхода из GUI Wizard.</Text>}
         {loadError && <ErrorText>{loadError}</ErrorText>}
         {state?.read_error && <ErrorText>{state.read_error}</ErrorText>}
         {(state?.operation_error || commandError) && <ErrorText>{state?.operation_error || commandError}</ErrorText>}

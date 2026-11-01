@@ -11,6 +11,8 @@ use serde::Serialize;
 use tauri::Manager as _;
 use wizard_core::hub::{self, AgentTokens, Client, HubError, SessionUpdate};
 
+const PROXY_TOKEN_NAME: &str = "coreinfra-ai-wizard";
+
 #[derive(Clone, Default, Serialize)]
 pub(crate) struct HubTokens {
     hub_id: Option<String>,
@@ -53,11 +55,17 @@ impl TokensError {
 pub(crate) async fn get_hub_tokens_state(
     last_revision: Option<u32>,
     signal: tauri::State<'_, RevisionSignal<HubTokens>>,
+    settings: tauri::State<'_, RevisionSignal<wizard_settings::Settings>>,
 ) -> Result<RevisionSnapshot<HubTokens>, String> {
-    signal
+    let mut snapshot = signal
         .wait(last_revision)
         .await
-        .map_err(|_| "Не удалось получить токены CoreInfra Hub".into())
+        .map_err(|_| "Не удалось получить токены CoreInfra Hub".to_owned())?;
+    let proxy_token = settings.current().state.proxy_token;
+    snapshot.state.tokens.retain(|token| {
+        token.name != PROXY_TOKEN_NAME && Some(token.token.as_str()) != proxy_token.as_deref()
+    });
+    Ok(snapshot)
 }
 
 /// Reloads the token list; failures are published in its state.
@@ -237,6 +245,69 @@ impl HubTokensManager {
     }
 }
 
+// Serializes Wizard token lookup/creation across startup and explicit user operations.
+static PROXY_TOKEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+// No Debug/Serialize: this credential never belongs in a prepared frontend plan.
+pub(crate) struct ProxyToken {
+    pub(crate) value: String,
+    pub(crate) session: String,
+}
+
+/// Called by explicit proxy operations or startup with saved demand but no shared token.
+/// A failed list request must not be mistaken for a missing token and create a duplicate.
+pub(crate) async fn proxy_token(app: &tauri::AppHandle) -> Result<ProxyToken, String> {
+    let _guard = PROXY_TOKEN_LOCK.lock().await;
+    let mut session = settings::get_state(app)
+        .map_err(|_| "Настройки недоступны")?
+        .hub_session;
+    if session.is_empty() {
+        return Err("Войдите в CoreInfra Hub".into());
+    }
+    let client = hub::client().map_err(|_| "Не удалось подключиться к CoreInfra Hub")?;
+    // Read the personal Hub in this session chain rather than using a cached profile.
+    // Only refreshes returned by our own requests may advance the expected cookie.
+    let response = hub::fetch_profile(&client, &session).await;
+    let profile = accept_proxy_response(app, &mut session, response).await?;
+    let hub_id = &profile.personal_hub_id;
+    let response = hub::list_agent_tokens(&client, &session, hub_id).await;
+    let tokens = accept_proxy_response(app, &mut session, response).await?;
+    let value = if let Some(token) = tokens.named(PROXY_TOKEN_NAME) {
+        token.token.clone()
+    } else {
+        let response = hub::issue_agent_token(&client, &session, hub_id, PROXY_TOKEN_NAME).await;
+        let token = accept_proxy_response(app, &mut session, response).await?;
+        log::info!("Wizard proxy token issued in personal Hub");
+        token
+    };
+    Ok(ProxyToken { value, session })
+}
+
+// Preserve refreshes even on response errors, but never adopt an unrelated session
+// from settings. All callers recheck the returned session under the settings lock.
+async fn accept_proxy_response<T>(
+    app: &tauri::AppHandle,
+    session: &mut String,
+    (update, result): (SessionUpdate, Result<T, HubError>),
+) -> Result<T, String> {
+    let next = match &update {
+        SessionUpdate::Refreshed(refreshed) => refreshed.clone(),
+        SessionUpdate::Unchanged => session.clone(),
+        SessionUpdate::Rejected => String::new(),
+    };
+    save_session_update(app, session, update)
+        .await
+        .map_err(|_| "Не удалось сохранить сессию CoreInfra Hub")?;
+    if !settings::get_state(app).is_ok_and(|s| s.hub_session == next) {
+        return Err("Сессия CoreInfra Hub изменилась; повторите применение".into());
+    }
+    *session = next;
+    result.map_err(|error| {
+        log::error!("Wizard proxy Hub request failed: {error:?}");
+        "Не удалось получить токен Wizard в личном Hub".into()
+    })
+}
+
 /// Creates a token named `name` in the selected hub, then reloads the list so the token shows
 /// with Hub's own data before its value is returned. A failed reload is published as the list
 /// error and does not fail the result. Never log the value.
@@ -306,13 +377,23 @@ where
         .hub_session;
     let client = hub::client()?;
     let (update, result) = request(client, session.clone()).await;
-    if update == SessionUpdate::Unchanged {
-        return result;
-    }
+    // Preserve existing request semantics: save failures are logged separately.
+    let _ = save_session_update(app, &session, update).await;
+    result
+}
 
+async fn save_session_update(
+    app: &tauri::AppHandle,
+    session: &str,
+    update: SessionUpdate,
+) -> Result<(), HubError> {
+    if update == SessionUpdate::Unchanged {
+        return Ok(());
+    }
+    let session = session.to_owned();
     let signing_out = update == SessionUpdate::Rejected;
     let cleanup_app = app.clone();
-    if settings::update_state(app, move |s| {
+    let saved = settings::update_state(app, move |s| {
         // A later login may have replaced the rejected session; keep that account's state.
         if signing_out && s.hub_session == session {
             hub_auth::clear_profile(&cleanup_app);
@@ -321,14 +402,14 @@ where
         update.apply(s, &session);
     })
     .await
-    .is_err()
-    {
+    .map_err(|_| {
         log::error!("hub session update failed");
-    }
+        HubError::Request
+    });
     if signing_out {
         hub_auth::republish(app);
     }
-    result
+    saved
 }
 
 #[cfg(test)]

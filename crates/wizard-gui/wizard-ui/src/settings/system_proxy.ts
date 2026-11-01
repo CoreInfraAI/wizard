@@ -6,13 +6,14 @@ type SystemProxyState = {
   busy: boolean;
   conflict: boolean;
   listener_running: boolean;
+  requested: boolean;
   read_error: string | null;
   operation_error: string | null;
 };
 type SystemProxySnapshot = SystemProxyState & { revision: number };
 
-// Only observes the shared backend state. No saved flag, automatic mutation or
-// UI-owned process state; tray actions remain visible after reopening the window.
+// Observes persisted demand and OS state without automatically changing either.
+// Tray actions remain visible after reopening the window.
 export function useSystemProxy() {
   const [state, setState] = useState<SystemProxyState>();
   const [error, setError] = useState<string>();
@@ -43,6 +44,6 @@ export function useSystemProxy() {
   return { state, error };
 }
 
-export function setSystemProxy(enabled: boolean): Promise<void> {
-  return invoke<void>("set_system_proxy", { enabled });
+export function setSystemProxy(enabled: boolean, forced = false): Promise<void> {
+  return invoke<void>("set_system_proxy", { enabled, forced });
 }

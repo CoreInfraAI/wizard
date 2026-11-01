@@ -5,7 +5,7 @@ import { BackupDialog } from "./BackupDialog";
 import { ClaudeDesktopInstall, useClaudeDesktopInstall } from "./ClaudeDesktopInstall";
 import { type HubTokensState, refreshHubTokens, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
 import type { HubAccountControl } from "../settings/HubAccount";
-import { type Proxy, useProxy } from "./proxy";
+import { useProxy } from "./proxy";
 import { reportError } from "../logs/log";
 import { Badge } from "../components/catalyst/badge";
 import { Button } from "../components/catalyst/button";
@@ -153,6 +153,7 @@ function RoutingFieldset<M extends string>({ agent, modes, mode, toChange, agent
   const [draft, setDraft] = useState<M>();
   const selected = draft ?? mode;
   const enabled = selected !== "disabled";
+  const proxyOnly = agent === "claude_desktop" && selected === "sub";
   const localToken = useTokenMenu(agent, agentToken, hub);
   const token = tokenOverride ?? localToken;
 
@@ -175,8 +176,8 @@ function RoutingFieldset<M extends string>({ agent, modes, mode, toChange, agent
         </RadioGroup>
         {(enabled || tokenOverride !== undefined) && <TokenField token={token} hub={hub} disabled={disabled} />}
         <div>
-          <Button type="button" disabled={disabled || (enabled && !token.ready)}
-            onClick={() => onPrepare(toChange(selected), enabled ? token.selected ?? null : null)}>
+          <Button type="button" disabled={disabled || (enabled && (proxyOnly ? !hub.signedIn : !token.ready))}
+            onClick={() => onPrepare(toChange(selected), enabled && !proxyOnly ? token.selected ?? null : null)}>
             Применить
           </Button>
           {error && <div className="mt-3"><ErrorText>{error}</ErrorText></div>}
@@ -227,12 +228,12 @@ function RoutingRows({ modes, mode, agentToken, hub }: {
   );
 }
 
-// State of the app's listener only; each page decides what it means for its app.
-function ProxyStatus({ proxy: { proxy, error }, app }: { proxy: ReturnType<typeof useProxy>; app: keyof Proxy }) {
+// Shared daemon state; each page decides what it means for its app.
+function ProxyStatus({ proxy: { proxy, error } }: { proxy: ReturnType<typeof useProxy> }) {
   if (error !== undefined) return <Badge color="amber" title={error}>Состояние недоступно</Badge>;
   if (proxy === undefined) return <Badge color="zinc">Загрузка…</Badge>;
 
-  const running = proxy[app];
+  const running = proxy.enabled;
   return <Badge color={running ? "green" : "zinc"}>{running ? "Работает" : "Остановлен"}</Badge>;
 }
 
@@ -305,7 +306,7 @@ export function AgentPage({ agents, page, proxy, account }: {
       break;
     case "codex": {
       const codex = agents.codex;
-      const chatGptProxyStopped = proxy.proxy?.chatgpt === false && codex.status === "found"
+      const chatGptProxyStopped = proxy.proxy?.enabled === false && codex.status === "found"
         && codex.data.desktop.status === "found" && codex.data.routing_mode !== "disabled";
       content = (
         <>
@@ -320,7 +321,7 @@ export function AgentPage({ agents, page, proxy, account }: {
               <DescriptionDetails><Version detection={codex.status === "found" ? codex.data.cli : codex} /></DescriptionDetails>
               <DescriptionTerm>Прокси для ChatGPT</DescriptionTerm>
               <DescriptionDetails>
-                <ProxyStatus proxy={proxy} app="chatgpt" />
+                <ProxyStatus proxy={proxy} />
                 {chatGptProxyStopped && <ErrorText>Прокси для ChatGPT не запущен, нажмите «Применить».</ErrorText>}
               </DescriptionDetails>
               {codex.status === "found" && (
@@ -371,7 +372,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             {desktop.status === "found" && (
               <>
                 <DescriptionTerm>Прокси</DescriptionTerm>
-                <DescriptionDetails><ProxyStatus proxy={proxy} app="claude_desktop" /></DescriptionDetails>
+                <DescriptionDetails><ProxyStatus proxy={proxy} /></DescriptionDetails>
                 <RoutingRows modes={routingModes("Claude")} mode={desktop.data.routing_mode} agentToken={desktop.data.token} hub={hub} />
               </>
             )}

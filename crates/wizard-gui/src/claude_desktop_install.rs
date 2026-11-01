@@ -231,11 +231,10 @@ async fn background_token(app: &tauri::AppHandle) -> Result<Option<String>, Stri
     if settings.hub_session.is_empty() {
         return Ok(None);
     }
-    let configured = tauri::async_runtime::spawn_blocking(move || {
-        wizard_core::agents::claude_desktop::configured_token(&settings)
-    })
-    .await
-    .map_err(|_| "Не удалось прочитать токен Claude Desktop")?;
+    let configured =
+        tauri::async_runtime::spawn_blocking(wizard_core::agents::claude_desktop::configured_token)
+            .await
+            .map_err(|_| "Не удалось прочитать токен Claude Desktop")?;
 
     let hub_token = app
         .state::<RevisionSignal<hub_tokens::HubTokens>>()

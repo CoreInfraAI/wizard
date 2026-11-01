@@ -8,7 +8,7 @@ use wizard_core::agents::{
     AgentStates, Backup, BackupAgent, HubMode, RoutingMode, TokenAgent, claude, claude_desktop,
     codex, collect_agent_state, opencode, pi,
 };
-use wizard_core::prepared_plan::{PreparedPlan, PreparedStepInfo};
+use wizard_core::prepared_plan::{PreparedPlan, PreparedStep, PreparedStepInfo};
 
 #[derive(Clone)]
 pub(crate) struct AgentRevisionState;
@@ -139,7 +139,13 @@ pub(crate) async fn prepare_agent_change(
 
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
 
-    let token = if change.enabled() {
+    // Claude Desktop Sub needs only Wizard's upstream token, obtained on apply.
+    // Hub mode and the other agents still need their own direct API credential.
+    let token = if change.enabled()
+        && !matches!(
+            change,
+            AgentChange::ClaudeDesktopSetRouting(RoutingMode::Sub)
+        ) {
         match token {
             Some(TokenChoice::Existing { token }) if !token.is_empty() => token,
             Some(TokenChoice::Create) => {
@@ -189,31 +195,54 @@ pub(crate) async fn apply_agent_plan(
     // Do not log the plan or recompute it from current settings.
     log::info!("applying agent plan");
 
+    let enables_proxy = plan.steps().iter().any(|step| {
+        matches!(
+            step,
+            PreparedStep::SetClaudeProxyEnabled { enabled: true }
+                | PreparedStep::SetCodexProxyEnabled { enabled: true }
+        )
+    });
+    // Do not touch agent files if the Wizard token cannot be obtained.
+    let wizard_token = if enables_proxy {
+        Some(hub_tokens::proxy_token(&app).await?)
+    } else {
+        None
+    };
+
     let proxy_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        // Keep account/Hub changes out from preflight through the last file/proxy step.
+        let guard = settings::lock_state()?;
+        if let Some(token) = &wizard_token {
+            anyhow::ensure!(
+                settings::get_state(&proxy_app)?.hub_session == token.session,
+                "Сессия CoreInfra Hub изменилась; повторите применение"
+            );
+        }
+
         // Sync even when the setting is unchanged: «Применить» starts a stopped daemon.
-        // Reload checks both slots; unchanged tokens preserve active connections.
+        // Reload updates the shared slot; an unchanged token preserves active connections.
         // Even if saving fails, synchronize with the settings actually on disk.
         plan.apply_with_proxies(
-            |token| {
-                tauri::async_runtime::block_on(async {
-                    let saved = settings::update_state(&proxy_app, move |settings| {
-                        settings.claude_proxy_enabled = token;
-                    })
-                    .await;
-                    let synced = proxy::sync(&proxy_app).await;
-                    saved.and(synced)
-                })
+            |enabled| {
+                let saved = settings::update_state_locked(&proxy_app, &guard, |settings| {
+                    if let Some(token) = wizard_token.as_ref().filter(|_| enabled) {
+                        settings.proxy_token = Some(token.value.clone());
+                    }
+                    settings.claude_proxy_enabled = enabled;
+                });
+                let synced = tauri::async_runtime::block_on(proxy::sync(&proxy_app));
+                saved.and(synced)
             },
-            |token| {
-                tauri::async_runtime::block_on(async {
-                    let saved = settings::update_state(&proxy_app, move |settings| {
-                        settings.codex_proxy_enabled = token;
-                    })
-                    .await;
-                    let synced = proxy::sync(&proxy_app).await;
-                    saved.and(synced)
-                })
+            |enabled| {
+                let saved = settings::update_state_locked(&proxy_app, &guard, |settings| {
+                    if let Some(token) = wizard_token.as_ref().filter(|_| enabled) {
+                        settings.proxy_token = Some(token.value.clone());
+                    }
+                    settings.codex_proxy_enabled = enabled;
+                });
+                let synced = tauri::async_runtime::block_on(proxy::sync(&proxy_app));
+                saved.and(synced)
             },
         )
     })

@@ -1,7 +1,8 @@
-//! OS-backed state shared by settings and tray. No saved flag or automatic writes.
+//! Persisted daemon demand and independently observed OS state, shared by settings and tray.
+//! Only explicit user operations change OS settings; observers never reconcile them.
 
 use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
-use anyhow::Result;
+use anyhow::{Context as _, Result, bail, ensure};
 use core::time::Duration;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -23,11 +24,16 @@ pub(crate) enum Status {
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent observed facts and persisted demand, not mutually exclusive states"
+)]
 pub(crate) struct State {
     pub(crate) status: Status,
     pub(crate) busy: bool,
     pub(crate) conflict: bool,
     pub(crate) listener_running: bool,
+    pub(crate) requested: bool,
     read_error: Option<String>,
     operation_error: Option<String>,
 }
@@ -42,7 +48,9 @@ impl State {
     }
 
     pub(crate) fn can_toggle(&self) -> bool {
-        !self.busy && (self.has_ours() || (self.status == Status::Off && !self.conflict))
+        !self.busy
+            && self.status != Status::Unsupported
+            && (self.requested || self.has_ours() || (self.status == Status::Off && !self.conflict))
     }
 }
 
@@ -112,7 +120,99 @@ fn sync_tray(app: &tauri::AppHandle) {
     let _ = app;
 }
 
-async fn run(app: tauri::AppHandle, enabled: Option<bool>) -> Result<(), String> {
+fn observe_current(app: &tauri::AppHandle) -> Result<State> {
+    let requested = crate::settings::get_state(app)?.system_proxy_enabled;
+    let status = os::status();
+    update(&app.state::<RevisionSignal<State>>(), |state| {
+        state.requested = requested;
+        observe(state, status, crate::proxy::running(app));
+    });
+    Ok(current(app))
+}
+
+fn apply(app: &tauri::AppHandle, enabled: bool, forced: bool) -> Result<()> {
+    // Token acquisition may update the session; never hold the settings lock here.
+    let token = if enabled {
+        Some(
+            tauri::async_runtime::block_on(crate::hub_tokens::proxy_token(app))
+                .map_err(anyhow::Error::msg)?,
+        )
+    } else {
+        None
+    };
+    let guard = crate::settings::lock_state()?;
+    let previous = crate::settings::get_state(app)?;
+    if let Some(token) = token {
+        ensure!(
+            previous.hub_session == token.session,
+            "Сессия CoreInfra Hub изменилась; повторите применение"
+        );
+        crate::settings::update_state_locked(app, &guard, |settings| {
+            settings.proxy_token = Some(token.value);
+            settings.system_proxy_enabled = true;
+        })?;
+        let started = tauri::async_runtime::block_on(crate::proxy::sync(app)).and_then(|()| {
+            ensure!(
+                crate::proxy::running(app),
+                "Локальный прокси не подтвердил готовность"
+            );
+            Ok(())
+        });
+        if let Err(error) = started {
+            // Startup can time out after taking effect. Restore demand, but never
+            // shut down a listener that the OS may already be using.
+            let observed = observe_current(app)?;
+            let keep = previous.system_proxy_enabled || observed.status != Status::Off;
+            crate::settings::update_state_locked(app, &guard, |settings| {
+                settings.system_proxy_enabled = keep;
+            })
+            .with_context(|| {
+                format!("Не удалось запустить прокси: {error:#}; не удалось восстановить спрос")
+            })?;
+            if !keep {
+                tauri::async_runtime::block_on(crate::proxy::sync(app))
+                    .with_context(|| format!("Не удалось запустить прокси: {error:#}; не удалось синхронизировать прежний спрос"))?;
+            }
+            return Err(error)
+                .context("Системные настройки не изменены: локальный прокси не готов");
+        }
+    }
+
+    let write = if enabled {
+        os::enable(forced)
+    } else {
+        os::disable()
+    };
+    let observed = observe_current(app)?; // Also after partial writes or failed verification.
+    let demand = if observed.status == Status::Off {
+        enabled && previous.system_proxy_enabled
+    } else {
+        true // Partial, unknown, or unavailable: the OS may still reference us.
+    };
+    let saved = crate::settings::update_state_locked(app, &guard, |settings| {
+        settings.system_proxy_enabled = demand;
+    });
+    // Do not stop the daemon when saving the safety demand failed.
+    let synced = if saved.is_ok() && (!enabled || !demand) {
+        tauri::async_runtime::block_on(crate::proxy::sync(app))
+    } else {
+        Ok(())
+    };
+    let expected = if enabled { Status::On } else { Status::Off };
+    let errors: Vec<String> = [
+        write.err().map(|error| format!("Не удалось изменить системный прокси: {error:#}. Настройки могли примениться частично.")),
+        observed.read_error,
+        (observed.status != expected).then(|| "ОС не подтвердила запрошенное состояние системного прокси".into()),
+        saved.err().map(|error| format!("{error:#}")),
+        synced.err().map(|error| format!("Не удалось синхронизировать локальный прокси: {error:#}")),
+    ].into_iter().flatten().collect();
+    if !errors.is_empty() {
+        bail!(errors.join("; "));
+    }
+    Ok(())
+}
+
+async fn run(app: tauri::AppHandle, enabled: Option<bool>, forced: bool) -> Result<(), String> {
     let worker_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let signal = worker_app.state::<RevisionSignal<State>>();
@@ -123,35 +223,41 @@ async fn run(app: tauri::AppHandle, enabled: Option<bool>) -> Result<(), String>
         let result = (|| {
             // Mutations wait for a preceding read. Observations skip busy work.
             let _guard = if enabled.is_some() {
-                OPERATION.lock().map_err(|_| "Операции системного прокси недоступны; перезапустите Wizard".to_owned())?
+                OPERATION.lock().map_err(|_| {
+                    "Операции системного прокси недоступны; перезапустите Wizard".to_owned()
+                })?
             } else {
-                let Ok(guard) = OPERATION.try_lock() else { return Ok(()); };
-                if signal.current().state.busy { return Ok(()); }
+                let Ok(guard) = OPERATION.try_lock() else {
+                    return Ok(());
+                };
+                if signal.current().state.busy {
+                    return Ok(());
+                }
                 guard
             };
-            let write = enabled.map(|enabled| if enabled { os::enable() } else { os::disable() });
-            let status = os::status(); // Always reread, even after a failed write.
-            update(&signal, |state| {
-                observe(state, status, crate::proxy::claude_desktop_running(&worker_app));
-                if let Some(write) = write {
-                    state.operation_error = write.err().map(|error| format!("Не удалось изменить системный прокси: {error:#}. Настройки могли примениться частично."));
-                }
-            });
-            let state = current(&worker_app);
-            state.operation_error.or(state.read_error).map_or(Ok(()), Err)
+            if let Some(enabled) = enabled {
+                apply(&worker_app, enabled, forced).map_err(|error| format!("{error:#}"))
+            } else {
+                let state = observe_current(&worker_app).map_err(|error| format!("{error:#}"))?;
+                state.read_error.map_or(Ok(()), Err)
+            }
         })();
         if enabled.is_some() {
             update(&signal, |state| {
                 state.busy = false;
-                if let Err(error) = &result
-                    && state.operation_error.is_none() && state.read_error.is_none() {
+                state.listener_running = crate::proxy::running(&worker_app);
+                if let Ok(settings) = crate::settings::get_state(&worker_app) {
+                    state.requested = settings.system_proxy_enabled;
+                }
+                if let Err(error) = &result {
                     state.operation_error = Some(error.clone());
                 }
             });
         }
         sync_tray(&worker_app);
         result
-    }).await;
+    })
+    .await;
     // Publication stays inside the worker, even if the IPC caller disappears.
     result.unwrap_or_else(|_| {
         let message = "Операция системного прокси прервана. Состояние ОС неизвестно.";
@@ -184,7 +290,7 @@ pub(crate) fn start(app: &tauri::AppHandle) {
     let worker_app = app.clone();
     app.manage(Observer(tauri::async_runtime::spawn(async move {
         loop {
-            let _ = run(worker_app.clone(), None).await;
+            let _ = run(worker_app.clone(), None, false).await;
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     })));
@@ -198,9 +304,25 @@ pub(crate) fn stop(app: &tauri::AppHandle) {
 
 #[tauri::command]
 pub(crate) async fn get_system_proxy_state(
+    app: tauri::AppHandle,
     last_revision: Option<u32>,
     signal: tauri::State<'_, RevisionSignal<State>>,
 ) -> Result<RevisionSnapshot<State>, String> {
+    // The settings page starts each subscription with no revision. Unlike the
+    // periodic observer, wait for any current operation before reading fresh state.
+    if last_revision.is_none() && cfg!(any(target_os = "macos", target_os = "windows")) {
+        tauri::async_runtime::spawn_blocking(move || {
+            let _guard = OPERATION.lock().map_err(|_| {
+                "Операции системного прокси недоступны; перезапустите Wizard".to_owned()
+            })?;
+            tauri::async_runtime::block_on(crate::proxy::observe(&app));
+            observe_current(&app).map_err(|error| format!("{error:#}"))?;
+            sync_tray(&app);
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|_| "Не удалось обновить состояние системного прокси")??;
+    }
     signal
         .wait(last_revision)
         .await
@@ -208,11 +330,15 @@ pub(crate) async fn get_system_proxy_state(
 }
 
 #[tauri::command]
-pub(crate) async fn set_system_proxy(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+pub(crate) async fn set_system_proxy(
+    app: tauri::AppHandle,
+    enabled: bool,
+    forced: bool,
+) -> Result<(), String> {
     if !cfg!(any(target_os = "macos", target_os = "windows")) {
         return Err("Системный прокси пока доступен только на macOS и Windows".into());
     }
-    run(app, Some(enabled)).await
+    run(app, Some(enabled), forced).await
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -223,7 +349,7 @@ pub(crate) fn toggle_from_tray(app: &tauri::AppHandle) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if set_system_proxy(app.clone(), !state.has_ours())
+        if set_system_proxy(app.clone(), !(state.requested || state.has_ours()), false)
             .await
             .is_err()
         {

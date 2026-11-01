@@ -79,23 +79,26 @@ impl Config {
         })
     }
 
-    pub fn prepare(&self, enabled: bool) -> Result<Self> {
+    pub fn prepare(&self, enabled: bool, forced: bool) -> Result<Self> {
         let mut after = self.clone();
         if enabled {
             let address = wizard_proxy::CLAUDE_DESKTOP_ADDRESS;
-            // WinINet has a single manual-proxy switch; retaining a dormant SOCKS
-            // or FTP mapping would activate it. Refuse rather than erase it.
-            if self.flags & PROXY == 0 && self.server.contains('=') {
-                ensure!(
-                    !entries(&self.server)?
-                        .iter()
-                        .any(|(p, _)| !p.eq_ignore_ascii_case("http")
-                            && !p.eq_ignore_ascii_case("https")),
-                    "inactive non-HTTP proxy mappings would be activated; clear them first"
-                );
-            }
+            // WinINet has a single manual-proxy switch. Never erase or activate
+            // non-HTTP mappings, even in forced mode; a nonempty global address
+            // also applies beyond HTTP/HTTPS. Reject malformed syntax too.
+            ensure!(
+                entries(&self.server)?.iter().all(|(protocol, endpoint)| {
+                    (protocol.is_empty() && endpoint.is_empty())
+                        || protocol.eq_ignore_ascii_case("http")
+                        || protocol.eq_ignore_ascii_case("https")
+                }),
+                "global or non-HTTP proxy mappings conflict with Wizard; clear them first"
+            );
             after.server = format!("http={address};https={address}");
             after.flags |= DIRECT | PROXY;
+            if forced {
+                after.flags &= !(AUTO_URL | AUTO_DETECT);
+            }
         } else if self.flags & PROXY != 0 {
             let parsed = entries(&self.server)?;
             if parsed.len() == 1 && parsed[0].0.is_empty() {

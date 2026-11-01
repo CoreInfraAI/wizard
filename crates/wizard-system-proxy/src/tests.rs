@@ -37,8 +37,11 @@ impl Backend for Mock {
     fn services(snapshot: &Self::Snapshot) -> Result<Vec<ServiceStatus>> {
         snapshot.iter().map(Config::status).collect()
     }
-    fn prepare(snapshot: &Self::Snapshot, enabled: bool) -> Result<Self::Snapshot> {
-        snapshot.iter().map(|c| c.prepare(enabled)).collect()
+    fn prepare(snapshot: &Self::Snapshot, enabled: bool, forced: bool) -> Result<Self::Snapshot> {
+        snapshot
+            .iter()
+            .map(|c| c.prepare(enabled, forced))
+            .collect()
     }
     fn write(_: &Self::Snapshot, after: &Self::Snapshot) -> Result<()> {
         MOCK.with_borrow_mut(|m| {
@@ -71,52 +74,58 @@ fn preflights_every_service_before_any_write() {
         conflict.flags = flags;
         conflict.server = "http=foreign.example:8080".into();
         setup(vec![disabled(), conflict]);
-        assert!(change::<Mock>(true).is_err());
+        assert!(change::<Mock>(true, false).is_err());
         MOCK.with_borrow(|m| assert_eq!(m.writes, 0));
     }
 }
 
 #[test]
 fn no_services_and_concurrent_changes_never_write() {
-    setup(vec![]);
-    assert!(change::<Mock>(true).is_err());
-    setup(vec![disabled()]);
-    MOCK.with_borrow_mut(|m| m.concurrent_change = true);
-    assert!(change::<Mock>(true).is_err());
-    MOCK.with_borrow(|m| assert_eq!(m.writes, 0));
+    for forced in [false, true] {
+        setup(vec![]);
+        assert!(change::<Mock>(true, forced).is_err());
+        setup(vec![disabled()]);
+        MOCK.with_borrow_mut(|m| m.concurrent_change = true);
+        assert!(change::<Mock>(true, forced).is_err());
+        MOCK.with_borrow(|m| assert_eq!(m.writes, 0));
+    }
 }
 
 #[test]
 fn repeated_enable_disable_are_noops_and_preserve_bypass_and_pac() -> Result<()> {
-    setup(vec![disabled()]);
-    change::<Mock>(true)?;
-    change::<Mock>(true)?;
-    MOCK.with_borrow(|m| {
-        assert_eq!(m.writes, 1);
-        assert_eq!(m.snapshot[0].bypass, disabled().bypass);
-        assert_eq!(m.snapshot[0].pac, disabled().pac);
-    });
-    change::<Mock>(false)?;
-    change::<Mock>(false)?;
-    MOCK.with_borrow(|m| assert_eq!(m.writes, 2));
+    for forced in [false, true] {
+        setup(vec![disabled()]);
+        change::<Mock>(true, forced)?;
+        change::<Mock>(true, forced)?;
+        MOCK.with_borrow(|m| {
+            assert_eq!(m.writes, 1);
+            assert_eq!(m.snapshot[0].bypass, disabled().bypass);
+            assert_eq!(m.snapshot[0].pac, disabled().pac);
+        });
+        change::<Mock>(false, false)?;
+        change::<Mock>(false, false)?;
+        MOCK.with_borrow(|m| assert_eq!(m.writes, 2));
+    }
     Ok(())
 }
 
 #[test]
 fn partial_failures_and_failed_verification_are_reported_without_retry() {
-    setup(vec![disabled(), disabled()]);
-    MOCK.with_borrow_mut(|m| m.partial_failure = true);
-    let error = change::<Mock>(true).expect_err("partial application must fail");
-    assert!(error.to_string().contains("partially applied"));
-    MOCK.with_borrow(|m| {
-        assert_eq!(m.writes, 1);
-        assert!(m.snapshot[0].flags & PROXY != 0);
-        assert_eq!(m.snapshot[1].flags & PROXY, 0);
-    });
-    setup(vec![disabled()]);
-    MOCK.with_borrow_mut(|m| m.ignore_write = true);
-    assert!(change::<Mock>(true).is_err());
-    MOCK.with_borrow(|m| assert_eq!(m.writes, 1));
+    for forced in [false, true] {
+        setup(vec![disabled(), disabled()]);
+        MOCK.with_borrow_mut(|m| m.partial_failure = true);
+        let error = change::<Mock>(true, forced).expect_err("partial application must fail");
+        assert!(error.to_string().contains("partially applied"));
+        MOCK.with_borrow(|m| {
+            assert_eq!(m.writes, 1);
+            assert!(m.snapshot[0].flags & PROXY != 0);
+            assert_eq!(m.snapshot[1].flags & PROXY, 0);
+        });
+        setup(vec![disabled()]);
+        MOCK.with_borrow_mut(|m| m.ignore_write = true);
+        assert!(change::<Mock>(true, forced).is_err());
+        MOCK.with_borrow(|m| assert_eq!(m.writes, 1));
+    }
 }
 
 #[test]
@@ -127,7 +136,7 @@ fn disabling_preserves_foreign_protocols_and_auto_modes() -> Result<()> {
         "http={};https=foreign.example:443;socks=foreign.example:1080",
         wizard_proxy::CLAUDE_DESKTOP_ADDRESS
     );
-    let after = config.prepare(false)?;
+    let after = config.prepare(false, false)?;
     assert_eq!(after.flags, config.flags);
     assert_eq!(
         after.server,
@@ -136,7 +145,7 @@ fn disabling_preserves_foreign_protocols_and_auto_modes() -> Result<()> {
     assert_eq!(after.pac, config.pac);
     assert_eq!(after.bypass, config.bypass);
     assert!(after.status()?.conflict);
-    assert!(after.prepare(false)? == after);
+    assert!(after.prepare(false, false)? == after);
     Ok(())
 }
 
@@ -152,13 +161,13 @@ fn global_address_is_supported_but_not_confused_with_similar_endpoints() -> Resu
         config.flags |= PROXY;
         config.server = server.into();
         assert!(config.status()?.conflict);
-        assert!(config.prepare(false)? == config);
+        assert!(config.prepare(false, false)? == config);
     }
     let mut config = disabled();
     config.flags |= PROXY;
     config.server = wizard_proxy::CLAUDE_DESKTOP_ADDRESS.into();
     assert!(!config.status()?.conflict);
-    assert_eq!(config.prepare(false)?.flags, DIRECT);
+    assert_eq!(config.prepare(false, false)?.flags, DIRECT);
     Ok(())
 }
 
@@ -172,7 +181,7 @@ fn malformed_or_unknown_mappings_cannot_be_silently_overwritten() -> Result<()> 
     }
     let mut dormant = disabled();
     dormant.server = "socks=example.invalid:1080".into();
-    assert!(dormant.prepare(true).is_err());
-    assert!(dormant.prepare(false)? == dormant);
+    assert!(dormant.prepare(true, false).is_err());
+    assert!(dormant.prepare(false, false)? == dormant);
     Ok(())
 }

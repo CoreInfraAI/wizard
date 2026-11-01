@@ -43,8 +43,13 @@ pub fn run_application() -> Result<()> {
     wizard_core::hub::install_crypto_provider()?;
 
     let minimized = std::env::args_os().skip(1).any(|arg| arg == "--minimized");
+    // Only the initial autostart is minimized. Tauri restart and the Windows
+    // updater both use this saved argument list, not the live process arguments.
+    let mut restart_env = tauri::Env::default();
+    restart_env.args_os.retain(|arg| arg != "--minimized");
 
     let app = tauri::Builder::default()
+        .manage(restart_env)
         // This plugin must be registered first to stop a second process before other plugins start.
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().skip(1).any(|arg| arg == "--minimized") {
@@ -104,6 +109,7 @@ pub fn run_application() -> Result<()> {
             let tray_enabled = false;
 
             if let Err(error) = tauri::async_runtime::block_on(async {
+                proxy::prepare_token(app.handle()).await?;
                 wizard_proxy_daemon::create_daemon().await?;
                 proxy::sync(app.handle()).await
             }) {

@@ -40,7 +40,7 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
 
-    let (routing_mode, token) = match read_routing(settings) {
+    let (routing_mode, token) = match read_routing() {
         Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
@@ -93,12 +93,12 @@ fn has_hub_connection(config: &Value) -> bool {
 }
 
 /// Reads the token owned by the active routing mode without exposing the full profile.
-pub fn configured_token(settings: &Settings) -> Result<Option<String>> {
-    Ok(read_routing(settings)?.1.map(AgentToken::into_secret))
+pub fn configured_token() -> Result<Option<String>> {
+    Ok(read_routing()?.1.map(AgentToken::into_secret))
 }
 
-/// Hub reads the profile's key. Sub has none in the profile; its token is the proxy setting.
-fn read_routing(settings: &Settings) -> Result<(RoutingMode, Option<AgentToken>)> {
+/// Hub reads the profile's key. Sub has no agent key; Wizard owns proxy credentials.
+fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
     let dir = config_library()?;
@@ -115,13 +115,7 @@ fn read_routing(settings: &Settings) -> Result<(RoutingMode, Option<AgentToken>)
         && config["egressProxyUrl"] == proxy_url
         && config.get("egressProxyPacUrl").is_none()
     {
-        Ok((
-            RoutingMode::Sub,
-            settings
-                .claude_proxy_enabled
-                .clone()
-                .and_then(AgentToken::new),
-        ))
+        Ok((RoutingMode::Sub, None))
     } else if preferences["deploymentMode"] != "1p" && has_hub_connection(&config) {
         let token = config["inferenceGatewayApiKey"]
             .as_str()
@@ -133,7 +127,7 @@ fn read_routing(settings: &Settings) -> Result<(RoutingMode, Option<AgentToken>)
 }
 
 /// Prepare a local profile update without writing files or restarting Claude. Hub writes `token`
-/// to the profile; Hub and Sub save it as the proxy setting; Disabled ignores it.
+/// to the profile; Hub and Sub enable local proxy demand; Disabled ignores it.
 pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
@@ -230,7 +224,7 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
                 change: preferences,
             },
             PreparedStep::SetClaudeProxyEnabled {
-                token: (mode != RoutingMode::Disabled).then(|| token.to_owned()),
+                enabled: mode != RoutingMode::Disabled,
             },
         ],
     ))

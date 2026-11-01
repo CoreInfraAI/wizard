@@ -165,7 +165,7 @@ async fn sync_with_settings() -> io::Result<()> {
                     .await
                     .inspect_err(|error| diagnostics::error("proxy readiness wait", error))?;
             } else {
-                log::info!("proxy service start skipped: both proxies are disabled");
+                log::info!("proxy service start skipped: no consumers are enabled");
             }
             Ok(())
         }
@@ -191,7 +191,7 @@ async fn wait_for_proxy() -> io::Result<()> {
                         .map_err(|_| io::Error::other("failed to load Wizard settings"))?
                         .local_proxy_enabled()
                     {
-                        log::info!("proxy readiness wait ended: both proxies are now disabled");
+                        log::info!("proxy readiness wait ended: no consumers are enabled");
                         return Ok(());
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;

@@ -27,10 +27,7 @@ fn state() -> Arc<ServerState> {
 async fn accept_errors_preserve_tunnels_and_resume_requests_after_backoff() -> io::Result<()> {
     timeout(Duration::from_secs(5), async {
         let state = state();
-        state
-            .claude_desktop
-            .set_token(Some("fixture"), &state.tls)
-            .await?;
+        state.slot.set_token(Some("fixture"), &state.tls).await?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let destination = TcpListener::bind("127.0.0.1:0").await?;
@@ -56,7 +53,7 @@ async fn accept_errors_preserve_tunnels_and_resume_requests_after_backoff() -> i
                         }
                     }
                 },
-                &state.claude_desktop,
+                &state.slot,
                 Some(&state),
                 &mut shutdown,
                 &mut connections,
@@ -92,7 +89,7 @@ async fn accept_errors_preserve_tunnels_and_resume_requests_after_backoff() -> i
 
         let response: control::Status =
             control::request(&address.to_string(), control::Command::Status).await?;
-        assert!(response.claude_desktop_enabled);
+        assert!(response.enabled);
         {
             let times = attempts.lock().expect("attempt times");
             assert!(times.len() >= 4);
@@ -123,7 +120,7 @@ async fn shutdown_interrupts_accept_backoff() {
                 failed.send(()).expect("report injected failure");
                 Err(io::Error::from(io::ErrorKind::OutOfMemory))
             },
-            &state.claude_desktop,
+            &state.slot,
             None,
             &mut shutdown,
             &mut connections,
@@ -141,17 +138,18 @@ async fn shutdown_interrupts_accept_backoff() {
     assert!(failure.try_recv().is_err(), "must not retry in a hot loop");
 }
 
-fn settings(claude: Option<&str>, chatgpt: Option<&str>) {
+fn settings(token: Option<&str>, claude: bool, chatgpt: bool) {
     wizard_settings::save_to_file(&wizard_settings::Settings {
-        claude_proxy_enabled: claude.map(str::to_owned),
-        codex_proxy_enabled: chatgpt.map(str::to_owned),
+        claude_proxy_enabled: claude,
+        codex_proxy_enabled: chatgpt,
+        proxy_token: token.map(str::to_owned),
         ..wizard_settings::Settings::default()
     })
     .expect("save isolated settings");
 }
 
 async fn disabling_reload_replies_before_exit() -> io::Result<()> {
-    settings(Some("claude-fixture"), Some("chatgpt-fixture"));
+    settings(Some("wizard-fixture"), true, true);
     let state = state();
     assert!(state.reload_with_lock().await.error.is_none());
     let claude = TcpListener::bind("127.0.0.1:0").await?;
@@ -167,20 +165,20 @@ async fn disabling_reload_replies_before_exit() -> io::Result<()> {
     let status: control::Status =
         control::request(&address.to_string(), control::Command::Status).await?;
     assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
-    assert!(status.claude_desktop_enabled && status.chatgpt_enabled);
+    assert!(status.enabled);
 
-    settings(None, None);
+    settings(None, false, false);
     let response: control::ReloadResponse =
         control::request(&address.to_string(), control::Command::Reload).await?;
     assert!(response.error.is_none());
     assert_eq!(response.status.version, env!("CARGO_PKG_VERSION"));
-    assert!(!response.status.enabled());
+    assert!(!response.status.enabled);
     task.await.map_err(io::Error::other)??;
     Ok(())
 }
 
 async fn shutdown_replies_before_exit_and_preserves_settings() -> io::Result<()> {
-    settings(Some("shutdown-fixture"), None);
+    settings(Some("shutdown-fixture"), true, false);
     let state = state();
     assert!(state.reload_with_lock().await.error.is_none());
     let claude = TcpListener::bind("127.0.0.1:0").await?;
@@ -219,11 +217,11 @@ async fn shutdown_replies_before_exit_and_preserves_settings() -> io::Result<()>
 }
 
 async fn accepted_reload_survives_disconnect_and_shutdown() -> io::Result<()> {
-    settings(Some("initial"), None);
+    settings(Some("initial"), true, false);
     let state = state();
     assert!(state.reload_with_lock().await.error.is_none());
     let old = state
-        .claude_desktop
+        .slot
         .current
         .read()
         .await
@@ -240,7 +238,7 @@ async fn accepted_reload_survives_disconnect_and_shutdown() -> io::Result<()> {
         let _ = shutdown.await;
     }));
 
-    settings(Some("replacement"), None);
+    settings(Some("replacement"), true, false);
     let mut client = TcpStream::connect(address).await?;
     client
         .write_all(
@@ -261,7 +259,7 @@ async fn accepted_reload_survives_disconnect_and_shutdown() -> io::Result<()> {
     task.await.map_err(io::Error::other)??;
     assert!(
         state
-            .claude_desktop
+            .slot
             .current
             .read()
             .await
@@ -271,17 +269,104 @@ async fn accepted_reload_survives_disconnect_and_shutdown() -> io::Result<()> {
     Ok(())
 }
 
-async fn failed_reload_keeps_working_configuration() -> io::Result<()> {
-    settings(Some("working"), Some("working-chatgpt"));
+async fn shared_generation_preserves_and_drains_tunnels_on_both_ports() -> io::Result<()> {
+    settings(Some("shared-a"), true, false);
     let state = state();
     assert!(state.reload_with_lock().await.error.is_none());
-    let original = state
-        .claude_desktop
-        .current
-        .read()
-        .await
-        .clone()
-        .expect("generation");
+    let claude = TcpListener::bind("127.0.0.1:0").await?;
+    let chatgpt = TcpListener::bind("127.0.0.1:0").await?;
+    let addresses = [
+        claude.local_addr()?.to_string(),
+        chatgpt.local_addr()?.to_string(),
+    ];
+    let task = tokio::spawn(run_listeners(
+        Arc::clone(&state),
+        claude,
+        chatgpt,
+        core::future::pending(),
+    ));
+
+    let destination = TcpListener::bind("127.0.0.1:0").await?;
+    let target = destination.local_addr()?;
+    let mut tunnels = Vec::new();
+    for address in &addresses {
+        let status: control::Status = control::request(address, control::Command::Status).await?;
+        assert!(status.enabled);
+        let mut client = TcpStream::connect(address).await?;
+        client
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await?;
+        let (remote, _) = destination.accept().await?;
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            header.push(client.read_u8().await?);
+            assert!(header.len() < 8192);
+        }
+        assert!(header.starts_with(b"HTTP/1.1 200"));
+        tunnels.push((client, remote));
+    }
+
+    // Switching the sole consumer does not interrupt either port's live tunnel.
+    settings(Some("shared-a"), false, true);
+    let switched: control::ReloadResponse =
+        control::request(&addresses[0], control::Command::Reload).await?;
+    assert!(switched.error.is_none() && switched.status.enabled);
+    for (client, remote) in &mut tunnels {
+        client.write_all(b"live").await?;
+        let mut bytes = [0; 4];
+        remote.read_exact(&mut bytes).await?;
+        assert_eq!(&bytes, b"live");
+        remote.write_all(b"back").await?;
+        client.read_exact(&mut bytes).await?;
+        assert_eq!(&bytes, b"back");
+    }
+
+    // A token change drains both ports before the management reply completes.
+    settings(Some("shared-b"), false, true);
+    let replaced: control::ReloadResponse =
+        control::request(&addresses[1], control::Command::Reload).await?;
+    assert!(replaced.error.is_none() && replaced.status.enabled);
+    for (client, remote) in &mut tunnels {
+        assert_eq!(client.read(&mut [0; 1]).await?, 0);
+        assert_eq!(remote.read(&mut [0; 1]).await?, 0);
+    }
+    assert_eq!(
+        state
+            .slot
+            .current
+            .read()
+            .await
+            .as_ref()
+            .expect("generation")
+            .token,
+        "shared-b"
+    );
+
+    // System demand alone keeps both managed ports enabled after agents opt out.
+    wizard_settings::save_to_file(&wizard_settings::Settings {
+        system_proxy_enabled: true,
+        proxy_token: Some("shared-b".into()),
+        ..Default::default()
+    })
+    .map_err(io::Error::other)?;
+    let system: control::ReloadResponse =
+        control::request(&addresses[1], control::Command::Reload).await?;
+    assert!(system.error.is_none() && system.status.enabled);
+
+    // Keeping the credential does not keep the daemon alive without consumers.
+    settings(Some("shared-b"), false, false);
+    let stopped: control::ReloadResponse =
+        control::request(&addresses[0], control::Command::Reload).await?;
+    assert!(stopped.error.is_none() && !stopped.status.enabled);
+    task.await.map_err(io::Error::other)??;
+    Ok(())
+}
+
+async fn failed_reload_keeps_working_configuration() -> io::Result<()> {
+    settings(Some("working"), true, true);
+    let state = state();
+    assert!(state.reload_with_lock().await.error.is_none());
+    let original = state.slot.current.read().await.clone().expect("generation");
     let claude = TcpListener::bind("127.0.0.1:0").await?;
     let chatgpt = TcpListener::bind("127.0.0.1:0").await?;
     let address = claude.local_addr()?.to_string();
@@ -296,42 +381,34 @@ async fn failed_reload_keeps_working_configuration() -> io::Result<()> {
     let failed: control::ReloadResponse =
         control::request(&address, control::Command::Reload).await?;
     assert!(failed.error.is_some());
-    assert!(failed.status.claude_desktop_enabled && failed.status.chatgpt_enabled);
+    assert!(failed.status.enabled);
 
-    // Preserve an invalid slot's generation; the other slot may still update.
-    settings(Some(""), Some("updated-chatgpt"));
-    let failed: control::ReloadResponse =
-        control::request(&address, control::Command::Reload).await?;
-    assert!(failed.error.is_some());
-    assert!(Arc::ptr_eq(
-        &original,
-        state
-            .claude_desktop
-            .current
-            .read()
-            .await
-            .as_ref()
-            .expect("retained generation")
-    ));
-    assert!(!*original.cancelled.borrow());
-    assert_eq!(
-        state
-            .chatgpt
-            .current
-            .read()
-            .await
-            .as_ref()
-            .expect("updated generation")
-            .token,
-        "updated-chatgpt"
-    );
+    // Invalid shared credentials must preserve the working generation.
+    for token in [None, Some("")] {
+        settings(token, true, true);
+        let failed: control::ReloadResponse =
+            control::request(&address, control::Command::Reload).await?;
+        assert!(failed.error.is_some());
+        assert!(failed.status.enabled);
+        assert!(Arc::ptr_eq(
+            &original,
+            state
+                .slot
+                .current
+                .read()
+                .await
+                .as_ref()
+                .expect("retained generation")
+        ));
+        assert!(!*original.cancelled.borrow());
+    }
 
-    settings(Some("repaired"), Some("updated-chatgpt"));
+    settings(Some("repaired"), true, true);
     let repaired: control::ReloadResponse =
         control::request(&address, control::Command::Reload).await?;
     assert!(repaired.error.is_none());
     let status: control::Status = control::request(&address, control::Command::Status).await?;
-    assert!(status.claude_desktop_enabled && status.chatgpt_enabled);
+    assert!(status.enabled);
     let _ = stop.send(());
     task.await.map_err(io::Error::other)??;
     Ok(())
@@ -359,6 +436,9 @@ fn isolated_http_management() {
             .expect("test runtime")
             .block_on(async {
                 timeout(Duration::from_secs(30), async {
+                    shared_generation_preserves_and_drains_tunnels_on_both_ports()
+                        .await
+                        .expect("shared Wizard token with aggregate proxy demand");
                     failed_reload_keeps_working_configuration()
                         .await
                         .expect("failed Reload preserves service and permits recovery");

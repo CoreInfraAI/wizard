@@ -54,23 +54,24 @@ pub fn status() -> Result<SystemProxyStatus> {
     native_status()
 }
 
-/// Set HTTP and HTTPS to the Claude Desktop endpoint, refusing active conflicts.
+/// Set HTTP and HTTPS to the Wizard endpoint. With `forced`, replace foreign
+/// HTTP/HTTPS settings and disable PAC/auto-discovery. Other conflicts still fail.
 /// Existing bypass rules and inactive settings are preserved except for the HTTP/
 /// HTTPS endpoints being replaced. There is no persistent backup or rollback.
-pub fn enable() -> Result<()> {
-    update(true)
+pub fn enable(forced: bool) -> Result<()> {
+    update(true, forced)
 }
 
 /// Disable only HTTP/HTTPS entries pointing to Wizard. Preserve foreign entries.
 pub fn disable() -> Result<()> {
-    update(false)
+    update(false, false)
 }
 
-fn update(enabled: bool) -> Result<()> {
+fn update(enabled: bool, forced: bool) -> Result<()> {
     let _guard = LOCK
         .lock()
         .map_err(|_| anyhow::anyhow!("system proxy lock poisoned"))?;
-    native_update(enabled)
+    native_update(enabled, forced)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -82,8 +83,8 @@ fn native_status() -> Result<SystemProxyStatus> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn native_update(enabled: bool) -> Result<()> {
-    change::<Native>(enabled)
+fn native_update(enabled: bool, forced: bool) -> Result<()> {
+    change::<Native>(enabled, forced)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -92,7 +93,7 @@ fn native_status() -> Result<SystemProxyStatus> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn native_update(_: bool) -> Result<()> {
+fn native_update(_: bool, _: bool) -> Result<()> {
     anyhow::bail!("system proxy configuration is supported only on macOS and Windows")
 }
 
@@ -106,7 +107,7 @@ trait Backend {
     type Snapshot: PartialEq;
     fn read() -> Result<Self::Snapshot>;
     fn services(snapshot: &Self::Snapshot) -> Result<Vec<ServiceStatus>>;
-    fn prepare(snapshot: &Self::Snapshot, enabled: bool) -> Result<Self::Snapshot>;
+    fn prepare(snapshot: &Self::Snapshot, enabled: bool, forced: bool) -> Result<Self::Snapshot>;
     fn write(before: &Self::Snapshot, after: &Self::Snapshot) -> Result<()>;
 }
 
@@ -114,15 +115,23 @@ trait Backend {
     not(any(target_os = "macos", target_os = "windows", test)),
     expect(dead_code)
 )]
-fn change<B: Backend>(enabled: bool) -> Result<()> {
+fn change<B: Backend>(enabled: bool, forced: bool) -> Result<()> {
     let before = B::read()?;
     let services = B::services(&before)?;
     ensure!(!services.is_empty(), "no supported network services");
     ensure!(
-        !enabled || !services.iter().any(|s| s.conflict),
+        !enabled || forced || !services.iter().any(|s| s.conflict),
         "active system proxy, PAC or auto-discovery conflicts with Wizard"
     );
-    let after = B::prepare(&before, enabled)?;
+    let after = B::prepare(&before, enabled, forced)?;
+    // Forced changes may resolve only HTTP/HTTPS and automatic-proxy conflicts.
+    // Preflight the full result before any write, including on other services.
+    if enabled {
+        ensure!(
+            !B::services(&after)?.iter().any(|s| s.conflict),
+            "other proxy protocols or unknown settings conflict with Wizard"
+        );
+    }
     if before == after {
         return Ok(());
     }

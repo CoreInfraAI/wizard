@@ -232,6 +232,11 @@ pub struct AgentToken {
 pub struct AgentTokens(Vec<AgentToken>);
 
 impl AgentTokens {
+    /// Retains only the tokens that satisfy the predicate.
+    pub fn retain(&mut self, predicate: impl FnMut(&AgentToken) -> bool) {
+        self.0.retain(predicate);
+    }
+
     /// The token with this value.
     #[must_use]
     pub fn get(&self, token: &str) -> Option<&AgentToken> {
@@ -264,7 +269,18 @@ pub async fn list_agent_tokens(
     }
 
     let (update, info) = post::<HubInfo>(client, session, HUB_INFO_PATH, &Request { hub_id }).await;
-    (update, info.map(|info| info.agent_tokens))
+    let tokens = info.and_then(|info| {
+        if info
+            .agent_tokens
+            .0
+            .iter()
+            .any(|token| token.token.is_empty() || crate::validate_token(&token.token).is_err())
+        {
+            return Err(HubError::Response);
+        }
+        Ok(info.agent_tokens)
+    });
+    (update, tokens)
 }
 
 /// Issues a new agent token named `name` in `hub_id` and returns its value. Never log it.
@@ -287,7 +303,7 @@ pub async fn issue_agent_token(
     let (update, issued) =
         post::<Issued>(client, session, ISSUE_TOKEN_PATH, &Request { hub_id, name }).await;
     let token = issued.and_then(|issued| {
-        if issued.token.is_empty() {
+        if issued.token.is_empty() || crate::validate_token(&issued.token).is_err() {
             Err(HubError::Response)
         } else {
             Ok(issued.token)
@@ -348,13 +364,15 @@ mod tests {
         let mut settings = Settings {
             hub_session: "old-session".into(),
             active_hub_id: "team".into(),
-            codex_proxy_enabled: Some("test-token".into()),
+            codex_proxy_enabled: true,
+            proxy_token: Some("test-token".into()),
             ..Settings::default()
         };
         SessionUpdate::Rejected.apply(&mut settings, "old-session");
         assert!(settings.hub_session.is_empty());
         assert!(settings.active_hub_id.is_empty());
-        assert_eq!(settings.codex_proxy_enabled.as_deref(), Some("test-token"));
+        assert!(settings.codex_proxy_enabled);
+        assert_eq!(settings.proxy_token.as_deref(), Some("test-token"));
     }
 
     #[test]

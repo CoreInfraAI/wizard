@@ -111,8 +111,8 @@ impl Backend for Native {
         Ok(vec![snapshot.status()?])
     }
 
-    fn prepare(snapshot: &Config, enabled: bool) -> Result<Config> {
-        snapshot.prepare(enabled)
+    fn prepare(snapshot: &Config, enabled: bool, forced: bool) -> Result<Config> {
+        snapshot.prepare(enabled, forced)
     }
 
     fn write(before: &Config, after: &Config) -> Result<()> {

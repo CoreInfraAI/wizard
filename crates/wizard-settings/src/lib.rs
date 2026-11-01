@@ -6,18 +6,23 @@ pub mod paths;
 use anyhow::{Context as _, Result, anyhow, bail};
 use paths::settings_path;
 use serde::{Deserialize, Serialize};
-use std::{fs, io::Write as _, path::PathBuf};
+use std::{
+    fs,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 // No Debug: settings contain a secret and must not be logged.
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Settings {
-    /// Local proxy demand of Claude Desktop with its token; `None` means disabled.
+    /// Local proxy demand, independent of the shared upstream credential.
+    pub claude_proxy_enabled: bool,
+    pub codex_proxy_enabled: bool,
+    pub system_proxy_enabled: bool,
+    /// The coreinfra-ai-wizard token, shared by both listeners. Never log it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude_proxy_enabled: Option<String>,
-    /// Local proxy demand of `ChatGPT` with its token; `None` means disabled.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub codex_proxy_enabled: Option<String>,
+    pub proxy_token: Option<String>,
     /// Account session, independent of agent tokens. Never expose through IPC.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub hub_session: String,
@@ -67,8 +72,42 @@ pub struct LastPaths {
 impl Settings {
     #[must_use]
     pub fn local_proxy_enabled(&self) -> bool {
-        self.claude_proxy_enabled.is_some() || self.codex_proxy_enabled.is_some()
+        self.claude_proxy_enabled || self.codex_proxy_enabled || self.system_proxy_enabled
     }
+}
+
+/// Convert legacy per-app token strings to demand flags before GUI initialization.
+/// Reading settings stays strict. Never acquire credentials or start a service here.
+/// Preserve unrelated fields, including settings unknown to this version.
+pub fn migrate() -> Result<()> {
+    let path = settings_path()?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("failed to read Wizard settings for migration"),
+    };
+    // Parser diagnostics may contain credentials; expose only static messages.
+    let mut document: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|_| anyhow!("failed to parse Wizard settings for migration"))?;
+    let mut changed = false;
+    for key in ["claude_proxy_enabled", "codex_proxy_enabled"] {
+        if let Some(item) = document.get_mut(key)
+            && let Some(token) = item.as_str()
+        {
+            let enabled = !token.is_empty();
+            *item = toml_edit::value(enabled);
+            changed = true;
+        }
+    }
+    if changed {
+        let serialized = document.to_string();
+        // Do not partially migrate a file with other invalid settings.
+        let _: Settings = toml_edit::de::from_str(&serialized)
+            .map_err(|_| anyhow!("failed to validate migrated Wizard settings"))?;
+        save_text(&path, &serialized)?;
+    }
+    Ok(())
 }
 
 pub fn load_from_file() -> Result<Settings> {
@@ -87,7 +126,12 @@ pub fn save_to_file(settings: &Settings) -> Result<()> {
     let path = settings_path()?;
     let serialized = toml_edit::ser::to_string_pretty(settings)
         .map_err(|_| anyhow!("failed to serialize Wizard settings"))?;
-    match fs::symlink_metadata(&path) {
+    save_text(&path, &serialized)
+}
+
+// Shared atomic writer for normal saves and format-preserving migrations.
+fn save_text(path: &Path, serialized: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             bail!("Wizard settings file is a symlink; refusing to replace it");
         }
@@ -154,7 +198,8 @@ mod tests {
                         tray_enabled,
                         autostart_enabled,
                     },
-                    claude_proxy_enabled: Some("fixture".into()),
+                    claude_proxy_enabled: true,
+                    proxy_token: Some("fixture".into()),
                     ..Settings::default()
                 };
                 let text = toml_edit::ser::to_string_pretty(&settings).expect("serialize settings");
