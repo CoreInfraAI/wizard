@@ -95,18 +95,41 @@ fn create(repository: &str, tag: &str, commit: &str) -> Result<bool> {
         .args(["-f", &format!("sha={commit}")])
         .output()
         .context("failed to run gh api")?;
-    if output.status.success() {
+    creation_result(tag, output.status.success(), &output.stdout, &output.stderr)
+}
+
+fn creation_result(tag: &str, success: bool, stdout: &[u8], stderr: &[u8]) -> Result<bool> {
+    if success {
         return Ok(true);
     }
-    let response: Option<Value> = serde_json::from_slice(&output.stdout).ok();
-    let conflict = response.as_ref().is_some_and(|value| {
+
+    let response: Option<Value> = serde_json::from_slice(stdout).ok();
+    let stderr = String::from_utf8_lossy(stderr);
+    let unprocessable = response.as_ref().is_some_and(|value| {
         value["status"].as_str() == Some("422") || value["status"].as_u64() == Some(422)
-    }) || String::from_utf8_lossy(&output.stderr).contains("HTTP 422");
-    if conflict {
+    }) || stderr.contains("HTTP 422");
+    let message = response
+        .as_ref()
+        .and_then(|value| value["message"].as_str());
+    // 422 also covers invalid SHAs, repository rules and other validation errors.
+    // Retry only GitHub's explicit duplicate-reference response, not every 422.
+    if unprocessable && message == Some("Reference already exists") {
         return Ok(false);
     }
-    bail!(
-        "failed to create tag {tag}: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    )
+
+    let mut details = Vec::new();
+    if let Some(message) = message {
+        details.push(message.to_owned());
+    }
+    if let Some(errors) = response.as_ref().and_then(|value| value.get("errors")) {
+        // Report validation diagnostics, not the complete response or request.
+        details.push(format!("validation errors: {errors}"));
+    }
+    if !stderr.trim().is_empty() {
+        details.push(stderr.trim().to_owned());
+    }
+    if details.is_empty() {
+        details.push("gh api returned no error details".to_owned());
+    }
+    bail!("failed to create tag {tag}: {}", details.join("; "))
 }
