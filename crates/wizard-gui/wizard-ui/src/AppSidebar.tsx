@@ -1,6 +1,6 @@
 import type { ComponentType, ComponentPropsWithoutRef } from "react";
 import { useClose } from "@headlessui/react";
-import { agentPaths, settingsPath, type AgentPageId, type AppPageId } from "./agents/navigation";
+import { agentPaths, type AgentPageId, type AppPageId } from "./agents/navigation";
 import { AppLogo } from "./components/AppLogo";
 import { ClaudeIcon, OpenAiIcon, OpenCodeIcon, PiIcon } from "./components/BrandIcons";
 import { Button } from "./components/catalyst/button";
@@ -53,10 +53,7 @@ export function AppSidebar({ page, account, update }: {
         </SidebarSection>
       </SidebarBody>
       <SidebarFooter className="min-h-20 shrink-0 justify-center gap-2">
-        <SidebarItem href={`#${settingsPath}`} current={page === "settings"} aria-current={page === "settings" ? "page" : undefined}>
-          <SidebarLabel>Настройки</SidebarLabel>
-        </SidebarItem>
-        <HubAccountMenu hub={account} />
+        <HubAccountMenu hub={account} settingsCurrent={page === "settings"} />
       </SidebarFooter>
     </Sidebar>
   );

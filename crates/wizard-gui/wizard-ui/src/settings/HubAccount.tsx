@@ -1,5 +1,5 @@
 import { useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
-import { MenuButton } from "@headlessui/react";
+import { MenuButton, useClose } from "@headlessui/react";
 import { ComputerDesktopIcon, EllipsisHorizontalIcon, MoonIcon, SunIcon } from "@heroicons/react/20/solid";
 import { loginHubAccount, logoutHubAccount, openHub, selectHub, useHubAccount } from "./hub_account";
 import { getTheme, setTheme, subscribeTheme } from "./theme";
@@ -8,6 +8,7 @@ import { SidebarItem, SidebarLabel } from "../components/catalyst/sidebar";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 import { useOpenLogs } from "../logs/OpenLogsButton";
+import { settingsPath } from "../agents/navigation";
 
 // Account state and actions are shared by the sidebar and agent pages.
 export function useHubAccountControl() {
@@ -54,8 +55,9 @@ const themes = [
   { value: "system", label: "Системная тема", Icon: ComputerDesktopIcon },
 ] as const;
 
-export function HubAccountMenu({ hub }: { hub: HubAccountControl }) {
+export function HubAccountMenu({ hub, settingsCurrent }: { hub: HubAccountControl; settingsCurrent: boolean }) {
   const { account } = hub;
+  const closeSidebar = useClose();
   const logs = useOpenLogs();
   const typeaheadUntil = useRef(0);
   const theme = useSyncExternalStore(subscribeTheme, getTheme);
@@ -141,8 +143,11 @@ export function HubAccountMenu({ hub }: { hub: HubAccountControl }) {
             <DropdownItem disabled={hub.submitting} onClick={hub.open}>
               <DropdownLabel>Перейти в хаб</DropdownLabel>
             </DropdownItem>
+            <DropdownItem href={`#${settingsPath}`} aria-current={settingsCurrent ? "page" : undefined} onClick={closeSidebar}>
+              <DropdownLabel>Настройки</DropdownLabel>
+            </DropdownItem>
             <DropdownItem disabled={logs.pending} onClick={logs.open}>
-              <DropdownLabel>Журнал</DropdownLabel>
+              <DropdownLabel>Логи</DropdownLabel>
             </DropdownItem>
             <DropdownDivider />
             <DropdownItem disabled={!account || disabled} onClick={hub.change}>

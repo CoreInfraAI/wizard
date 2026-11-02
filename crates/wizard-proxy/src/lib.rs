@@ -288,19 +288,13 @@ pub async fn run_managed(shutdown: impl Future<Output = ()>) -> io::Result<()> {
 
     // Bind both before starting tasks. If the second bind fails, the first
     // listener is dropped too: both ports must be available.
-    let listener = TcpListener::bind(ADDRESS)
-        .await
-        .inspect_err(|error| {
-            diagnostics::error("Claude Desktop listener bind", error);
-        })?;
-    let listener_old = TcpListener::bind(OLD_ADDRESS)
-        .await
-        .inspect_err(|error| {
-            diagnostics::error("ChatGPT listener bind", error);
-        })?;
-    log::info!(
-        "proxy listeners bound: claude_desktop={ADDRESS}, chatgpt={OLD_ADDRESS}"
-    );
+    let listener = TcpListener::bind(ADDRESS).await.inspect_err(|error| {
+        diagnostics::error("Claude Desktop listener bind", error);
+    })?;
+    let listener_old = TcpListener::bind(OLD_ADDRESS).await.inspect_err(|error| {
+        diagnostics::error("ChatGPT listener bind", error);
+    })?;
+    log::info!("proxy listeners bound: claude_desktop={ADDRESS}, chatgpt={OLD_ADDRESS}");
     run_listeners(state, listener, listener_old, shutdown).await
 }
 

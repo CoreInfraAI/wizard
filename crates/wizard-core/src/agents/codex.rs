@@ -555,10 +555,7 @@ mod tests {
     fn chatgpt_uses_lower_port_and_recognizes_both_wizard_endpoints() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("Preferences");
-        for address in [
-            wizard_proxy::ADDRESS,
-            wizard_proxy::OLD_ADDRESS,
-        ] {
+        for address in [wizard_proxy::ADDRESS, wizard_proxy::OLD_ADDRESS] {
             let before = json!({
                 "unrelated": true,
                 "proxy": { "mode": "fixed_servers", "server": format!("http://{address}") },
