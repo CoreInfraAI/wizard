@@ -60,7 +60,7 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
              See the generated release notes below for the complete list of changes."
                 .to_owned()
         };
-        let release_name = format!("{}-{version}", product_name.replace(' ', "-"));
+        let release_name = product_name.replace(' ', "-");
         body.push_str("\n\n| Платформа | Архитектура | Скачать |\n| --- | --- | --- |\n");
         // RELEASE_TARGETS: update when adding a release target.
         for (platform, architecture, label, suffix) in [
