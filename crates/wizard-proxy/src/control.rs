@@ -44,20 +44,20 @@ pub(crate) enum Command {
 
 /// An unreachable server is an error, never a disabled-proxy report.
 pub async fn status() -> io::Result<Status> {
-    request(crate::CLAUDE_DESKTOP_ADDRESS, Command::Status).await
+    request(crate::ADDRESS, Command::Status).await
 }
 
 /// Once accepted, Reload completes even if this exchange times out or disconnects.
 /// Do not automatically retry: after a timeout the result may be unknown.
 pub async fn reload() -> io::Result<ReloadResponse> {
-    request(crate::CLAUDE_DESKTOP_ADDRESS, Command::Reload).await
+    request(crate::ADDRESS, Command::Reload).await
 }
 
 /// Request graceful exit without changing saved settings. The reply precedes
 /// process exit; callers must wait for the returned PID separately. Do not retry
 /// automatically after an ambiguous exchange failure.
 pub async fn shutdown() -> io::Result<ShutdownResponse> {
-    request(crate::CLAUDE_DESKTOP_ADDRESS, Command::Shutdown).await
+    request(crate::ADDRESS, Command::Shutdown).await
 }
 
 pub(crate) async fn request<T: DeserializeOwned>(address: &str, command: Command) -> io::Result<T> {

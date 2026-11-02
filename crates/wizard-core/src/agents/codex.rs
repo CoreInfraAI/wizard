@@ -324,16 +324,17 @@ fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
 
     let proxy = json!({
         "mode": "fixed_servers",
-        "server": format!("http://{}", wizard_proxy::CHATGPT_ADDRESS),
+        "server": format!("http://{}", wizard_proxy::ADDRESS),
     });
-    // Written before ChatGPT had its own listener; replaced or removed like the current one.
-    let shared_proxy = json!({
+    // Continue recognizing the previous ChatGPT endpoint as Wizard's configuration.
+    let previous_proxy = json!({
         "mode": "fixed_servers",
-        "server": "http://127.0.0.1:33787",
+        "server": format!("http://{}", wizard_proxy::OLD_ADDRESS),
     });
     json::update(&mut change.after, |config| {
         let current = config.get("proxy");
-        let foreign = current.is_some_and(|current| current != &proxy && current != &shared_proxy);
+        let foreign =
+            current.is_some_and(|current| current != &proxy && current != &previous_proxy);
 
         if enabled {
             if foreign {
@@ -542,5 +543,58 @@ fn write_routing_env(after: &mut FileSnapshot, mode: RoutingMode, token: &str) -
                 ("NO_PROXY", Some("localhost,127.0.0.1,::1,hub.coreinfra.ai")),
             ],
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn chatgpt_uses_lower_port_and_recognizes_both_wizard_endpoints() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("Preferences");
+        for address in [
+            wizard_proxy::ADDRESS,
+            wizard_proxy::OLD_ADDRESS,
+        ] {
+            let before = json!({
+                "unrelated": true,
+                "proxy": { "mode": "fixed_servers", "server": format!("http://{address}") },
+            })
+            .to_string();
+            std::fs::write(&path, &before)?;
+
+            let enabled = prepare_desktop_proxy(path.clone(), true)?;
+            let config = config_files::json::parse(&enabled.after)?;
+            assert_eq!(
+                config["proxy"],
+                json!({
+                    "mode": "fixed_servers", "server": "http://127.0.0.1:33787",
+                })
+            );
+            assert_eq!(config["unrelated"], true);
+
+            let disabled = prepare_desktop_proxy(path.clone(), false)?;
+            let config = config_files::json::parse(&disabled.after)?;
+            assert!(config.get("proxy").is_none());
+            assert_eq!(config["unrelated"], true);
+            assert_eq!(std::fs::read_to_string(&path)?, before);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn chatgpt_disabling_preserves_foreign_proxy() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("Preferences");
+        let before = json!({
+            "proxy": { "mode": "fixed_servers", "server": "http://127.0.0.1:8080" },
+        });
+        std::fs::write(&path, before.to_string())?;
+        let disabled = prepare_desktop_proxy(path, false)?;
+        assert_eq!(config_files::json::parse(&disabled.after)?, before);
+        Ok(())
     }
 }

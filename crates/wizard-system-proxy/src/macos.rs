@@ -170,7 +170,7 @@ impl Backend for Native {
     }
 
     fn prepare(snapshot: &Snapshot, enabled: bool, forced: bool) -> Result<Snapshot> {
-        let address: SocketAddr = wizard_proxy::CLAUDE_DESKTOP_ADDRESS.parse()?;
+        let address: SocketAddr = wizard_proxy::ADDRESS.parse()?;
         let host = CFString::from_str(&address.ip().to_string());
         let port = CFNumber::new_i32(i32::from(address.port()));
         let mut after = snapshot.clone();

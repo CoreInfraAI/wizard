@@ -82,7 +82,7 @@ impl Config {
     pub fn prepare(&self, enabled: bool, forced: bool) -> Result<Self> {
         let mut after = self.clone();
         if enabled {
-            let address = wizard_proxy::CLAUDE_DESKTOP_ADDRESS;
+            let address = wizard_proxy::ADDRESS;
             // WinINet has a single manual-proxy switch. Forced mode replaces
             // the entire manual-proxy string, including non-HTTP mappings.
             // Normal mode preserves the stricter conflict and syntax checks.
@@ -104,7 +104,7 @@ impl Config {
         } else if self.flags & PROXY != 0 {
             let parsed = entries(&self.server)?;
             if parsed.len() == 1 && parsed[0].0.is_empty() {
-                if parsed[0].1 == wizard_proxy::CLAUDE_DESKTOP_ADDRESS {
+                if parsed[0].1 == wizard_proxy::ADDRESS {
                     after.flags = (after.flags & !PROXY) | DIRECT;
                 }
             } else {
@@ -117,7 +117,7 @@ impl Config {
                         };
                         !((protocol.trim().eq_ignore_ascii_case("http")
                             || protocol.trim().eq_ignore_ascii_case("https"))
-                            && address.trim() == wizard_proxy::CLAUDE_DESKTOP_ADDRESS)
+                            && address.trim() == wizard_proxy::ADDRESS)
                     })
                     .collect();
                 let server = remaining.join(";");

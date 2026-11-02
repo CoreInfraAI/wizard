@@ -109,7 +109,7 @@ fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
 
     let config = json::read(&dir.join(format!("{id}.json")))?;
     let preferences = json::read(&dir.with_file_name("claude_desktop_config.json"))?;
-    let proxy_url = format!("http://{}", wizard_proxy::CLAUDE_DESKTOP_ADDRESS);
+    let proxy_url = format!("http://{}", wizard_proxy::ADDRESS);
 
     if preferences["deploymentMode"] == "1p"
         && config["egressProxyUrl"] == proxy_url
@@ -165,7 +165,7 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
         })?;
     }
 
-    let proxy_url = format!("http://{}", wizard_proxy::CLAUDE_DESKTOP_ADDRESS);
+    let proxy_url = format!("http://{}", wizard_proxy::ADDRESS);
     // Wizard points every profile it configures at its proxy.
     let managed = json::parse(&config.after)?["egressProxyUrl"] == proxy_url;
     json::update(&mut config.after, |config| {

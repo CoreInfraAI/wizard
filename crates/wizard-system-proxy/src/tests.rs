@@ -166,7 +166,7 @@ fn disabling_preserves_foreign_protocols_and_auto_modes() -> Result<()> {
     config.flags |= PROXY | 4 | 8;
     config.server = format!(
         "http={};https=foreign.example:443;socks=foreign.example:1080",
-        wizard_proxy::CLAUDE_DESKTOP_ADDRESS
+        wizard_proxy::ADDRESS
     );
     let after = config.prepare(false, false)?;
     assert_eq!(after.flags, config.flags);
@@ -197,7 +197,7 @@ fn global_address_is_supported_but_not_confused_with_similar_endpoints() -> Resu
     }
     let mut config = disabled();
     config.flags |= PROXY;
-    config.server = wizard_proxy::CLAUDE_DESKTOP_ADDRESS.into();
+    config.server = wizard_proxy::ADDRESS.into();
     assert!(!config.status()?.conflict);
     assert_eq!(config.prepare(false, false)?.flags, DIRECT);
     Ok(())

@@ -184,7 +184,7 @@ fn change<B: Backend>(enabled: bool, forced: bool) -> Result<()> {
 fn endpoint_state(enabled: bool, endpoint: &str) -> ProxyState {
     if !enabled {
         ProxyState::Disabled
-    } else if endpoint == wizard_proxy::CLAUDE_DESKTOP_ADDRESS {
+    } else if endpoint == wizard_proxy::ADDRESS {
         ProxyState::Wizard
     } else {
         ProxyState::Foreign

@@ -31,9 +31,9 @@ mod server_tests;
 pub use upstream::{HOST as UPSTREAM_HOST, PORT as UPSTREAM_PORT, USERNAME as UPSTREAM_USERNAME};
 
 /// Listener used by Claude Desktop; shares configuration with the other managed port.
-pub const CLAUDE_DESKTOP_ADDRESS: &str = "127.0.0.1:33787";
+pub const ADDRESS: &str = "127.0.0.1:33787";
 /// Listener used by `ChatGPT`; shares configuration with the other managed port.
-pub const CHATGPT_ADDRESS: &str = "127.0.0.1:33788";
+pub const OLD_ADDRESS: &str = "127.0.0.1:33788";
 
 // Idle WebSocket and streaming connections remain valid; detect vanished peers
 // with TCP keepalive instead of applying an application-level idle timeout.
@@ -288,37 +288,37 @@ pub async fn run_managed(shutdown: impl Future<Output = ()>) -> io::Result<()> {
 
     // Bind both before starting tasks. If the second bind fails, the first
     // listener is dropped too: both ports must be available.
-    let claude = TcpListener::bind(CLAUDE_DESKTOP_ADDRESS)
+    let listener = TcpListener::bind(ADDRESS)
         .await
         .inspect_err(|error| {
             diagnostics::error("Claude Desktop listener bind", error);
         })?;
-    let chatgpt = TcpListener::bind(CHATGPT_ADDRESS)
+    let listener_old = TcpListener::bind(OLD_ADDRESS)
         .await
         .inspect_err(|error| {
             diagnostics::error("ChatGPT listener bind", error);
         })?;
     log::info!(
-        "proxy listeners bound: claude_desktop={CLAUDE_DESKTOP_ADDRESS}, chatgpt={CHATGPT_ADDRESS}"
+        "proxy listeners bound: claude_desktop={ADDRESS}, chatgpt={OLD_ADDRESS}"
     );
-    run_listeners(state, claude, chatgpt, shutdown).await
+    run_listeners(state, listener, listener_old, shutdown).await
 }
 
 async fn run_listeners(
     state: Arc<ServerState>,
-    claude: TcpListener,
-    chatgpt: TcpListener,
+    listener: TcpListener,
+    listener_old: TcpListener,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     // Handles stay private. Only ServerState::reload changes managed tokens.
-    let claude = spawn(
-        claude,
+    let listener = spawn(
+        listener,
         Arc::clone(&state.slot),
         state.tls.clone(),
         Some(Arc::clone(&state)),
     );
-    let chatgpt = spawn(
-        chatgpt,
+    let listener_old = spawn(
+        listener_old,
         Arc::clone(&state.slot),
         state.tls.clone(),
         Some(Arc::clone(&state)),
@@ -336,13 +336,13 @@ async fn run_listeners(
             log::info!("proxy shutdown requested through management");
             Ok(())
         },
-        () = claude.stopped() => {
-            log::error!("Claude Desktop listener stopped unexpectedly");
-            Err(io::Error::other("Claude Desktop listener stopped unexpectedly"))
+        () = listener.stopped() => {
+            log::error!("Listener stopped unexpectedly");
+            Err(io::Error::other("Listener stopped unexpectedly"))
         },
-        () = chatgpt.stopped() => {
-            log::error!("ChatGPT listener stopped unexpectedly");
-            Err(io::Error::other("ChatGPT listener stopped unexpectedly"))
+        () = listener_old.stopped() => {
+            log::error!("Old listener stopped unexpectedly");
+            Err(io::Error::other("Old listener stopped unexpectedly"))
         },
     };
 
@@ -352,7 +352,7 @@ async fn run_listeners(
     log::info!("waiting for accepted management commands before shutdown");
     drop(state.management.write().await);
     log::info!("stopping proxy listeners and draining connections");
-    let (claude, chatgpt) = tokio::join!(claude.stop(), chatgpt.stop());
+    let (claude, chatgpt) = tokio::join!(listener.stop(), listener_old.stop());
     // Prefer the original listener failure to a synthetic stopped notification.
     let result = claude.and(chatgpt).and(result);
     match &result {
