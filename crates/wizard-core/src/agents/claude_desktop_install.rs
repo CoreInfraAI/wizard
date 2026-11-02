@@ -812,8 +812,8 @@ try {
     if (Get-Process -Name Claude -ErrorAction SilentlyContinue) { exit 15 }
     if (!$install) { exit 0 }
     $phase = 16
-    # Force-close only for the explicit testing flag; no deferred registration or downgrade.
-    Add-AppxPackage -Path $package.archive -ForceTargetApplicationShutdown:([bool]$package.force_target_shutdown) | Out-Null
+    # Let deployment close remaining package components; no deferred registration or downgrade.
+    Add-AppxPackage -Path $package.archive -ForceTargetApplicationShutdown | Out-Null
     $phase = 17
     $installed = Get-AppxPackage -Name Claude
     if ($null -eq $installed -or $installed.Publisher -cne $package.publisher -or $installed.Version.ToString() -cne $package.version) { exit 17 }
@@ -867,16 +867,11 @@ fn install_windows(archive: &Path, version: &Version, sha256: &str) -> Result<()
         .as_ref()
         .map(|directory| directory.path().join("install-error.txt"));
 
-    // TODO: remove --force-claude-shutdown
-    let force_target_shutdown = std::env::args_os()
-        .skip(1)
-        .any(|arg| arg == "--force-claude-shutdown");
-    if force_target_shutdown {
-        log::warn!("Claude MSIX testing mode: ForceTargetApplicationShutdown enabled");
-    }
+    log::warn!(
+        "Claude MSIX installation uses ForceTargetApplicationShutdown to close remaining package components"
+    );
 
     let package = serde_json::json!({
-        "force_target_shutdown": force_target_shutdown,
         "diagnostic_path": diagnostic_path,
         "archive": archive,
         "publisher": WINDOWS_PUBLISHER,
