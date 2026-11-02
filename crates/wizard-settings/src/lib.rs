@@ -29,6 +29,9 @@ pub struct Settings {
     /// Selected Hub for listing and creating agent tokens; empty uses the personal hub.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub active_hub_id: String,
+    /// Random id that tells Wizard installations apart in Hub update metrics. Not a secret.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub install_id: String,
     /// Application lifecycle preferences, independent of proxy demand.
     pub application: ApplicationSettings,
     /// Kept last: it serializes as a TOML table, written after plain keys.
@@ -74,6 +77,31 @@ impl Settings {
     pub fn local_proxy_enabled(&self) -> bool {
         self.claude_proxy_enabled || self.codex_proxy_enabled || self.system_proxy_enabled
     }
+}
+
+// Lowercase RFC 4648 base32; Hub accepts exactly this format.
+const INSTALL_ID_ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+const INSTALL_ID_LEN: usize = 10;
+
+/// 50 random bits as ten base32 characters.
+#[must_use]
+pub fn new_install_id() -> String {
+    // A v4 UUID keeps its version and variant bits above bit 61; the low 50 bits are random.
+    let bits = uuid::Uuid::new_v4().as_u128();
+    (0..INSTALL_ID_LEN)
+        .map(|index| {
+            let digit = (bits >> (5 * index)) & 0x1f;
+            char::from(INSTALL_ID_ALPHABET[usize::try_from(digit).expect("5-bit digit")])
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn is_install_id(value: &str) -> bool {
+    value.len() == INSTALL_ID_LEN
+        && value
+            .bytes()
+            .all(|byte| INSTALL_ID_ALPHABET.contains(&byte))
 }
 
 /// Convert legacy per-app token strings to demand flags before GUI initialization.
@@ -209,6 +237,27 @@ mod tests {
                 assert!(restored.local_proxy_enabled());
             }
         }
+    }
+
+    #[test]
+    fn new_install_ids_match_hub_format() {
+        let first = new_install_id();
+        assert!(is_install_id(&first), "{first:?}");
+        assert_ne!(first, new_install_id());
+        for invalid in ["", "abcdefgh2", "abcdefgh277", "ABCDEFGH27", "abcdefgh18"] {
+            assert!(!is_install_id(invalid), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn install_id_round_trips() {
+        let settings = Settings {
+            install_id: "abcdefgh27".into(),
+            ..Settings::default()
+        };
+        let text = toml_edit::ser::to_string_pretty(&settings).expect("serialize settings");
+        let restored: Settings = toml_edit::de::from_str(&text).expect("read settings");
+        assert_eq!(restored.install_id, "abcdefgh27");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::utils::{Paths, clean_build_command, remove_path, require_success};
-use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY};
+use crate::{DEV_ENDPOINT, DEV_HUB_ENDPOINT, DEV_PUBLIC_KEY};
 use anyhow::{Context as _, Result, bail};
 use serde_json::json;
 use std::{fs, process::Command};
@@ -37,7 +37,7 @@ pub(crate) fn dev_app(paths: &Paths, reinstall: bool, console: bool, release: bo
         let config = json!({
             "plugins": {
                 "updater": {
-                    "endpoints": [DEV_ENDPOINT],
+                    "endpoints": [DEV_HUB_ENDPOINT, DEV_ENDPOINT],
                     "pubkey": DEV_PUBLIC_KEY,
                 },
             },

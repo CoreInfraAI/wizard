@@ -7,11 +7,24 @@ use wizard_settings::{self as settings, ApplicationSettings, Settings};
 
 static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
-pub(crate) async fn initialize_state(app: &tauri::AppHandle) -> Result<()> {
-    let settings = tauri::async_runtime::spawn_blocking(|| {
+/// Loads settings, assigning an `install_id` if they have none and saving it when possible.
+/// Returns whether this is Wizard's first run on this machine: no settings file existed.
+pub(crate) async fn initialize_state(app: &tauri::AppHandle) -> Result<bool> {
+    let (settings, first_run) = tauri::async_runtime::spawn_blocking(|| {
         // TODO: remove migration
         settings::migrate()?;
-        settings::load_from_file()
+        let first_run = !settings::paths::settings_path()?
+            .try_exists()
+            .context("failed to inspect Wizard settings file")?;
+        let mut settings = settings::load_from_file()?;
+        if !settings::is_install_id(&settings.install_id) {
+            settings.install_id = settings::new_install_id();
+            // Settings that cannot be written (e.g. a symlinked file) must not block startup.
+            if let Err(error) = settings::save_to_file(&settings) {
+                log::warn!("failed to save install_id: {error:#}");
+            }
+        }
+        anyhow::Ok((settings, first_run))
     })
     .await
     .context("settings initialization task failed")??;
@@ -19,7 +32,7 @@ pub(crate) async fn initialize_state(app: &tauri::AppHandle) -> Result<()> {
     if !app.manage(RevisionSignal::new(settings)) {
         bail!("settings already initialized");
     }
-    Ok(())
+    Ok(first_run)
 }
 
 /// TODO: maybe update state when file changes
