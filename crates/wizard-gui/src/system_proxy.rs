@@ -82,9 +82,12 @@ fn begin(signal: &RevisionSignal<State>) -> Result<(), String> {
 fn observe(state: &mut State, result: Result<SystemProxyStatus>, listener_running: bool) {
     state.listener_running = listener_running;
     state.conflict = false;
-    state.read_error = None;
+    let previous_error = state.read_error.take();
     match result {
         Ok(snapshot) => {
+            if previous_error.is_some() {
+                log::info!("system proxy observation recovered");
+            }
             state.conflict = snapshot.services.iter().any(|s| s.conflict);
             let any = snapshot
                 .services
@@ -106,7 +109,13 @@ fn observe(state: &mut State, result: Result<SystemProxyStatus>, listener_runnin
         }
         Err(error) => {
             state.status = Status::Unknown;
-            state.read_error = Some(format!("Не удалось прочитать системный прокси: {error:#}"));
+            let message = format!("Не удалось прочитать системный прокси: {error:#}");
+            if previous_error.as_ref() != Some(&message) {
+                // OS backend errors contain static diagnostics and numeric native codes,
+                // never proxy snapshots, addresses or PAC URLs.
+                log::error!("system proxy observation failed: {error:#}");
+            }
+            state.read_error = Some(message);
         }
     }
 }
@@ -130,9 +139,37 @@ fn observe_current(app: &tauri::AppHandle) -> Result<State> {
     Ok(current(app))
 }
 
+fn os_errors(write: Result<()>, observed: &State, enabled: bool) -> Vec<String> {
+    let written = write.is_ok();
+    let mut errors = Vec::new();
+    if let Err(error) = write {
+        // Only errors from wizard-system-proxy: its diagnostics never include settings.
+        log::error!("system proxy OS update failed: {error:#}");
+        errors.push(format!("Не удалось изменить системный прокси: {error:#}"));
+    }
+    if let Some(error) = &observed.read_error {
+        errors.push(error.clone());
+    } else if written && observed.status != if enabled { Status::On } else { Status::Off } {
+        log::error!("system proxy OS state does not match the requested state");
+        errors.push("Операция завершилась, но состояние системного прокси не соответствует запрошенному. Возможно, настройки изменены другой программой.".into());
+    }
+    errors
+}
+
+fn log_operation_result(enabled: bool, forced: bool, result: &Result<(), String>) {
+    if result.is_ok() {
+        log::info!("system proxy operation completed: enabled={enabled}, forced={forced}");
+    } else {
+        // The full GUI error may originate in Hub or settings I/O. Do not log it.
+        // Safe OS-specific causes are logged at their source instead.
+        log::error!("system proxy operation failed: enabled={enabled}, forced={forced}");
+    }
+}
+
 fn apply(app: &tauri::AppHandle, enabled: bool, forced: bool) -> Result<()> {
     // Token acquisition may update the session; never hold the settings lock here.
     let token = if enabled {
+        log::info!("preparing system proxy token and listener");
         Some(
             tauri::async_runtime::block_on(crate::hub_tokens::proxy_token(app))
                 .map_err(anyhow::Error::msg)?,
@@ -178,12 +215,14 @@ fn apply(app: &tauri::AppHandle, enabled: bool, forced: bool) -> Result<()> {
         }
     }
 
+    log::info!("applying system proxy OS settings");
     let write = if enabled {
         os::enable(forced)
     } else {
         os::disable()
     };
     let observed = observe_current(app)?; // Also after partial writes or failed verification.
+    let mut errors = os_errors(write, &observed, enabled);
     let demand = if observed.status == Status::Off {
         enabled && previous.system_proxy_enabled
     } else {
@@ -198,14 +237,18 @@ fn apply(app: &tauri::AppHandle, enabled: bool, forced: bool) -> Result<()> {
     } else {
         Ok(())
     };
-    let expected = if enabled { Status::On } else { Status::Off };
-    let errors: Vec<String> = [
-        write.err().map(|error| format!("Не удалось изменить системный прокси: {error:#}. Настройки могли примениться частично.")),
-        observed.read_error,
-        (observed.status != expected).then(|| "ОС не подтвердила запрошенное состояние системного прокси".into()),
-        saved.err().map(|error| format!("{error:#}")),
-        synced.err().map(|error| format!("Не удалось синхронизировать локальный прокси: {error:#}")),
-    ].into_iter().flatten().collect();
+    errors.extend(
+        [
+            saved.err().map(|error| {
+                format!("Не удалось сохранить состояние системного прокси в Wizard: {error:#}")
+            }),
+            synced
+                .err()
+                .map(|error| format!("Не удалось синхронизировать локальный прокси: {error:#}")),
+        ]
+        .into_iter()
+        .flatten(),
+    );
     if !errors.is_empty() {
         bail!(errors.join("; "));
     }
@@ -213,11 +256,16 @@ fn apply(app: &tauri::AppHandle, enabled: bool, forced: bool) -> Result<()> {
 }
 
 async fn run(app: tauri::AppHandle, enabled: Option<bool>, forced: bool) -> Result<(), String> {
+    if let Some(enabled) = enabled {
+        log::info!("system proxy operation requested: enabled={enabled}, forced={forced}");
+    }
     let worker_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let signal = worker_app.state::<RevisionSignal<State>>();
         if enabled.is_some() {
-            begin(&signal)?;
+            begin(&signal).inspect_err(|_| {
+                log::warn!("system proxy operation rejected: another operation is in progress");
+            })?;
             sync_tray(&worker_app);
         }
         let result = (|| {
@@ -242,7 +290,9 @@ async fn run(app: tauri::AppHandle, enabled: Option<bool>, forced: bool) -> Resu
                 state.read_error.map_or(Ok(()), Err)
             }
         })();
-        if enabled.is_some() {
+        if let Some(enabled) = enabled {
+            // Keep outcome logging in the worker even if its IPC caller disappears.
+            log_operation_result(enabled, forced, &result);
             update(&signal, |state| {
                 state.busy = false;
                 state.listener_running = crate::proxy::running(&worker_app);
@@ -260,6 +310,7 @@ async fn run(app: tauri::AppHandle, enabled: Option<bool>, forced: bool) -> Resu
     .await;
     // Publication stays inside the worker, even if the IPC caller disappears.
     result.unwrap_or_else(|_| {
+        log::error!("system proxy worker interrupted; OS state unknown");
         let message = "Операция системного прокси прервана. Состояние ОС неизвестно.";
         update(&app.state::<RevisionSignal<State>>(), |state| {
             if enabled.is_some() {

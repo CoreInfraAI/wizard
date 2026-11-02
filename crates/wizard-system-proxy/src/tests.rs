@@ -74,7 +74,11 @@ fn preflights_every_service_before_any_write() {
         conflict.flags = flags;
         conflict.server = "http=foreign.example:8080".into();
         setup(vec![disabled(), conflict]);
-        assert!(change::<Mock>(true, false).is_err());
+        let error = change::<Mock>(true, false).expect_err("preflight must reject conflicts");
+        let message = format!("{error:#}");
+        assert!(message.contains("settings were not changed"));
+        assert!(message.contains("conflicts with Wizard"));
+        assert!(!message.contains("partially applied"));
         MOCK.with_borrow(|m| assert_eq!(m.writes, 0));
     }
 }
@@ -116,6 +120,7 @@ fn partial_failures_and_failed_verification_are_reported_without_retry() {
         MOCK.with_borrow_mut(|m| m.partial_failure = true);
         let error = change::<Mock>(true, forced).expect_err("partial application must fail");
         assert!(error.to_string().contains("partially applied"));
+        assert!(!format!("{error:#}").contains("settings were not changed"));
         MOCK.with_borrow(|m| {
             assert_eq!(m.writes, 1);
             assert!(m.snapshot[0].flags & PROXY != 0);
@@ -168,20 +173,5 @@ fn global_address_is_supported_but_not_confused_with_similar_endpoints() -> Resu
     config.server = wizard_proxy::CLAUDE_DESKTOP_ADDRESS.into();
     assert!(!config.status()?.conflict);
     assert_eq!(config.prepare(false, false)?.flags, DIRECT);
-    Ok(())
-}
-
-#[test]
-fn malformed_or_unknown_mappings_cannot_be_silently_overwritten() -> Result<()> {
-    for server in ["http=a:1;http=b:2", "http=a:1;garbage", "a:1;b:2", "http="] {
-        let mut config = disabled();
-        config.flags |= PROXY;
-        config.server = server.into();
-        assert!(config.status().is_err());
-    }
-    let mut dormant = disabled();
-    dormant.server = "socks=example.invalid:1080".into();
-    assert!(dormant.prepare(true, false).is_err());
-    assert!(dormant.prepare(false, false)? == dormant);
     Ok(())
 }

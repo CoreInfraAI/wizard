@@ -55,9 +55,12 @@ pub fn status() -> Result<SystemProxyStatus> {
 }
 
 /// Set HTTP and HTTPS to the Wizard endpoint. With `forced`, replace foreign
-/// HTTP/HTTPS settings and disable PAC/auto-discovery. Other conflicts still fail.
-/// Existing bypass rules and inactive settings are preserved except for the HTTP/
-/// HTTPS endpoints being replaced. There is no persistent backup or rollback.
+/// HTTP/HTTPS settings and disable PAC/auto-discovery. On Windows, forced mode
+/// replaces the entire manual proxy string with HTTP/HTTPS-only mappings,
+/// including global addresses and explicit non-HTTP mappings. Reading the current
+/// configuration must still succeed. Existing bypass rules and inactive settings
+/// are preserved except for the proxy endpoints being replaced.
+/// There is no persistent backup or rollback.
 pub fn enable(forced: bool) -> Result<()> {
     update(true, forced)
 }
@@ -116,30 +119,34 @@ trait Backend {
     expect(dead_code)
 )]
 fn change<B: Backend>(enabled: bool, forced: bool) -> Result<()> {
-    let before = B::read()?;
-    let services = B::services(&before)?;
-    ensure!(!services.is_empty(), "no supported network services");
-    ensure!(
-        !enabled || forced || !services.iter().any(|s| s.conflict),
-        "active system proxy, PAC or auto-discovery conflicts with Wizard"
-    );
-    let after = B::prepare(&before, enabled, forced)?;
-    // Forced changes may resolve only HTTP/HTTPS and automatic-proxy conflicts.
-    // Preflight the full result before any write, including on other services.
-    if enabled {
+    let (before, after) = (|| -> Result<_> {
+        let before = B::read()?;
+        let services = B::services(&before)?;
+        ensure!(!services.is_empty(), "no supported network services");
         ensure!(
-            !B::services(&after)?.iter().any(|s| s.conflict),
-            "other proxy protocols or unknown settings conflict with Wizard"
+            !enabled || forced || !services.iter().any(|s| s.conflict),
+            "active system proxy, PAC or auto-discovery conflicts with Wizard"
         );
-    }
+        let after = B::prepare(&before, enabled, forced)?;
+        // Preflight the full result before any write, including on other services.
+        if enabled {
+            ensure!(
+                !B::services(&after)?.iter().any(|s| s.conflict),
+                "other proxy protocols or unknown settings conflict with Wizard"
+            );
+        }
+        if before != after {
+            ensure!(
+                B::read()? == before,
+                "system proxy settings changed; try again"
+            );
+        }
+        Ok((before, after))
+    })()
+    .context("system proxy settings were not changed")?;
     if before == after {
         return Ok(());
     }
-
-    ensure!(
-        B::read()? == before,
-        "system proxy settings changed; try again"
-    );
     B::write(&before, &after)
         .context("system proxy update failed; settings may be partially applied")?;
     ensure!(

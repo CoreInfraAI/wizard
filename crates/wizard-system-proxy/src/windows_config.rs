@@ -83,17 +83,19 @@ impl Config {
         let mut after = self.clone();
         if enabled {
             let address = wizard_proxy::CLAUDE_DESKTOP_ADDRESS;
-            // WinINet has a single manual-proxy switch. Never erase or activate
-            // non-HTTP mappings, even in forced mode; a nonempty global address
-            // also applies beyond HTTP/HTTPS. Reject malformed syntax too.
-            ensure!(
-                entries(&self.server)?.iter().all(|(protocol, endpoint)| {
-                    (protocol.is_empty() && endpoint.is_empty())
-                        || protocol.eq_ignore_ascii_case("http")
-                        || protocol.eq_ignore_ascii_case("https")
-                }),
-                "global or non-HTTP proxy mappings conflict with Wizard; clear them first"
-            );
+            // WinINet has a single manual-proxy switch. Forced mode replaces
+            // the entire manual-proxy string, including non-HTTP mappings.
+            // Normal mode preserves the stricter conflict and syntax checks.
+            if !forced {
+                ensure!(
+                    entries(&self.server)?.iter().all(|(protocol, endpoint)| {
+                        (protocol.is_empty() && endpoint.is_empty())
+                            || protocol.eq_ignore_ascii_case("http")
+                            || protocol.eq_ignore_ascii_case("https")
+                    }),
+                    "global or non-HTTP proxy mappings conflict with Wizard; use forced mode to replace manual proxy settings"
+                );
+            }
             after.server = format!("http={address};https={address}");
             after.flags |= DIRECT | PROXY;
             if forced {
