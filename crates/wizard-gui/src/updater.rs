@@ -1,10 +1,14 @@
 use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
 use alloc::sync::Arc;
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use serde::Serialize;
+use std::time::Instant;
 use tauri::Manager as _;
+use tauri::http::{HeaderValue, header::COOKIE};
 use tauri_plugin_updater::{Update, UpdaterExt as _};
+use wizard_core::hub::{HUB_ORIGIN, Url};
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(1);
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -26,7 +30,50 @@ impl UpdateState {
     }
 }
 
-pub(crate) fn start(app: tauri::AppHandle) {
+/// The updater's configured endpoints, tried in order. Hub's endpoint also receives the session
+/// and Wizard's usage parameters; the others are fallbacks that receive neither.
+struct UpdateSources {
+    endpoints: Vec<Endpoint>,
+    started_at: Instant,
+    /// Kept until Hub answers a check, so a failed first check reports it again.
+    first_run: AtomicBool,
+}
+
+struct Endpoint {
+    url: Url,
+    hub: bool,
+}
+
+impl UpdateSources {
+    fn from_config(app: &tauri::AppHandle, first_run: bool) -> Result<Self> {
+        let config = app
+            .config()
+            .plugins
+            .0
+            .get("updater")
+            .cloned()
+            .context("updater is not configured")?;
+        let config: tauri_plugin_updater::Config =
+            serde_json::from_value(config).context("invalid updater configuration")?;
+        let hub_origin = Url::parse(HUB_ORIGIN)?.origin();
+        let endpoints = config
+            .endpoints
+            .into_iter()
+            .map(|url| Endpoint {
+                hub: url.origin() == hub_origin,
+                url,
+            })
+            .collect();
+        Ok(Self {
+            endpoints,
+            started_at: Instant::now(),
+            first_run: AtomicBool::new(first_run),
+        })
+    }
+}
+
+pub(crate) fn start(app: tauri::AppHandle, first_run: bool) -> Result<()> {
+    app.manage(UpdateSources::from_config(&app, first_run)?);
     start_update(app.clone());
 
     let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
@@ -36,6 +83,7 @@ pub(crate) fn start(app: tauri::AppHandle) {
             check_in_background(&app, &state).await;
         }
     });
+    Ok(())
 }
 
 #[tauri::command]
@@ -169,16 +217,118 @@ async fn check_in_background(app: &tauri::AppHandle, state: &RevisionSignal<Upda
 }
 
 async fn find_update(app: &tauri::AppHandle) -> Result<Option<Update>> {
-    let updater = app
+    let sources = app.state::<UpdateSources>();
+    let mut last_error = None;
+    for endpoint in &sources.endpoints {
+        let result = if endpoint.hub {
+            check_via_hub(app, &sources, endpoint.url.clone()).await
+        } else {
+            check(app, endpoint.url.clone(), None).await
+        };
+        match result {
+            Ok(update) => return Ok(update),
+            Err(error) => {
+                log::warn!(
+                    "update check via {} failed: {error:#}",
+                    endpoint.url.host_str().unwrap_or_default()
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("no update endpoints configured")))
+        .context("Не удалось проверить обновления")
+}
+
+async fn check_via_hub(
+    app: &tauri::AppHandle,
+    sources: &UpdateSources,
+    endpoint: Url,
+) -> Result<Option<Update>> {
+    let settings = crate::settings::get_state(app)?;
+    let endpoint = with_usage(
+        endpoint,
+        &settings.install_id,
+        sources.started_at.elapsed(),
+        sources.first_run.load(Ordering::Relaxed),
+    );
+    let mut update = check(app, endpoint, session_cookie(&settings.hub_session)?).await?;
+    sources.first_run.store(false, Ordering::Relaxed);
+    if let Some(update) = &mut update {
+        // The bundle downloads from GitHub; the session is only for Hub.
+        update.headers.remove(COOKIE);
+    }
+    Ok(update)
+}
+
+fn with_usage(mut endpoint: Url, install_id: &str, uptime: Duration, first_run: bool) -> Url {
+    {
+        let mut query = endpoint.query_pairs_mut();
+        query
+            .append_pair("install_id", install_id)
+            .append_pair("uptime", &uptime.as_secs().to_string());
+        if first_run {
+            query.append_pair("first_run", "1");
+        }
+    }
+    endpoint
+}
+
+fn session_cookie(session: &str) -> Result<Option<HeaderValue>> {
+    if session.is_empty() {
+        return Ok(None);
+    }
+    let mut cookie = HeaderValue::from_str(&format!("session={session}"))
+        .map_err(|_| anyhow!("Hub session is not a valid cookie value"))?;
+    cookie.set_sensitive(true);
+    Ok(Some(cookie))
+}
+
+async fn check(
+    app: &tauri::AppHandle,
+    endpoint: Url,
+    session: Option<HeaderValue>,
+) -> Result<Option<Update>> {
+    let mut builder = app
         .updater_builder()
         // Client-level, so it also covers proxy CONNECT and the download.
         .configure_client(|client| client.user_agent(wizard_proxy::user_agent()))
         .timeout(UPDATE_CHECK_TIMEOUT)
+        .endpoints(vec![endpoint])
+        .context("Не удалось подготовить проверку обновлений")?;
+    if let Some(session) = session {
+        builder = builder
+            .header(COOKIE, session)
+            .context("Не удалось подготовить проверку обновлений")?;
+    }
+    let updater = builder
         .build()
         .context("Не удалось подготовить проверку обновлений")?;
+    Ok(updater.check().await?)
+}
 
-    updater
-        .check()
-        .await
-        .context("Не удалось проверить обновления")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_endpoint_keeps_channel_and_adds_usage() {
+        let endpoint = Url::parse("https://hub.coreinfra.ai/hub/api/wizard/release?channel=dev")
+            .expect("valid endpoint");
+        let url = with_usage(
+            endpoint.clone(),
+            "abcdefgh27",
+            Duration::from_secs(90),
+            true,
+        );
+        assert_eq!(
+            url.as_str(),
+            "https://hub.coreinfra.ai/hub/api/wizard/release?channel=dev&install_id=abcdefgh27&uptime=90&first_run=1"
+        );
+        let url = with_usage(endpoint, "abcdefgh27", Duration::from_millis(999), false);
+        assert_eq!(
+            url.query(),
+            Some("channel=dev&install_id=abcdefgh27&uptime=0")
+        );
+    }
 }

@@ -99,7 +99,8 @@ pub fn run_application() -> Result<()> {
         .setup(move |app| {
             log::info!("----------");
             log::info!("starting CoreInfra Wizard {}", app.package_info().version);
-            tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
+            let first_run =
+                tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
             hub_auth::initialize(app.handle());
             hub_tokens::HubTokensManager::initialize(app.handle())?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -130,7 +131,7 @@ pub fn run_application() -> Result<()> {
             if !minimized || !tray_enabled {
                 request_main_window(app.handle());
             }
-            updater::start(app.handle().clone());
+            updater::start(app.handle().clone(), first_run)?;
             claude_desktop_install::start_background_checks(app.handle().clone());
             Ok(())
         })

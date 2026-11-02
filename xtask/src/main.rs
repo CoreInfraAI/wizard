@@ -9,6 +9,7 @@ mod dev_tag;
 mod release;
 mod utils;
 
+const DEV_HUB_ENDPOINT: &str = "https://hub.coreinfra.ai/hub/api/wizard/release?channel=dev";
 const DEV_ENDPOINT: &str = "https://coreinfraai.github.io/wizard/latest-dev.json";
 const DEV_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY5QkI4Q0FEN0QxNTZDNkIKUldScmJCVjlyWXk3K2Q1VERmZ01oMzdVVDZPdG41VExtdkI5N3pHbXZYc3dxSEtPT0dHYTRaeksK";
 

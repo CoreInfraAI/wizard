@@ -2,7 +2,7 @@ use crate::utils::{
     Paths, clean_build_command, gh_api_bytes, gh_api_json, gh_release_upload, remove_path,
     require_success, required_env, stable_version,
 };
-use crate::{DEV_ENDPOINT, DEV_PUBLIC_KEY, apple, dev_tag};
+use crate::{DEV_ENDPOINT, DEV_HUB_ENDPOINT, DEV_PUBLIC_KEY, apple, dev_tag};
 use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use core::fmt::Write as _;
@@ -236,7 +236,7 @@ pub(crate) fn build(
             "bundle": { "createUpdaterArtifacts": true },
             "plugins": {
                 "updater": {
-                    "endpoints": [DEV_ENDPOINT],
+                    "endpoints": [DEV_HUB_ENDPOINT, DEV_ENDPOINT],
                     "pubkey": DEV_PUBLIC_KEY,
                 },
             },
