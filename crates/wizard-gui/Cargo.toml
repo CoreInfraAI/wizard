@@ -24,6 +24,7 @@ tauri-build = { workspace = true, features = [] }
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] } # used by tauri::generate_context!()

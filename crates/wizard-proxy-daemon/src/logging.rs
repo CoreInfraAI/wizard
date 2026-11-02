@@ -75,11 +75,11 @@ impl Log for Logger {
             .output
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Match Wizard.log's default UTC timestamps and field layout.
+        // Match Wizard.log: local RFC 3339 time with milliseconds and UTC offset.
         // One buffer per record prevents size-based rotation from splitting a line.
         let line = format!(
             "[{}][{}][{}] {}\n",
-            chrono::Utc::now().format("%Y-%m-%d][%H:%M:%S"),
+            chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
             record.target(),
             record.level(),
             record.args(),

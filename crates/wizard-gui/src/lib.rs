@@ -58,6 +58,15 @@ pub fn run_application() -> Result<()> {
         }))
         .plugin(
             tauri_plugin_log::Builder::new()
+                .format(|out, message, record| {
+                    out.finish(format_args!(
+                        "[{}][{}][{}] {}",
+                        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+                        record.target(),
+                        record.level(),
+                        message,
+                    ));
+                })
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::Folder {

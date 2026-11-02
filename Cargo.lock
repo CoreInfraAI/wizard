@@ -5477,6 +5477,7 @@ name = "wizard-gui"
 version = "0.2.10"
 dependencies = [
  "anyhow",
+ "chrono",
  "log",
  "serde",
  "serde_json",
