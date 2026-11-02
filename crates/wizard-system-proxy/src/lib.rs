@@ -24,6 +24,25 @@ mod tests;
 
 static LOCK: Mutex<()> = Mutex::new(());
 
+/// Authorization was not granted before any OS settings were staged or written.
+/// Callers may offer an authorization retry without a partial-write warning.
+#[derive(Debug)]
+pub struct AuthorizationRequired {
+    pub code: i32,
+}
+
+impl core::fmt::Display for AuthorizationRequired {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "system proxy authorization was not granted (native code {}); OS settings were not changed",
+            self.code,
+        )
+    }
+}
+
+impl core::error::Error for AuthorizationRequired {}
+
 /// Configuration state, not listener availability or application traffic routing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProxyState {
@@ -147,8 +166,13 @@ fn change<B: Backend>(enabled: bool, forced: bool) -> Result<()> {
     if before == after {
         return Ok(());
     }
-    B::write(&before, &after)
-        .context("system proxy update failed; settings may be partially applied")?;
+    B::write(&before, &after).map_err(|error| {
+        if error.is::<AuthorizationRequired>() {
+            error
+        } else {
+            error.context("system proxy update failed; settings may be partially applied")
+        }
+    })?;
     ensure!(
         B::read().context("cannot verify system proxy update; settings may already be applied")?
             == after,

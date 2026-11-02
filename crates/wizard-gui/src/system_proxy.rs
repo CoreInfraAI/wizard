@@ -145,7 +145,11 @@ fn os_errors(write: Result<()>, observed: &State, enabled: bool) -> Vec<String> 
     if let Err(error) = write {
         // Only errors from wizard-system-proxy: its diagnostics never include settings.
         log::error!("system proxy OS update failed: {error:#}");
-        errors.push(format!("Не удалось изменить системный прокси: {error:#}"));
+        if error.is::<os::AuthorizationRequired>() {
+            errors.push("macOS не разрешила изменение системного прокси. Подтвердите запрос администратора и повторите попытку. Настройки ОС не изменены.".into());
+        } else {
+            errors.push(format!("Не удалось изменить системный прокси: {error:#}"));
+        }
     }
     if let Some(error) = &observed.read_error {
         errors.push(error.clone());

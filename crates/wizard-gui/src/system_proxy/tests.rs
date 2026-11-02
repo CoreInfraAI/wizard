@@ -129,6 +129,27 @@ fn unchanged_observations_do_not_publish() {
 }
 
 #[test]
+fn authorization_failure_has_a_specific_retry_message() {
+    let observed = State {
+        status: Status::Off,
+        ..State::default()
+    };
+    let error = anyhow::Error::new(os::AuthorizationRequired { code: 1003 });
+    let errors = os_errors(Err(error), &observed, true);
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("Подтвердите запрос администратора"));
+    assert!(errors[0].contains("Настройки ОС не изменены"));
+    assert!(!errors[0].contains("частично"));
+    assert!(!errors[0].contains("partially applied"));
+
+    let error = anyhow::anyhow!("cannot lock network preferences (SystemConfiguration code 1006)");
+    let errors = os_errors(Err(error), &observed, true);
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("1006"));
+    assert!(!errors[0].contains("Подтвердите запрос администратора"));
+}
+
+#[test]
 fn os_errors_distinguish_preflight_partial_write_and_observation_failures() {
     let off = State {
         status: Status::Off,

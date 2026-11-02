@@ -18,6 +18,7 @@ struct MockState {
     writes: usize,
     concurrent_change: bool,
     partial_failure: bool,
+    authorization_error: Option<i32>,
     ignore_write: bool,
 }
 
@@ -45,6 +46,9 @@ impl Backend for Mock {
     }
     fn write(_: &Self::Snapshot, after: &Self::Snapshot) -> Result<()> {
         MOCK.with_borrow_mut(|m| {
+            if let Some(code) = m.authorization_error {
+                return Err(AuthorizationRequired { code }.into());
+            }
             m.writes += 1;
             if m.partial_failure {
                 m.snapshot[0] = after[0].clone();
@@ -131,6 +135,29 @@ fn partial_failures_and_failed_verification_are_reported_without_retry() {
         assert!(change::<Mock>(true, forced).is_err());
         MOCK.with_borrow(|m| assert_eq!(m.writes, 1));
     }
+}
+
+#[test]
+fn authorization_failure_preserves_snapshot_and_has_no_partial_write_warning() -> Result<()> {
+    for enabled in [false, true] {
+        let before = if enabled {
+            disabled()
+        } else {
+            disabled().prepare(true, false)?
+        };
+        setup(vec![before.clone()]);
+        MOCK.with_borrow_mut(|m| m.authorization_error = Some(1003));
+        let error = change::<Mock>(enabled, false).expect_err("authorization denied");
+        assert!(error.is::<AuthorizationRequired>());
+        let message = format!("{error:#}");
+        assert!(message.contains("OS settings were not changed"));
+        assert!(!message.contains("partially applied"));
+        MOCK.with_borrow(|m| {
+            assert_eq!(m.writes, 0);
+            assert!(m.snapshot[0] == before);
+        });
+    }
+    Ok(())
 }
 
 #[test]

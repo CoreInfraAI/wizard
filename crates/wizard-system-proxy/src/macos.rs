@@ -4,17 +4,18 @@
     reason = "CoreFoundation and authorization APIs require checked FFI calls"
 )]
 
-use crate::{Backend, ProxyState, ServiceStatus, endpoint_state};
+use crate::{AuthorizationRequired, Backend, ProxyState, ServiceStatus, endpoint_state};
 use anyhow::{Context as _, Result, ensure};
 use core::{net::SocketAddr, ptr};
 use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString, CFType, Type as _};
 use objc2_security::{
     AuthorizationCreate, AuthorizationFlags, AuthorizationFree, AuthorizationItem,
-    AuthorizationItemSet, AuthorizationRef,
+    AuthorizationItemSet, AuthorizationRef, errAuthorizationCanceled, errAuthorizationDenied,
+    errAuthorizationInteractionNotAllowed,
 };
 use objc2_system_configuration::{
-    SCNetworkService, SCNetworkSet, SCPreferences, kSCEntNetProxies,
-    kSCNetworkInterfaceTypeEthernet, kSCNetworkInterfaceTypeIEEE80211,
+    SCError, SCNetworkService, SCNetworkSet, SCPreferences, kSCEntNetProxies,
+    kSCNetworkInterfaceTypeEthernet, kSCNetworkInterfaceTypeIEEE80211, kSCStatusAccessError,
 };
 
 pub(super) struct Native;
@@ -212,8 +213,15 @@ impl Backend for Native {
                 authorization.0,
             )
         }
-        .context("cannot open authorized network preferences")?;
-        ensure!(prefs.lock(false), "cannot lock network preferences");
+        .ok_or_else(|| {
+            authorization_preferences_error("cannot open authorized network preferences", SCError())
+        })?;
+        if !prefs.lock(false) {
+            return Err(authorization_preferences_error(
+                "cannot lock network preferences",
+                SCError(),
+            ));
+        }
         let _lock = PreferencesLock(&prefs);
         ensure!(
             read_preferences(&prefs)? == *before,
@@ -241,6 +249,33 @@ impl Backend for Native {
         );
         Ok(())
     }
+}
+
+// Only used before staging or writing any changes: an access failure here
+// reliably means the caller can retry authorization without partial writes.
+fn authorization_preferences_error(operation: &'static str, code: i32) -> anyhow::Error {
+    if u32::try_from(code).ok() == Some(kSCStatusAccessError) {
+        AuthorizationRequired { code }.into()
+    } else {
+        anyhow::anyhow!("{operation} (SystemConfiguration code {code})")
+    }
+}
+
+fn check_authorization(code: i32) -> Result<()> {
+    if [
+        errAuthorizationDenied,
+        errAuthorizationCanceled,
+        errAuthorizationInteractionNotAllowed,
+    ]
+    .contains(&code)
+    {
+        return Err(AuthorizationRequired { code }.into());
+    }
+    ensure!(
+        code == 0,
+        "network configuration authorization failed ({code})"
+    );
+    Ok(())
 }
 
 struct PreferencesLock<'a>(&'a SCPreferences);
@@ -273,9 +308,10 @@ impl Authorization {
                 &raw mut authorization,
             )
         };
+        check_authorization(code)?;
         ensure!(
-            code == 0 && !authorization.is_null(),
-            "network configuration authorization failed ({code})"
+            !authorization.is_null(),
+            "network configuration authorization returned no reference"
         );
         Ok(Self(authorization))
     }
@@ -292,6 +328,35 @@ impl Drop for Authorization {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authorization_errors_are_not_confused_with_lock_contention() {
+        for code in [
+            errAuthorizationDenied,
+            errAuthorizationCanceled,
+            errAuthorizationInteractionNotAllowed,
+        ] {
+            let error = check_authorization(code).expect_err("authorization was not granted");
+            assert_eq!(
+                error
+                    .downcast_ref::<AuthorizationRequired>()
+                    .expect("typed authorization error")
+                    .code,
+                code
+            );
+        }
+        assert!(check_authorization(0).is_ok());
+        assert!(
+            !check_authorization(-60001)
+                .expect_err("invalid authorization reference")
+                .is::<AuthorizationRequired>()
+        );
+        let error = authorization_preferences_error("fixture lock", 1003);
+        assert!(error.is::<AuthorizationRequired>());
+        let error = authorization_preferences_error("fixture lock", 1006);
+        assert!(!error.is::<AuthorizationRequired>());
+        assert!(error.to_string().contains("SystemConfiguration code 1006"));
+    }
 
     #[test]
     fn preserves_unrelated_properties_and_disables_only_our_protocol() -> Result<()> {
