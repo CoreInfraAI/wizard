@@ -19,21 +19,27 @@ import { ErrorText } from "../components/ErrorText";
 
 type ModeOption<M extends string> = { mode: M; label: string };
 
-function routingModes(subscription: string): ModeOption<RoutingMode>[] {
+const currentModeLabels: Record<RoutingMode, string> = {
+  sub: "Подписка",
+  hub: "API-доступ",
+  disabled: "Без CoreInfra",
+};
+
+function routingModes(subscription: "Claude" | "Codex"): ModeOption<RoutingMode>[] {
   return [
-    { mode: "disabled", label: "Без CoreInfra" },
-    { mode: "hub", label: "CoreInfra Hub" },
-    { mode: "sub", label: `CoreInfra Hub — через вашу подписку ${subscription}` },
+    { mode: "disabled", label: "Без CoreInfra AI Hub" },
+    { mode: "hub", label: "CoreInfra AI Hub – API-доступ (оплата за использование)" },
+    { mode: "sub", label: `CoreInfra AI Hub – своя подписка ${subscription}` },
   ];
 }
 
 const hubModes: ModeOption<HubMode>[] = [
-  { mode: "disabled", label: "Без CoreInfra" },
-  { mode: "hub", label: "CoreInfra Hub" },
+  { mode: "disabled", label: "Без CoreInfra AI Hub" },
+  { mode: "hub", label: "CoreInfra AI Hub – API-доступ (оплата за использование)" },
 ];
 
 // Hub access shared by all pages. Token values are secrets: never log them.
-type Hub = HubTokensState & { signedIn: boolean };
+type Hub = HubTokensState & { signedIn: boolean; activeHubName?: string };
 
 // Names of Hub tokens created for agents, used for the default choice and the create option.
 // Keep in sync with `TokenAgent::token_name` in `crates/wizard-core/src/agents/mod.rs`.
@@ -112,7 +118,7 @@ function TokenField({ token, hub, disabled }: {
 }) {
   return (
     <Field>
-      <Label>Токен CoreInfra Hub</Label>
+      <Label>{hub.activeHubName ? `Токен из хаба ${hub.activeHubName}` : "Хаб не выбран"}</Label>
       <Listbox disabled={disabled || !hub.signedIn} value={token.selectedOption} by="key" placeholder="Выберите токен" onChange={token.choose} className="max-w-sm">
         {token.options.map((option) => (
           <ListboxOption key={option.key} value={option}>
@@ -121,7 +127,7 @@ function TokenField({ token, hub, disabled }: {
           </ListboxOption>
         ))}
       </Listbox>
-      {!hub.signedIn && <Description>Войдите в CoreInfra Hub для выбора ключа.</Description>}
+      {!hub.signedIn && <Description>Войдите в CoreInfra Hub для выбора токена.</Description>}
       {hub.status === "error" && (
         <ErrorMessage>
           {hub.error}{" "}
@@ -203,9 +209,8 @@ function Version({ detection }: { detection: AgentDetection<{ version: string | 
 }
 
 // Saved routing of an agent: rows of the page's description list.
-function RoutingRows({ modes, mode, agentToken, hub }: {
-  modes: ModeOption<string>[];
-  mode: string;
+function RoutingRows({ mode, agentToken, hub }: {
+  mode: RoutingMode;
   agentToken: string | null;
   hub: Hub;
 }) {
@@ -214,8 +219,7 @@ function RoutingRows({ modes, mode, agentToken, hub }: {
       <DescriptionTerm>Режим</DescriptionTerm>
       <DescriptionDetails>
         <Badge color={mode === "disabled" ? "zinc" : "green"}>
-          {modes.find((option) => option.mode === mode)?.label}
-          {mode !== "disabled" && " · активно"}
+          {currentModeLabels[mode]}
         </Badge>
       </DescriptionDetails>
       {mode !== "disabled" && agentToken !== null && (
@@ -261,7 +265,12 @@ export function AgentPage({ agents, page, proxy, account }: {
   const [error, setError] = useState<{ page: AgentId | null; message: string }>();
   const pageError = error?.page === page ? error.message : undefined;
   const isChangeInProgress = isPreparingPlan || preparedChange !== undefined;
-  const hub: Hub = { ...useHubTokens(account.account?.active_hub_id), signedIn: account.signedIn };
+  const activeHub = account.account?.profile?.hubs.find((item) => item.hub_id === account.account?.active_hub_id);
+  const hub: Hub = {
+    ...useHubTokens(account.account?.active_hub_id),
+    signedIn: account.signedIn,
+    activeHubName: activeHub?.display_name?.trim() || activeHub?.hub_name,
+  };
   const claudeDesktopToken = useTokenMenu("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
   const claudeInstall = useClaudeDesktopInstall();
 
@@ -325,13 +334,13 @@ export function AgentPage({ agents, page, proxy, account }: {
                 {chatGptProxyStopped && <ErrorText>Прокси для ChatGPT не запущен, нажмите «Применить».</ErrorText>}
               </DescriptionDetails>
               {codex.status === "found" && (
-                <RoutingRows modes={routingModes("ChatGPT")} mode={codex.data.routing_mode} agentToken={codex.data.token} hub={hub} />
+                <RoutingRows mode={codex.data.routing_mode} agentToken={codex.data.token} hub={hub} />
               )}
             </DescriptionList>
           )}
           {codex.status === "found" && signIn}
           {codex.status === "found" && (
-            <RoutingFieldset agent="codex" modes={routingModes("ChatGPT")} mode={codex.data.routing_mode}
+            <RoutingFieldset agent="codex" modes={routingModes("Codex")} mode={codex.data.routing_mode}
               toChange={(mode) => ({ CodexSetRouting: mode })} agentToken={codex.data.token} hub={hub}
               note="Настройка общая для ChatGPT и Codex." disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
@@ -348,7 +357,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             <DescriptionTerm>Версия</DescriptionTerm>
             <DescriptionDetails><Version detection={claude} /></DescriptionDetails>
             {claude.status === "found" && (
-              <RoutingRows modes={routingModes("Claude")} mode={claude.data.routing_mode} agentToken={claude.data.token} hub={hub} />
+              <RoutingRows mode={claude.data.routing_mode} agentToken={claude.data.token} hub={hub} />
             )}
           </DescriptionList>
           {claude.status === "found" && signIn}
@@ -373,7 +382,7 @@ export function AgentPage({ agents, page, proxy, account }: {
               <>
                 <DescriptionTerm>Прокси</DescriptionTerm>
                 <DescriptionDetails><ProxyStatus proxy={proxy} /></DescriptionDetails>
-                <RoutingRows modes={routingModes("Claude")} mode={desktop.data.routing_mode} agentToken={desktop.data.token} hub={hub} />
+                <RoutingRows mode={desktop.data.routing_mode} agentToken={desktop.data.token} hub={hub} />
               </>
             )}
           </DescriptionList>
@@ -381,7 +390,7 @@ export function AgentPage({ agents, page, proxy, account }: {
           {desktop.status === "found" && (
             <RoutingFieldset agent="claude_desktop" token={claudeDesktopToken} modes={routingModes("Claude")} mode={desktop.data.routing_mode}
               toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })} agentToken={desktop.data.token} hub={hub}
-              note="Для входа в аккаунт включите VPN и примените режим «Без CoreInfra» в Wizard."
+              note="Для входа в аккаунт включите VPN и примените режим «Без CoreInfra AI Hub» в Wizard."
               disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
           <Fieldset className="mt-10">
@@ -407,7 +416,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             <DescriptionTerm>Версия</DescriptionTerm>
             <DescriptionDetails><Version detection={detection} /></DescriptionDetails>
             {detection.status === "found" && (
-              <RoutingRows modes={hubModes} mode={detection.data.routing_mode} agentToken={detection.data.token} hub={hub} />
+              <RoutingRows mode={detection.data.routing_mode} agentToken={detection.data.token} hub={hub} />
             )}
           </DescriptionList>
           {detection.status === "found" && signIn}
