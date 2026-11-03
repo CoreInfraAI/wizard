@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    # Other branches are checked through pull requests, and release tags
-    # point at commits already checked on dev.
+    # Check the default branch and the optional development branch.
+    # Other branches are checked through pull requests.
     branches:
+      - master
       - dev
   pull_request:
 

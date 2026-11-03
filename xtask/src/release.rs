@@ -51,8 +51,9 @@ pub(crate) fn create(paths: &Paths, dev: bool) -> Result<()> {
             .as_str()
             .context("tauri.conf.json productName must be a string")?;
         let mut body = if dev {
+            let branch = required_env("GITHUB_REF_NAME")?;
             format!(
-                "Development build from commit `{commit}` on the `dev` branch.\n\n\
+                "Development build from commit `{commit}` on the `{branch}` branch.\n\n\
                  This prerelease may be unstable and is intended for testing only."
             )
         } else {
