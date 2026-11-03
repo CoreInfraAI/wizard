@@ -94,6 +94,8 @@ pub(crate) enum AgentChange {
 pub(crate) struct PreparedAgentChange {
     change: AgentChange,
     agent: &'static str,
+    // Resolved credential for explicit re-preparation; never repeat TokenChoice::Create.
+    token: Option<String>,
     plan: PreparedPlan,
     info: Vec<PreparedStepInfo>,
 }
@@ -157,6 +159,8 @@ pub(crate) async fn prepare_agent_change(
         String::new()
     };
 
+    let reprepare_token = (!token.is_empty()).then(|| token.clone());
+
     // Plans contain credentials: never log the returned value.
     let plan = tauri::async_runtime::spawn_blocking(move || match change {
         AgentChange::CodexSetRouting(mode) => {
@@ -181,6 +185,7 @@ pub(crate) async fn prepare_agent_change(
     Ok(PreparedAgentChange {
         change,
         agent,
+        token: reprepare_token,
         plan,
         info,
     })

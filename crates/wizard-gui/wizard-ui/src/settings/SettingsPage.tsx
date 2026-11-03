@@ -100,7 +100,7 @@ function SystemProxySettings() {
   return (
     <div className="mt-8 max-w-2xl">
       <SwitchField disabled={disabled}>
-        <Label>Системный прокси</Label>
+        <Label>Системный прокси (Для логина в аккаунты Anthropic и OpenAI)</Label>
         <Description>Wizard будет проксировать сайты OpenAI и Claude, остальной интернет будет работать как раньше.</Description>
         <Switch checked={checked} onChange={(enabled) => { void change(enabled); }} />
       </SwitchField>

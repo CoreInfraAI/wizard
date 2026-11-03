@@ -21,6 +21,8 @@ export type AgentId = "codex" | "claude" | "claude_desktop" | "pi" | "opencode";
 export type PreparedAgentChange = {
   change: AgentChange;
   agent: AgentId;
+  // Resolved credential for re-preparation, never a create request. Do not log or persist it.
+  token: string | null;
   plan: PreparedPlan;
   info: PreparedStepInfo[];
 };

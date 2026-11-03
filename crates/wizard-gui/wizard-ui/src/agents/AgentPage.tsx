@@ -246,7 +246,7 @@ function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boole
 
   return (
     <>
-      <Button outline disabled={disabled} onClick={() => setOpen(true)}>Резервные копии</Button>
+      <Button outline disabled={disabled} onClick={() => setOpen(true)}>Резервные копии настроек</Button>
       {open && <BackupDialog agent={agent} onClose={() => setOpen(false)} />}
     </>
   );
@@ -435,7 +435,7 @@ export function AgentPage({ agents, page, proxy, account }: {
     <>
       {/* Keyed so that drafts of one agent's form never carry over to another agent. */}
       <Fragment key={page}>{content}</Fragment>
-      {preparedChange && <PreparedPlanDialog prepared={preparedChange} onClose={() => setPreparedChange(undefined)} />}
+      {preparedChange && <PreparedPlanDialog prepared={preparedChange} onReprepared={setPreparedChange} onClose={() => setPreparedChange(undefined)} />}
     </>
   );
 }

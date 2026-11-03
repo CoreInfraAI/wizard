@@ -71,54 +71,54 @@ impl PreparedPlan {
                 },
                 PreparedStep::ChangeFile { change } => {
                     let action = match (&change.after, change.before()) {
-                        (FileSnapshot::Missing, _) => "Удалить файл",
-                        (_, FileSnapshot::Missing) => "Создать файл",
-                        _ => "Изменить файл",
+                        (FileSnapshot::Missing, _) => "Удалит файл",
+                        (_, FileSnapshot::Missing) => "Создаст файл",
+                        _ => "Изменит файл",
                     };
                     PreparedStepInfo {
                         description: format!("{action} {}", change.path().display()),
                     }
                 },
                 PreparedStep::PiApplyAuth { change, .. } => PreparedStepInfo {
-                    description: format!("Записать настройки доступа Pi в {}.", change.path().display()),
+                    description: format!("Запишет настройки доступа Pi в {}.", change.path().display()),
                 },
                 PreparedStep::PiInstallPlugin { .. } => PreparedStepInfo {
-                    description: "Установить последнюю версию плагина CoreInfra для Pi.".to_owned(),
+                    description: "Установит последнюю версию плагина CoreInfra для Pi.".to_owned(),
                 },
                 PreparedStep::PiRemovePlugin { .. } => PreparedStepInfo {
-                    description: "Удалить плагин CoreInfra из Pi.".to_owned(),
+                    description: "Удалит плагин CoreInfra из Pi.".to_owned(),
                 },
                 PreparedStep::OpenCodeInstallPlugin { .. } | PreparedStep::OpenCodeAddPlugin { .. } => PreparedStepInfo {
-                    description: "Установить последнюю версию плагина CoreInfra для OpenCode.".to_owned(),
+                    description: "Установит последнюю версию плагина CoreInfra для OpenCode.".to_owned(),
                 },
                 PreparedStep::OpenCodeVerifyPlugin { .. } => PreparedStepInfo {
-                    description: "Убедиться, что плагин CoreInfra добавлен в конфигурацию OpenCode.".to_owned(),
+                    description: "Убедится, что плагин CoreInfra добавлен в конфигурацию OpenCode.".to_owned(),
                 },
                 PreparedStep::OpenCodeSetCredential { .. } => PreparedStepInfo {
-                    description: "Сохранить ключ CoreInfra от Wizard в OpenCode и сделать его активным.".to_owned(),
+                    description: "Сохранит ключ CoreInfra от Wizard в OpenCode и сделает его активным.".to_owned(),
                 },
                 PreparedStep::OpenCodeReload { .. } => PreparedStepInfo {
-                    description: "Перезагрузить конфигурацию фоновой службы OpenCode, если она запущена.".to_owned(),
+                    description: "Перезагрузит конфигурацию фоновой службы OpenCode, если она запущена.".to_owned(),
                 },
                 PreparedStep::OpenCodeRemoveCredential { .. } => PreparedStepInfo {
-                    description: "Удалить ключ CoreInfra от Wizard из OpenCode. Другие ключи CoreInfra сохранятся.".to_owned(),
+                    description: "Удалит ключ CoreInfra от Wizard из OpenCode. Другие ключи CoreInfra сохранятся.".to_owned(),
                 },
                 PreparedStep::SetCodexProxyEnabled { enabled } => PreparedStepInfo {
                     description: if *enabled {
-                        "Включить локальный прокси ChatGPT в Wizard."
+                        "Включит локальный прокси ChatGPT в Wizard."
                     } else {
-                        "Выключить локальный прокси ChatGPT в Wizard."
+                        "Выключит локальный прокси ChatGPT в Wizard."
                     }.to_owned(),
                 },
                 PreparedStep::SetClaudeProxyEnabled { enabled } => PreparedStepInfo {
                     description: if *enabled {
-                        "Включить локальный прокси Claude Desktop в Wizard."
+                        "Включит локальный прокси Claude Desktop в Wizard."
                     } else {
-                        "Выключить локальный прокси Claude Desktop в Wizard."
+                        "Выключит локальный прокси Claude Desktop в Wizard."
                     }.to_owned(),
                 },
                 PreparedStep::CodexRestartDaemon { .. } => PreparedStepInfo {
-                    description: "Перезапустить фоновую службу Codex, если она запущена. Это может прервать текущую работу.".to_owned(),
+                    description: "Перезапустит фоновую службу Codex, если она запущена. Это может прервать текущую работу.".to_owned(),
                 },
             };
             info.push(item);

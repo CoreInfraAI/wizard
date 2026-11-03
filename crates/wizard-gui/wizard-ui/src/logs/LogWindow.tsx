@@ -31,7 +31,7 @@ export function LogWindow() {
           setResult((previous) => ({
             source,
             text: previous?.source === source ? previous.text : undefined,
-            error: `Не удалось прочитать журнал: ${String(cause)}`,
+            error: `Не удалось прочитать логи: ${String(cause)}`,
           }));
         }
       } finally {
@@ -55,8 +55,8 @@ export function LogWindow() {
     <main className="flex h-dvh flex-col gap-4 bg-zinc-100 p-6 dark:bg-zinc-950">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-4">
-          <Heading>Журнал</Heading>
-          <div role="group" aria-label="Источник журнала" className="flex gap-2">
+          <Heading>Логи</Heading>
+          <div role="group" aria-label="Источник логов" className="flex gap-2">
             {(["wizard", "proxy"] as const).map((value) => (
               <Button
                 key={value}
@@ -81,7 +81,7 @@ export function LogWindow() {
           </Button>
         </div>
       </div>
-      <Text>Последние 256 КиБ текущего файла {fileName}. {paused ? "Автообновление приостановлено." : "Обновляется раз в секунду."}</Text>
+      {paused && <Text>Автообновление приостановлено.</Text>}
       {error && <ErrorText>{error}</ErrorText>}
       <pre
         ref={output}
@@ -89,7 +89,7 @@ export function LogWindow() {
         aria-label={`Содержимое ${fileName}`}
         className="min-h-0 flex-1 overflow-auto rounded-lg border border-zinc-200 bg-white p-4 font-mono text-xs leading-5 break-words whitespace-pre-wrap text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100"
       >
-        {text === undefined ? "Загрузка…" : text || "Журнал пока пуст."}
+        {text === undefined ? "Загрузка…" : text || "Логи пока пусты."}
       </pre>
     </main>
   );

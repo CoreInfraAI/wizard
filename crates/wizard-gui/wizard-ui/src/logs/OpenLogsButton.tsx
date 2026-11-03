@@ -13,7 +13,7 @@ export function useOpenLogs() {
     try {
       await invoke("open_logs");
     } catch (cause: unknown) {
-      setError(`Не удалось открыть журнал: ${String(cause)}`);
+      setError(`Не удалось открыть логи: ${String(cause)}`);
     } finally {
       setPending(false);
     }
@@ -28,7 +28,7 @@ export function OpenLogsButton() {
   return (
     <div className="flex flex-col items-center gap-2">
       <Button plain type="button" disabled={pending} onClick={open}>
-        Открыть журнал
+        Открыть логи
       </Button>
       {error && <ErrorText>{error}</ErrorText>}
     </div>

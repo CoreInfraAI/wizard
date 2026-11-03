@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { type AgentId, type PreparedAgentChange, applyAgentPlan } from "./agents_state";
+import { type AgentId, type PreparedAgentChange, applyAgentPlan, prepareAgentChange } from "./agents_state";
 import { reportError } from "../logs/log";
 import { ErrorText } from "../components/ErrorText";
 import { Button } from "../components/catalyst/button";
@@ -14,17 +14,39 @@ const agentNames: Record<AgentId, string> = {
   claude_desktop: "Claude Desktop",
 };
 
-export function PreparedPlanDialog({ prepared, onClose }: {
+export function PreparedPlanDialog({ prepared, onReprepared, onClose }: {
   prepared: PreparedAgentChange;
+  onReprepared: (prepared: PreparedAgentChange) => void;
   onClose: () => void;
 }) {
   const { agent, info } = prepared;
   const hasChanges = info.length > 0;
   const [applying, setApplying] = useState(false);
+  const [repreparing, setRepreparing] = useState(false);
   const [error, setError] = useState<string>();
+  const busy = applying || repreparing;
+
+  async function reprepare() {
+    if (busy || !error) return;
+
+    setRepreparing(true);
+
+    try {
+      const token = prepared.token === null ? null : { kind: "existing" as const, token: prepared.token };
+      const next = await prepareAgentChange(prepared.change, token);
+      onReprepared(next);
+      setError(undefined);
+    } catch (cause: unknown) {
+      const message = "Не удалось пересоздать план";
+      reportError(message, cause);
+      setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}. Показан прежний план. Часть изменений могла быть применена.`);
+    } finally {
+      setRepreparing(false);
+    }
+  }
 
   async function apply() {
-    if (applying || !hasChanges) return;
+    if (busy || !hasChanges) return;
 
     setApplying(true);
     setError(undefined);
@@ -42,7 +64,7 @@ export function PreparedPlanDialog({ prepared, onClose }: {
   }
 
   return (
-    <Dialog open onClose={() => { if (!applying) onClose(); }}>
+    <Dialog open onClose={() => { if (!busy) onClose(); }}>
       <DialogTitle>План изменений: {agentNames[agent]}</DialogTitle>
       {hasChanges && (
         <DialogDescription>
@@ -64,10 +86,13 @@ export function PreparedPlanDialog({ prepared, onClose }: {
         {error && <div className="mt-4"><ErrorText>{error}</ErrorText></div>}
       </DialogBody>
       <DialogActions>
-        <Button plain disabled={applying} onClick={onClose}>
+        <Button plain disabled={busy} onClick={onClose}>
           {hasChanges ? "Отмена" : "Закрыть"}
         </Button>
-        {hasChanges && <Button disabled={applying} onClick={() => void apply()}>
+        {error && <Button outline disabled={busy} onClick={() => void reprepare()}>
+          {repreparing ? "Пересоздание…" : "Пересоздать"}
+        </Button>}
+        {hasChanges && <Button disabled={busy} onClick={() => void apply()}>
           {applying ? "Применение…" : "Применить"}
         </Button>}
       </DialogActions>
