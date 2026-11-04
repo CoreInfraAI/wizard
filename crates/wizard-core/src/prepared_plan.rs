@@ -120,6 +120,13 @@ impl PreparedPlan {
                 PreparedStep::CodexRestartDaemon { .. } => PreparedStepInfo {
                     description: "Перезапустит фоновую службу Codex, если она запущена. Это может прервать текущую работу.".to_owned(),
                 },
+                PreparedStep::SetChatGptUpdatesDisabled { disabled } => PreparedStepInfo {
+                    description: if *disabled {
+                        "Отключит встроенные обновления ChatGPT: Wizard добавит объект входа, который задаёт CODEX_SPARKLE_ENABLED=false. Подействует после перезапуска ChatGPT; обновляйте ChatGPT в Wizard."
+                    } else {
+                        "Включит встроенные обновления ChatGPT: Wizard удалит свой объект входа. Подействует после перезапуска ChatGPT."
+                    }.to_owned(),
+                },
             };
             info.push(item);
         }
@@ -285,6 +292,11 @@ pub enum PreparedStep {
         executable: PathBuf,
         codex_home: PathBuf,
     },
+    /// macOS: turns `ChatGPT`'s own updater off or back on for its next launch.
+    #[serde(rename = "set_chatgpt_updates_disabled")]
+    SetChatGptUpdatesDisabled {
+        disabled: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -329,6 +341,14 @@ impl PreparedStep {
                 executable,
                 codex_home,
             } => codex::restart_daemon(&executable, &codex_home),
+            #[cfg(target_os = "macos")]
+            Self::SetChatGptUpdatesDisabled { disabled } => {
+                crate::agents::chatgpt_updates::set_disabled(disabled)
+            }
+            #[cfg(not(target_os = "macos"))]
+            Self::SetChatGptUpdatesDisabled { .. } => {
+                anyhow::bail!("ChatGPT updates are managed this way only on macOS")
+            }
         }
     }
 }

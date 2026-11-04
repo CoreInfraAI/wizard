@@ -125,19 +125,29 @@ pub(super) fn detect_desktop(
 ) -> AgentDetection<AgentInfo> {
     #[cfg(target_os = "macos")]
     {
-        let (app_path, bundle_id) = match agent {
-            // The classic ChatGPT app (com.openai.chat) has the same name.
-            DesktopAgent::Codex => ("/Applications/ChatGPT.app", Some("com.openai.codex")),
-            DesktopAgent::Claude => (CLAUDE_APP_PATH, None),
+        let (app_paths, bundle_id): (&[&str], _) = match agent {
+            // ChatGPT Classic (com.openai.chat) has the same name. Copies installed before
+            // OpenAI renamed the application are still called Codex.
+            DesktopAgent::Codex => (
+                &["/Applications/ChatGPT.app", "/Applications/Codex.app"],
+                Some("com.openai.codex"),
+            ),
+            DesktopAgent::Claude => (&[CLAUDE_APP_PATH], None),
         };
-        let app_path = Path::new(app_path);
-        let app_name = app_path
-            .file_name()
-            .expect("desktop app path has a filename");
-        let mut candidates: Vec<PathBuf> = last_found.into_iter().map(Path::to_owned).collect();
-        candidates.push(app_path.to_owned());
-        if let Some(home) = env_var_not_empty("HOME") {
-            candidates.push(PathBuf::from(home).join("Applications").join(app_name));
+        // A saved path is always one of these candidates. Ignore it, so that an old Codex.app
+        // found once never shadows ChatGPT.app.
+        let _ = last_found;
+        let home = env_var_not_empty("HOME");
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        for app_path in app_paths {
+            let app_path = Path::new(app_path);
+            candidates.push(app_path.to_owned());
+            if let Some(home) = &home {
+                let app_name = app_path
+                    .file_name()
+                    .expect("desktop app path has a filename");
+                candidates.push(PathBuf::from(home).join("Applications").join(app_name));
+            }
         }
         for path in candidates {
             match std::fs::metadata(&path) {

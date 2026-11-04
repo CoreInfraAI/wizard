@@ -5,10 +5,12 @@ use wizard_settings::Settings;
 
 pub use crate::config_files::backups::{AgentKind as BackupAgent, Backup};
 
+#[cfg(target_os = "macos")]
+pub(crate) mod chatgpt_updates;
 pub mod claude;
 pub mod claude_desktop;
-pub mod claude_desktop_install;
 pub mod codex;
+pub mod desktop_install;
 mod detection;
 pub mod opencode;
 pub mod pi;

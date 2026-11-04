@@ -105,7 +105,13 @@ pub fn get_backups() -> Result<Vec<super::Backup>> {
 
 pub fn restore_backup(id: u32) -> Result<()> {
     let _guard = PreparedAgent::Codex.lock()?;
-    BackupManager::load_backup(AgentKind::Codex, id)
+    BackupManager::load_backup(AgentKind::Codex, id)?;
+    // Backups hold files only; the restored mode decides whether ChatGPT updates itself.
+    #[cfg(target_os = "macos")]
+    super::chatgpt_updates::reconcile(
+        mode_from_config(&config_files::toml::read(&config_path()?)?) == RoutingMode::Sub,
+    )?;
+    Ok(())
 }
 
 /// Call from a Tokio blocking worker. Restart only if the version probe finds a managed daemon.
@@ -217,17 +223,18 @@ pub fn prepare_routing(
     remove_inactive_routing_env(&mut dotenv.after, current_mode, mode)?;
     write_routing_env(&mut dotenv.after, mode, token)?;
 
-    Ok(PreparedPlan::new(
-        PreparedAgent::Codex,
-        vec![
-            PreparedStep::ChangeFile { change: config },
-            PreparedStep::ChangeFile { change: dotenv },
-            PreparedStep::CodexRestartDaemon {
-                executable: daemon_executable(settings)?,
-                codex_home,
-            },
-        ],
-    ))
+    let mut steps = vec![
+        PreparedStep::ChangeFile { change: config },
+        PreparedStep::ChangeFile { change: dotenv },
+    ];
+    // Like Claude Desktop in Sub mode, ChatGPT then updates only through Wizard.
+    #[cfg(target_os = "macos")]
+    steps.extend(super::chatgpt_updates::step(mode == RoutingMode::Sub)?);
+    steps.push(PreparedStep::CodexRestartDaemon {
+        executable: daemon_executable(settings)?,
+        codex_home,
+    });
+    Ok(PreparedPlan::new(PreparedAgent::Codex, steps))
 }
 
 /// Add GUI-owned proxy demand and `ChatGPT` profile configuration.
@@ -354,21 +361,42 @@ fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
     Ok(change)
 }
 
-/// Prefer the standalone CLI; only discover the desktop app when it is absent.
-fn daemon_executable(settings: &Settings) -> Result<PathBuf> {
+fn standalone_cli(settings: &Settings) -> Result<Option<PathBuf>> {
     #[cfg(target_os = "windows")]
     let extra = vec![PathBuf::from("%LOCALAPPDATA%/Programs/OpenAI/Codex/bin")];
     #[cfg(not(target_os = "windows"))]
     let extra = vec![];
-    if let Some(executable) = find_executable("codex", extra, settings.last_paths.codex.as_deref())?
-    {
+    find_executable("codex", extra, settings.last_paths.codex.as_deref())
+}
+
+/// Whether Wizard runs the Codex daemon from the CLI inside `ChatGPT`, because no standalone
+/// CLI exists. Replacing `ChatGPT` then leaves a running daemon on the old executable.
+pub fn uses_bundled_daemon(settings: &Settings) -> Result<bool> {
+    Ok(standalone_cli(settings)?.is_none())
+}
+
+/// After `ChatGPT` was replaced, restarts a running managed daemon from the CLI bundled with it.
+/// Does nothing with a standalone CLI. Call from a Tokio blocking worker; may interrupt work.
+pub fn restart_bundled_daemon(settings: &Settings) -> Result<()> {
+    let _guard = PreparedAgent::Codex.lock()?;
+    if !uses_bundled_daemon(settings)? {
+        return Ok(());
+    }
+    let codex_home = std::path::absolute(config_path()?)?
+        .parent()
+        .context("Codex config has no parent")?
+        .to_owned();
+    restart_daemon(&daemon_executable(settings)?, &codex_home)
+}
+
+/// Prefer the standalone CLI; only discover the desktop app when it is absent.
+fn daemon_executable(settings: &Settings) -> Result<PathBuf> {
+    if let Some(executable) = standalone_cli(settings)? {
         return Ok(executable);
     }
 
-    let desktop = match detection::detect_desktop(
-        DesktopAgent::Codex,
-        settings.last_paths.codex_desktop.as_deref(),
-    ) {
+    // Ignore the saved path: on Windows it names a version folder that an update leaves behind.
+    let desktop = match detection::detect_desktop(DesktopAgent::Codex, None) {
         AgentDetection::Found(desktop) => desktop.path,
         AgentDetection::NotFound => anyhow::bail!("Codex CLI and ChatGPT not found"),
         AgentDetection::Error(error) => {

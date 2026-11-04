@@ -2,7 +2,7 @@ import { Fragment, type ReactNode, useEffect, useState } from "react";
 import { type AgentChange, type AgentDetection, type AgentId, type AgentStates, type BackupAgent, type HubMode, type PreparedAgentChange, type RoutingMode, type TokenChoice, prepareAgentChange } from "./agents_state";
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
-import { ClaudeDesktopInstall, useClaudeDesktopInstall } from "./ClaudeDesktopInstall";
+import { DesktopInstall, useDesktopInstall } from "./DesktopInstall";
 import { type HubTokensState, refreshHubTokens, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
 import type { HubAccountControl } from "../settings/HubAccount";
 import { useProxy } from "./proxy";
@@ -272,7 +272,10 @@ export function AgentPage({ agents, page, proxy, account }: {
     activeHubName: activeHub?.display_name?.trim() || activeHub?.hub_name,
   };
   const claudeDesktopToken = useTokenMenu("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
-  const claudeInstall = useClaudeDesktopInstall();
+  const claudeInstall = useDesktopInstall("claude");
+  // ChatGPT downloads use the token of the shared ChatGPT / Codex routing.
+  const codexToken = useTokenMenu("codex", agents.codex.status === "found" ? agents.codex.data.token : null, hub);
+  const chatGptInstall = useDesktopInstall("chatgpt");
 
   async function prepare(change: AgentChange, token: TokenChoice | null) {
     if (isChangeInProgress) return;
@@ -315,8 +318,9 @@ export function AgentPage({ agents, page, proxy, account }: {
       break;
     case "codex": {
       const codex = agents.codex;
-      const chatGptProxyStopped = proxy.proxy?.enabled === false && codex.status === "found"
-        && codex.data.desktop.status === "found" && codex.data.routing_mode !== "disabled";
+      const chatGptFound = codex.status === "found" && codex.data.desktop.status === "found";
+      const chatGptProxyStopped = proxy.proxy?.enabled === false && chatGptFound
+        && codex.status === "found" && codex.data.routing_mode !== "disabled";
       content = (
         <>
           <PageHeading title="ChatGPT / Codex" actions={<BackupButton agent="codex" disabled={isChangeInProgress} />} />
@@ -338,11 +342,21 @@ export function AgentPage({ agents, page, proxy, account }: {
               )}
             </DescriptionList>
           )}
-          {codex.status === "found" && signIn}
+          {(codex.status === "found" || !chatGptInstall.hidden) && signIn}
           {codex.status === "found" && (
-            <RoutingFieldset agent="codex" modes={routingModes("Codex")} mode={codex.data.routing_mode}
+            <RoutingFieldset agent="codex" token={chatGptInstall.hidden ? undefined : codexToken} modes={routingModes("Codex")} mode={codex.data.routing_mode}
               toChange={(mode) => ({ CodexSetRouting: mode })} agentToken={codex.data.token} hub={hub}
               note="Настройка общая для ChatGPT и Codex." disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
+          )}
+          {!chatGptInstall.hidden && (
+            <Fieldset className="mt-10">
+              <Legend>{chatGptFound ? "Обновление ChatGPT" : "Установка ChatGPT"}</Legend>
+              <FieldGroup>
+                {codex.status !== "found" && <TokenField token={codexToken} hub={hub} disabled={isChangeInProgress} />}
+                <DesktopInstall observation={chatGptInstall} token={codexToken.selected} tokenReady={codexToken.ready}
+                  disabled={isChangeInProgress} installed={chatGptFound} />
+              </FieldGroup>
+            </Fieldset>
           )}
         </>
       );
@@ -397,7 +411,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             <Legend>{desktop.status === "found" ? "Обновление приложения" : "Установка приложения"}</Legend>
             <FieldGroup>
               {desktop.status !== "found" && <TokenField token={claudeDesktopToken} hub={hub} disabled={isChangeInProgress} />}
-              <ClaudeDesktopInstall observation={claudeInstall} token={claudeDesktopToken.selected} tokenReady={claudeDesktopToken.ready}
+              <DesktopInstall observation={claudeInstall} token={claudeDesktopToken.selected} tokenReady={claudeDesktopToken.ready}
                 disabled={isChangeInProgress} installed={desktop.status === "found"} />
             </FieldGroup>
           </Fieldset>

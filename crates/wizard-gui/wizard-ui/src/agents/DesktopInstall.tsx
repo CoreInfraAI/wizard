@@ -2,18 +2,31 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { type TokenChoice } from "./agents_state";
 import { Button } from "../components/catalyst/button";
+import { Checkbox, CheckboxField } from "../components/catalyst/checkbox";
+import { Label } from "../components/catalyst/fieldset";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 
+// Keep in sync with `DesktopApp` in `crates/wizard-core/src/agents/desktop_install/mod.rs`.
+export type DesktopApp = "claude" | "chatgpt";
+
+const names: Record<DesktopApp, { name: string; product: string }> = {
+  claude: { name: "Claude", product: "Claude Desktop" },
+  chatgpt: { name: "ChatGPT", product: "ChatGPT" },
+};
+
 type Operation = "check" | "download" | "install";
+type Release = { version: string; path: string | null; notes: string[]; confirmation: string | null };
 type Phase =
   | { status: "idle" | "checking" | "up_to_date" | "installing" }
-  | { status: "available" | "ready_to_install"; version: string; path: string | null }
+  | ({ status: "available" | "ready_to_install" } & Release)
   | { status: "downloading"; received: number; total: number }
-  | { status: "failed"; operation: Operation; message: string };
+  | { status: "installed"; version: string; notices: string[] }
+  | { status: "unsupported"; message: string }
+  | { status: "failed"; operation: Operation; message: string; confirmation: string | null };
 type Snapshot = Phase & { revision: number };
 
-export function useClaudeDesktopInstall() {
+export function useDesktopInstall(desktop: DesktopApp) {
   const [state, setState] = useState<Snapshot>();
   const [error, setError] = useState<string>();
   useEffect(() => {
@@ -22,14 +35,14 @@ export function useClaudeDesktopInstall() {
       let lastRevision: number | null = null;
       while (!stopped) {
         try {
-          const next: Snapshot = await invoke<Snapshot>("get_claude_desktop_install_state", { lastRevision });
+          const next: Snapshot = await invoke<Snapshot>("get_desktop_install_state", { desktop, lastRevision });
           if (stopped) return;
           setState(next);
           setError(undefined);
           lastRevision = next.revision;
         } catch {
           if (stopped) return;
-          setError("Не удалось получить состояние установки Claude");
+          setError(`Не удалось получить состояние установки ${names[desktop].name}`);
           lastRevision = null;
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
@@ -37,26 +50,37 @@ export function useClaudeDesktopInstall() {
     }
     void observe();
     return () => { stopped = true; };
-  }, []);
+  }, [desktop]);
 
   const busy = state?.status === "checking" || state?.status === "downloading" || state?.status === "installing";
-  return { state, error, busy };
+  // Hidden until the state loads, so that an unsupported application never flashes.
+  const hidden = state === undefined ? error === undefined : state.status === "unsupported";
+  return { desktop, state, error, busy, hidden };
 }
 
-export function ClaudeDesktopInstall({ observation, token, tokenReady, disabled, installed }: {
-  observation: ReturnType<typeof useClaudeDesktopInstall>;
+export function DesktopInstall({ observation, token, tokenReady, disabled, installed }: {
+  observation: ReturnType<typeof useDesktopInstall>;
   token: TokenChoice | undefined;
   tokenReady: boolean;
   disabled: boolean;
   installed: boolean;
 }) {
   const [error, setError] = useState<string>();
-  const { state, busy } = observation;
+  const [confirmed, setConfirmed] = useState(false);
+  const { desktop, state, busy } = observation;
+  const { name, product } = names[desktop];
+  const confirmation = state?.status === "ready_to_install" || state?.status === "failed" ? state.confirmation : null;
+  // A confirmation applies only to the release it was given for.
+  useEffect(() => {
+    if (confirmation === null) setConfirmed(false);
+  }, [confirmation]);
   if (!state) return observation.error ? <ErrorText>{observation.error}</ErrorText> : null;
+  if (state.status === "unsupported") return <Text>{state.message}</Text>;
 
   const retryInstall = state.status === "failed" && state.operation === "install";
   const blocked = disabled || busy || observation.error !== undefined;
   const networkBlocked = blocked || !tokenReady || !token;
+  const unconfirmed = confirmation !== null && !confirmed;
   const progress = state.status === "downloading" && state.total > 0
     ? Math.min(100, Math.floor(state.received / state.total * 100)) : undefined;
 
@@ -68,11 +92,11 @@ export function ClaudeDesktopInstall({ observation, token, tokenReady, disabled,
       break;
     case "available":
       operation = "download";
-      label = installed ? "Скачать обновление" : "Скачать Claude";
+      label = installed ? "Скачать обновление" : `Скачать ${name}`;
       break;
     case "ready_to_install":
       operation = "install";
-      label = installed ? "Установить обновление" : "Установить Claude";
+      label = installed ? "Установить обновление" : `Установить ${name}`;
       break;
     case "installing":
       operation = "install";
@@ -88,12 +112,13 @@ export function ClaudeDesktopInstall({ observation, token, tokenReady, disabled,
 
   async function request(operation: Operation) {
     if (blocked || (operation !== "install" && (!token || !tokenReady))) return;
+    if (operation === "install" && unconfirmed) return;
     setError(undefined);
     try {
       if (operation === "install") {
-        await invoke("install_claude_desktop_release");
+        await invoke("install_desktop_release", { desktop, confirmed: confirmation !== null && confirmed });
       } else {
-        await invoke(operation === "check" ? "check_claude_desktop_release" : "download_claude_desktop_release", { token });
+        await invoke(operation === "check" ? "check_desktop_release" : "download_desktop_release", { desktop, token });
       }
     } catch {
       // Never log IPC arguments: they carry the selected token for network operations.
@@ -101,6 +126,7 @@ export function ClaudeDesktopInstall({ observation, token, tokenReady, disabled,
     }
   }
 
+  const release = state.status === "available" || state.status === "ready_to_install" ? state : undefined;
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -111,10 +137,10 @@ export function ClaudeDesktopInstall({ observation, token, tokenReady, disabled,
                 style={{ width: `${progress ?? 0}%` }} />
               <span className="relative">Скачивание…</span>
             </Button>
-            <progress className="sr-only" aria-label="Скачивание Claude" max={100} value={progress} />
+            <progress className="sr-only" aria-label={`Скачивание ${name}`} max={100} value={progress} />
           </>
         ) : (
-          <Button outline disabled={operation === "install" ? blocked : networkBlocked}
+          <Button outline disabled={operation === "install" ? blocked || unconfirmed : networkBlocked}
             aria-busy={busy} onClick={() => void request(operation)}>
             {label}
           </Button>
@@ -132,13 +158,29 @@ export function ClaudeDesktopInstall({ observation, token, tokenReady, disabled,
         <Text>Версия {state.version} скачана и готова к установке.
           {state.path && <><br />Путь установки: <code className="break-all">{state.path}</code>.</>}</Text>
       )}
+      {release?.notes.map((note) => <Text key={note}>{note}</Text>)}
+      {state.status === "available" && state.confirmation !== null && (
+        <Text>{state.confirmation} — Wizard попросит подтвердить это перед установкой.</Text>
+      )}
       {state.status === "ready_to_install" && state.path === null && (
-        <Text>Система запросит права администратора для установки Claude.</Text>
+        <Text>Система запросит права администратора для установки {name}.</Text>
+      )}
+      {confirmation !== null && (state.status === "ready_to_install" || retryInstall) && (
+        <CheckboxField disabled={blocked}>
+          <Checkbox checked={confirmed} onChange={setConfirmed} />
+          <Label>{confirmation}</Label>
+        </CheckboxField>
       )}
       {installed && (state.status === "ready_to_install" || retryInstall) && (
-        <Text>Перед установкой полностью закройте Claude Desktop, включая значок в меню или трее. Приложение не будет запущено автоматически.</Text>
+        <Text>Перед установкой полностью закройте {product}, включая значок в меню или трее. Приложение не будет запущено автоматически.</Text>
       )}
       {state.status === "installing" && <Text>Не выходите из Wizard до завершения операции.</Text>}
+      {state.status === "installed" && (
+        <>
+          <Text>Версия {state.version} установлена.</Text>
+          {state.notices.map((notice) => <Text key={notice}>{notice}</Text>)}
+        </>
+      )}
       {state.status === "failed" && <ErrorText>{state.message}</ErrorText>}
       {observation.error && <ErrorText>{observation.error}</ErrorText>}
       {error && <ErrorText>{error}</ErrorText>}

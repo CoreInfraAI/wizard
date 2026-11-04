@@ -47,6 +47,17 @@ pub(crate) fn read_app_version(app: &Path) -> Result<Option<String>> {
     Ok(read_app_info(app)?.version)
 }
 
+/// Moves an item to the current user's Trash, like Finder, so that the user can restore it.
+pub(crate) fn move_to_trash(path: &Path) -> Result<()> {
+    use objc2_foundation::{NSFileManager, NSURL};
+
+    let path = path.to_str().context("path is not valid UTF-8")?;
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|error| anyhow::anyhow!("{}", error.localizedDescription()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
