@@ -92,6 +92,29 @@ fn has_hub_connection(config: &Value) -> bool {
             .is_some_and(|url| url.trim_end_matches('/') == HUB_URL)
 }
 
+/// Profiles are not backed up, so a mode must not replace the user's own proxy or connection.
+fn ensure_no_foreign_settings(config: &Value, mode: RoutingMode, proxy_url: &str) -> Result<()> {
+    if mode == RoutingMode::Disabled {
+        return Ok(());
+    }
+    let set = |key: &str| config.get(key).is_some_and(|value| !value.is_null());
+    ensure!(
+        !set("egressProxyPacUrl")
+            && (!set("egressProxyUrl") || config["egressProxyUrl"] == proxy_url),
+        "Remove the egress proxy from the selected Claude Desktop profile or select another profile: CoreInfra routing would replace it"
+    );
+    // Claude selects its own account with the "anthropic" provider, which Hub may replace.
+    let own_connection = !has_hub_connection(config)
+        && CONNECTION_KEYS
+            .iter()
+            .any(|key| set(key) && !(*key == "inferenceProvider" && config[key] == "anthropic"));
+    ensure!(
+        mode != RoutingMode::Hub || !own_connection,
+        "Remove the inference provider from the selected Claude Desktop profile or select another profile: CoreInfra Hub would replace it"
+    );
+    Ok(())
+}
+
 /// Reads the token owned by the active routing mode without exposing the full profile.
 pub fn configured_token() -> Result<Option<String>> {
     Ok(read_routing()?.1.map(AgentToken::into_secret))
@@ -146,6 +169,9 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     let mut config = FileChange::read(dir.join(format!("{id}.json")))?;
     let mut preferences = FileChange::read(dir.with_file_name("claude_desktop_config.json"))?;
 
+    let proxy_url = format!("http://{}", wizard_proxy::ADDRESS);
+    let current = json::parse(&config.after)?;
+    ensure_no_foreign_settings(&current, mode, &proxy_url)?;
     ensure!(
         selected.is_some() || config.before().content().is_none(),
         "new Claude Desktop profile already exists; prepare again"
@@ -171,9 +197,8 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
         })?;
     }
 
-    let proxy_url = format!("http://{}", wizard_proxy::ADDRESS);
     // Wizard points every profile it configures at its proxy.
-    let managed = json::parse(&config.after)?["egressProxyUrl"] == proxy_url;
+    let managed = current["egressProxyUrl"] == proxy_url;
     json::update(&mut config.after, |config| {
         // Remove only CoreInfra's connection; another gateway belongs to the user and is not
         // backed up. Claude ignores inference settings in the 1p mode that Sub selects.
@@ -234,4 +259,34 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
             },
         ],
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_proxy_and_connection_are_not_replaced() {
+        let proxy = "http://127.0.0.1:33787";
+        let check = |config: Value, mode| ensure_no_foreign_settings(&config, mode, proxy);
+        let modes = [RoutingMode::Hub, RoutingMode::Sub];
+
+        for mode in modes {
+            assert!(check(json!({}), mode).is_ok());
+            assert!(check(json!({"egressProxyUrl": proxy}), mode).is_ok());
+            assert!(check(json!({"egressProxyUrl": "http://corp:3128"}), mode).is_err());
+            assert!(check(json!({"egressProxyPacUrl": "http://corp/pac"}), mode).is_err());
+            // Claude's own account and CoreInfra's gateway may be replaced.
+            assert!(check(json!({"inferenceProvider": "anthropic"}), mode).is_ok());
+            let hub = json!({"inferenceProvider": "gateway", "inferenceGatewayBaseUrl": HUB_URL});
+            assert!(check(hub, mode).is_ok());
+        }
+        let gateway = json!({"inferenceProvider": "gateway", "inferenceGatewayApiKey": "user"});
+        assert!(check(gateway.clone(), RoutingMode::Hub).is_err());
+        // Sub leaves inference settings unchanged.
+        assert!(check(gateway, RoutingMode::Sub).is_ok());
+        assert!(check(json!({"inferenceProvider": "bedrock"}), RoutingMode::Hub).is_err());
+        let corp = json!({"egressProxyUrl": "http://corp:3128"});
+        assert!(check(corp, RoutingMode::Disabled).is_ok());
+    }
 }

@@ -11,7 +11,7 @@ use crate::{
     platform::env_var_not_empty,
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
 };
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::{
@@ -127,14 +127,21 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     let current_mode = mode_from_config(&config_files::json::parse(&settings.after)?);
     if !(mode == RoutingMode::Disabled && current_mode == RoutingMode::Disabled) {
         config_files::json::update(&mut settings.after, |settings| {
-            let env = settings
+            let settings = settings
                 .as_object_mut()
-                .context("Claude settings must be an object")?
+                .context("Claude settings must be an object")?;
+            // Subscription sign-in loses to it; with Hub, Claude sends it to CoreInfra too.
+            ensure!(
+                mode == RoutingMode::Disabled || !settings.contains_key("apiKeyHelper"),
+                "Remove apiKeyHelper from Claude Code settings.json: it overrides CoreInfra credentials"
+            );
+            let env = settings
                 .entry("env")
                 .or_insert_with(|| json!({}))
                 .as_object_mut()
                 .context("Claude env must be an object")?;
             remove_inactive_routing_settings(env, current_mode);
+            ensure_no_conflicting_credentials(env, mode)?;
             write_routing_settings(env, mode, token, &script_path)
         })?;
     }
@@ -191,6 +198,33 @@ fn remove_inactive_routing_settings(env: &mut Map<String, Value>, current_mode: 
     for key in previous_keys {
         env.shift_remove(*key);
     }
+}
+
+/// The user's own credentials are kept, but Claude Code prefers them to the ones a mode writes.
+fn ensure_no_conflicting_credentials(env: &Map<String, Value>, mode: RoutingMode) -> Result<()> {
+    // A cloud provider ignores ANTHROPIC_BASE_URL, so no request would reach CoreInfra.
+    let conflicts: &[&str] = match mode {
+        RoutingMode::Disabled => &[],
+        RoutingMode::Hub => &[
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ],
+        RoutingMode::Sub => &[
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ],
+    };
+    if let Some(key) = conflicts.iter().find(|key| env.contains_key(**key)) {
+        bail!(
+            "Remove {key} from the env section of Claude Code settings.json: it overrides CoreInfra credentials"
+        );
+    }
+    Ok(())
 }
 
 fn write_routing_settings(
@@ -279,4 +313,29 @@ fn approve_key(after: &mut FileSnapshot, suffix: &str) -> Result<()> {
         // Preserve old approvals and onboarding when switching away from Hub.
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_credentials_that_override_a_mode_are_rejected() {
+        let env = |key: &str| {
+            let mut env = Map::new();
+            env.insert(key.to_owned(), json!("user"));
+            env
+        };
+        let api_key = env("ANTHROPIC_API_KEY");
+        let auth_token = env("ANTHROPIC_AUTH_TOKEN");
+        assert!(ensure_no_conflicting_credentials(&api_key, RoutingMode::Sub).is_err());
+        // Hub replaces ANTHROPIC_API_KEY with its own.
+        assert!(ensure_no_conflicting_credentials(&api_key, RoutingMode::Hub).is_ok());
+        assert!(ensure_no_conflicting_credentials(&auth_token, RoutingMode::Hub).is_err());
+        assert!(ensure_no_conflicting_credentials(&auth_token, RoutingMode::Sub).is_err());
+        assert!(ensure_no_conflicting_credentials(&auth_token, RoutingMode::Disabled).is_ok());
+        let bedrock = env("CLAUDE_CODE_USE_BEDROCK");
+        assert!(ensure_no_conflicting_credentials(&bedrock, RoutingMode::Hub).is_err());
+        assert!(ensure_no_conflicting_credentials(&bedrock, RoutingMode::Sub).is_err());
+    }
 }
