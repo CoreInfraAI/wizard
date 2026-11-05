@@ -12,6 +12,13 @@ pub fn config_dir() -> Result<PathBuf> {
         .context("failed to resolve Wizard settings directory")
 }
 
+/// Data Wizard can recreate, which the system may delete. Does not create the directory.
+pub fn cache_dir() -> Result<PathBuf> {
+    dirs::cache_dir()
+        .map(|dir| dir.join(IDENTIFIER))
+        .context("failed to resolve Wizard cache directory")
+}
+
 pub fn settings_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))
 }

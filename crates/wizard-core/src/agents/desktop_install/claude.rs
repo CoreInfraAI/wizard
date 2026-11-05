@@ -426,19 +426,20 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 stage=$(mktemp -d /tmp/wizard-claude-install-XXXXXXXX) || exit 20
 trap 'rm -rf -- "$stage"' EXIT
-# Copy into root-owned storage before rechecking: the caller cannot replace this file.
-cp -- "$1" "$stage/package.deb" || exit 20
+# Copy stdin into root-owned storage before rechecking: the caller cannot replace this file, and
+# root may be unable to read the caller's cache (NFS root_squash, FUSE).
+cat > "$stage/package.deb" || exit 20
 actual=$(sha256sum "$stage/package.deb") || exit 20
-[ "${actual%% *}" = "$3" ] || exit 20
+[ "${actual%% *}" = "$2" ] || exit 20
 [ "$(dpkg-deb -f "$stage/package.deb" Package)" = claude-desktop ] || exit 12
-[ "$(dpkg-deb -f "$stage/package.deb" Version)" = "$2" ] || exit 13
+[ "$(dpkg-deb -f "$stage/package.deb" Version)" = "$1" ] || exit 13
 [ "$(dpkg-deb -f "$stage/package.deb" Architecture)" = "$(dpkg --print-architecture)" ] || exit 14
 for process in /proc/[0-9]*/exe; do
     executable=$(readlink "$process" 2>/dev/null || :)
     case "$executable" in /usr/lib/claude-desktop/*) exit 15 ;; esac
 done
 DEBIAN_FRONTEND=noninteractive apt-get --assume-yes --no-install-recommends --no-remove install "$stage/package.deb" || exit 16
-[ "$(dpkg-query -W -f='${Status} ${Version}' claude-desktop)" = "install ok installed $2" ] || exit 17
+[ "$(dpkg-query -W -f='${Status} ${Version}' claude-desktop)" = "install ok installed $1" ] || exit 17
 "#;
 
 #[cfg(target_os = "linux")]
@@ -463,8 +464,9 @@ pub(super) fn install_linux(archive: &Path, release: &Release, sha256: &str) -> 
         "Архитектура DEB не соответствует системе"
     );
     let status = Command::new("/usr/bin/pkexec").args(["--disable-internal-agent", "/bin/sh", "-c", LINUX_INSTALL, "wizard-claude-install"])
-        .arg(archive).arg(&version).arg(sha256)
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()
+        .arg(&version).arg(sha256)
+        .stdin(fs::File::open(archive).context("Не удалось открыть пакет DEB")?)
+        .stdout(Stdio::null()).stderr(Stdio::null()).status()
         .context("Не удалось запросить права администратора; необходим pkexec и графический агент Polkit")?;
     if status.success() {
         return Ok(());

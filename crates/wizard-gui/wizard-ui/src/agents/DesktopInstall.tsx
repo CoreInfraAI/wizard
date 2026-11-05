@@ -17,14 +17,20 @@ const names: Record<DesktopApp, { name: string; product: string }> = {
 
 type Operation = "check" | "download" | "install";
 type Release = { version: string; path: string | null; notes: string[]; confirmation: string | null };
+/** Bytes that a paused or interrupted download saved; downloading again continues from them. */
+type Saved = { received: number; total: number };
 type Phase =
   | { status: "idle" | "checking" | "up_to_date" | "installing" }
-  | ({ status: "available" | "ready_to_install" } & Release)
-  | { status: "downloading"; received: number; total: number }
+  | ({ status: "available"; saved: Saved | null } & Release)
+  | ({ status: "ready_to_install" } & Release)
+  // `total` is 0 until known.
+  | { status: "downloading"; received: number; total: number; reconnecting: boolean }
   | { status: "installed"; version: string; notices: string[] }
   | { status: "unsupported"; message: string }
   | { status: "failed"; operation: Operation; message: string; confirmation: string | null };
 type Snapshot = Phase & { revision: number };
+
+const megabytes = (bytes: number) => Math.floor(bytes / (1024 * 1024)).toLocaleString("ru-RU");
 
 export function useDesktopInstall(desktop: DesktopApp) {
   const [state, setState] = useState<Snapshot>();
@@ -92,7 +98,9 @@ export function DesktopInstall({ observation, token, tokenReady, disabled, insta
       break;
     case "available":
       operation = "download";
-      label = installed ? "Скачать обновление" : `Скачать ${name}`;
+      label = state.saved
+        ? `Продолжить скачивание (${megabytes(state.saved.received)} из ${megabytes(state.saved.total)} МБ)`
+        : installed ? "Скачать обновление" : `Скачать ${name}`;
       break;
     case "ready_to_install":
       operation = "install";
@@ -126,6 +134,15 @@ export function DesktopInstall({ observation, token, tokenReady, disabled, insta
     }
   }
 
+  async function pause() {
+    setError(undefined);
+    try {
+      await invoke("pause_desktop_download", { desktop });
+    } catch {
+      setError("Не удалось приостановить скачивание. Проверьте его состояние и повторите попытку.");
+    }
+  }
+
   const release = state.status === "available" || state.status === "ready_to_install" ? state : undefined;
   return (
     <div className="space-y-2">
@@ -138,6 +155,9 @@ export function DesktopInstall({ observation, token, tokenReady, disabled, insta
               <span className="relative">Скачивание…</span>
             </Button>
             <progress className="sr-only" aria-label={`Скачивание ${name}`} max={100} value={progress} />
+            <Button plain disabled={disabled || observation.error !== undefined} onClick={() => void pause()}>
+              Приостановить
+            </Button>
           </>
         ) : (
           <Button outline disabled={operation === "install" ? blocked || unconfirmed : networkBlocked}
@@ -149,6 +169,9 @@ export function DesktopInstall({ observation, token, tokenReady, disabled, insta
           <Button plain disabled={networkBlocked} onClick={() => void request("check")}>Проверить заново</Button>
         )}
       </div>
+      {state.status === "downloading" && (state.reconnecting
+        ? <Text>Соединение прервано. Переподключаемся, скачанное сохранено…</Text>
+        : state.total > 0 && <Text>Скачано {megabytes(state.received)} из {megabytes(state.total)} МБ.</Text>)}
       {state.status === "up_to_date" && <Text>Более новой доступной версии не найдено.</Text>}
       {state.status === "available" && (
         <Text>Доступна версия {state.version}.

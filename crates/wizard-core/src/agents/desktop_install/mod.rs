@@ -2,11 +2,16 @@
 
 mod chatgpt;
 mod claude;
+mod download;
+
+pub use download::{DownloadProgress, SavedDownload, download_release, saved_download};
 
 use super::TokenAgent;
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{app_is_running, read_app_version};
-use anyhow::{Context as _, Result, anyhow, bail, ensure};
+#[cfg(not(target_os = "windows"))]
+use anyhow::bail;
+use anyhow::{Context as _, Result, anyhow, ensure};
 use core::time::Duration;
 use reqwest::{Client, Url};
 use semver::Version;
@@ -17,9 +22,10 @@ use std::os::windows::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::{
     fs,
-    io::{Read as _, Write as _},
+    io::Read as _,
     path::{Path, PathBuf},
 };
+#[cfg(target_os = "macos")]
 use tempfile::TempDir;
 
 const MAX_DOWNLOAD: u64 = 2 * 1024 * 1024 * 1024;
@@ -230,7 +236,8 @@ impl Release {
 }
 
 pub struct DownloadedRelease {
-    directory: TempDir,
+    /// Saved download holding the archive, deleted once the release is installed.
+    directory: PathBuf,
     pub release: Release,
     /// SHA-256 of the verified download. Installation checks the file again against it.
     sha256: String,
@@ -333,76 +340,6 @@ fn download_url(text: &str, host: &str, prefix: &str, extension: &str) -> Result
         "Недопустимый адрес архива"
     );
     Ok(url)
-}
-
-/// Downloads and verifies the release archive. Failed verification discards it.
-pub async fn download_release(
-    release: Release,
-    token: &str,
-    mut progress: impl FnMut(u64, u64),
-) -> Result<DownloadedRelease> {
-    let name = release.target.app.name();
-    let directory = tempfile::Builder::new()
-        .prefix(&format!("wizard-{}-", name.to_ascii_lowercase()))
-        .tempdir()
-        .context("Не удалось создать временный каталог")?;
-    let mut file = fs::File::create(directory.path().join(DOWNLOAD_NAME))?;
-
-    let mut response = client(token)?
-        .get(release.url.clone())
-        .send()
-        .await
-        .map_err(|_| {
-            anyhow!("Не удалось скачать {name} через прокси; проверьте токен и соединение")
-        })?;
-    ensure!(
-        response.status().is_success(),
-        "Сервер загрузки вернул HTTP {}",
-        response.status().as_u16()
-    );
-
-    let size = match release.size {
-        Some(size) => size,
-        None => response
-            .content_length()
-            .context("Сервер загрузки не сообщил размер архива")?,
-    };
-    ensure!(
-        (1..=MAX_DOWNLOAD).contains(&size),
-        "Недопустимый размер архива"
-    );
-    if let Some(length) = response.content_length() {
-        ensure!(length == size, "Размер архива не совпадает с заявленным");
-    }
-
-    let mut verifier = ArchiveVerifier::new(&release.integrity, name)?;
-    let mut received = 0;
-    let mut published = 0;
-    progress(0, size);
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| anyhow!("Загрузка {name} прервана"))?
-    {
-        received += chunk.len() as u64;
-        ensure!(received <= size, "Размер архива превышает заявленный");
-        file.write_all(&chunk)
-            .context("Не удалось записать архив")?;
-        verifier.update(&chunk);
-        if received - published >= 1024 * 1024 || received == size {
-            progress(received, size);
-            published = received;
-        }
-    }
-    ensure!(received == size, "Архив загружен не полностью");
-    file.sync_all().context("Не удалось записать архив")?;
-
-    let sha256 = verifier.finish(&release.integrity, name)?;
-    Ok(DownloadedRelease {
-        directory,
-        release,
-        sha256,
-    })
 }
 
 /// Hashes an archive as it streams in and checks it against the feed.
@@ -744,8 +681,16 @@ try {
 }
 "#;
 
+/// `verified`: the download was checked against the feed, not only against the package's own
+/// signature.
 #[cfg(target_os = "windows")]
-fn install_windows(spec: &AppSpec, archive: &Path, version: &Version, sha256: &str) -> Result<()> {
+fn install_windows(
+    spec: &AppSpec,
+    archive: &Path,
+    version: &Version,
+    sha256: &str,
+    verified: bool,
+) -> Result<()> {
     let name = spec.name;
     ensure!(
         version.pre.is_empty()
@@ -797,6 +742,7 @@ $package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         .env("WIZARD_DESKTOP_PACKAGE", &package),
         "preflight",
         None,
+        verified,
     )?;
     let elevated = windows_install_script(
         "$package = $packageJson | ConvertFrom-Json\n$install = $true",
@@ -811,6 +757,7 @@ $package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         .env("WIZARD_DESKTOP_PACKAGE", &package),
         "elevation",
         diagnostic_path.as_deref(),
+        verified,
     )
 }
 
@@ -820,6 +767,7 @@ fn run_windows_install(
     command: &mut Command,
     stage: &'static str,
     diagnostic_path: Option<&Path>,
+    verified: bool,
 ) -> Result<()> {
     let name = spec.name;
     log::info!("{name} MSIX {stage} started");
@@ -897,7 +845,14 @@ fn run_windows_install(
         _ => "Windows не удалось установить MSIX. Проверьте зависимости пакета и ограничения системы. Пакет сохранён для повторной попытки".to_owned(),
     };
     log::error!("{name} MSIX {stage}: {message}");
-    bail!("{message}")
+    let error = anyhow!(message);
+    match output.status.code() {
+        // The archive changed after verification, or a package that the feed could not verify
+        // fails its own signature check.
+        Some(20) => Err(rejected(&error)),
+        Some(10 | 11) if !verified => Err(rejected(&error)),
+        _ => Err(error),
+    }
 }
 
 fn archive_sha256(path: &Path) -> Result<String> {
@@ -916,8 +871,31 @@ fn archive_sha256(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+/// The archive is not the one verified after downloading, so retrying cannot install it.
+/// Installation deletes it; the release must be downloaded again.
+#[derive(Debug)]
+struct RejectedArchive(String);
+
+impl core::fmt::Display for RejectedArchive {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{}. Архив удалён; скачайте его заново", self.0)
+    }
+}
+
+impl core::error::Error for RejectedArchive {}
+
+fn rejected(error: &anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(RejectedArchive(format!("{error:#}")))
+}
+
+/// Whether installation failed and deleted the archive, which must be downloaded again.
+#[must_use]
+pub fn archive_rejected(error: &anyhow::Error) -> bool {
+    error.is::<RejectedArchive>()
+}
+
 /// Installs a downloaded release. `confirmed` approves the release's `confirmation`.
-/// The archive stays for a retry when installation fails.
+/// The archive stays for a retry when installation fails, unless the archive itself is at fault.
 pub fn install_release(download: &DownloadedRelease, confirmed: bool) -> Result<Installed> {
     let product = download.release.target.app.product();
     log::info!(
@@ -926,24 +904,38 @@ pub fn install_release(download: &DownloadedRelease, confirmed: bool) -> Result<
     );
     let result = install_release_inner(download, confirmed);
     match &result {
-        Ok(_) => log::info!(
-            "{product} installation completed: version {}",
-            download.release.version
-        ),
-        Err(error) => log::error!(
-            "{product} installation failed: version {}: {error:#}",
-            download.release.version
-        ),
+        Ok(_) => {
+            log::info!(
+                "{product} installation completed: version {}",
+                download.release.version
+            );
+            download::discard(&download.directory);
+        }
+        Err(error) => {
+            log::error!(
+                "{product} installation failed: version {}: {error:#}",
+                download.release.version
+            );
+            if archive_rejected(error) {
+                download::discard(&download.directory);
+            }
+        }
     }
     result
 }
 
 fn install_release_inner(download: &DownloadedRelease, confirmed: bool) -> Result<Installed> {
-    let archive = download.directory.path().join(DOWNLOAD_NAME);
-    ensure!(
-        archive_sha256(&archive)? == download.sha256,
-        "SHA-256 архива не совпадает"
-    );
+    let archive = download.directory.join(DOWNLOAD_NAME);
+    // Other read failures may pass, so they keep the archive.
+    let sha256 = archive_sha256(&archive).map_err(|error| {
+        let missing = error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        if missing { rejected(&error) } else { error }
+    })?;
+    if sha256 != download.sha256 {
+        return Err(rejected(&anyhow!("SHA-256 архива не совпадает")));
+    }
 
     #[cfg(target_os = "macos")]
     let mut notices = install_macos(download, confirmed)?;
@@ -961,6 +953,7 @@ fn install_release_inner(download: &DownloadedRelease, confirmed: bool) -> Resul
         &archive,
         &download.release.version,
         &download.sha256,
+        !matches!(download.release.integrity, Integrity::PackageSignature),
     )?;
     #[cfg(target_os = "linux")]
     match download.release.target.app {
@@ -992,10 +985,10 @@ fn install_macos(download: &DownloadedRelease, confirmed: bool) -> Result<Vec<St
         directory, release, ..
     } = download;
     let spec = release.target.app.spec();
-    let archive = directory.path().join(DOWNLOAD_NAME);
+    let archive = directory.join(DOWNLOAD_NAME);
     let extracted = tempfile::Builder::new()
         .prefix("extracted-")
-        .tempdir_in(directory.path())
+        .tempdir_in(directory)
         .context("Не удалось создать каталог распаковки")?;
     command_output(
         Command::new("/usr/bin/tar")
@@ -1213,7 +1206,7 @@ mod tests {
         release.target.path = Some(directory.path().join("destination.app"));
         let download = DownloadedRelease {
             sha256: archive_sha256(&archive).unwrap(),
-            directory,
+            directory: directory.path().to_owned(),
             release,
         };
 
@@ -1230,7 +1223,7 @@ mod tests {
                 }
             );
             assert_eq!(fs::read(&archive).unwrap(), b"invalid zip");
-            assert_eq!(fs::read_dir(download.directory.path()).unwrap().count(), 1);
+            assert_eq!(fs::read_dir(&download.directory).unwrap().count(), 1);
         }
     }
 
@@ -1281,29 +1274,35 @@ mod tests {
     }
 
     #[test]
-    fn archive_failures_are_logged_before_native_installation() {
-        let directory = tempfile::tempdir().unwrap();
-        let archive = directory.path().join(DOWNLOAD_NAME);
-        fs::write(&archive, b"invalid archive").unwrap();
+    fn changed_archives_are_logged_and_deleted_before_native_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("claude");
+        let archive = directory.join(DOWNLOAD_NAME);
         let release = claude::parse_release(&serde_json::to_vec(&feed()).unwrap(), target(None))
             .unwrap()
             .unwrap();
         let download = DownloadedRelease {
-            directory,
+            directory: directory.clone(),
             release,
             sha256: "a".repeat(64),
         };
 
+        fs::create_dir(&directory).unwrap();
+        fs::write(&archive, b"invalid archive").unwrap();
         let (result, logs) = capture_logs(|| install_release(&download, false));
-        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(archive_rejected(&error));
+        assert_eq!(
+            error.to_string(),
+            "SHA-256 архива не совпадает. Архив удалён; скачайте его заново"
+        );
         assert!(logs.contains("ERROR Claude Desktop installation failed: version 3.2.1"));
         assert!(logs.contains("SHA-256 архива не совпадает"));
         assert!(!logs.contains("installation completed"));
-        assert!(archive.exists());
+        assert!(!directory.exists());
 
-        fs::remove_file(&archive).unwrap();
         let (result, logs) = capture_logs(|| install_release(&download, false));
-        assert!(result.is_err());
+        assert!(archive_rejected(&result.unwrap_err()));
         assert!(logs.contains("ERROR Claude Desktop installation failed"));
         assert!(logs.contains("Не удалось открыть архив для проверки SHA-256"));
     }
@@ -1330,6 +1329,7 @@ mod tests {
                     powershell(script).env("WIZARD_TEST_DIAGNOSTIC", path),
                     stage,
                     (stage == "elevation").then_some(path),
+                    true,
                 )
             });
             assert!(result.is_err());
@@ -1344,6 +1344,7 @@ mod tests {
                 &mut Command::new(directory.path().join("missing-powershell.exe")),
                 "preflight",
                 None,
+                true,
             )
         });
         assert!(result.is_err());
@@ -1471,6 +1472,7 @@ function Get-CimInstance {
                     powershell(&script).env("WIZARD_TEST_DIAGNOSTIC", &path),
                     "elevation",
                     Some(&path),
+                    true,
                 )
             });
             assert!(result.is_err());
