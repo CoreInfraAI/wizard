@@ -183,7 +183,9 @@ impl PreparedPlan {
                 .iter()
                 // Only changed files: restoring an untouched file would roll back unrelated edits.
                 .filter_map(|step| match step {
-                    PreparedStep::ChangeFile { change } if change.is_changed() => {
+                    PreparedStep::ChangeFile { change }
+                        if change.is_changed() && agent.backs_up(change.path()) =>
+                    {
                         Some(change.clone())
                     }
                     _ => None,

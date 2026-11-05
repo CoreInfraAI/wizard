@@ -285,8 +285,9 @@ pub(crate) async fn apply_direct_change(
 
     let result = match change {
         DirectChange::RestoreBackup { agent, id } => {
+            let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
             let result = tauri::async_runtime::spawn_blocking(move || match agent {
-                BackupAgent::Codex => codex::restore_backup(id),
+                BackupAgent::Codex => codex::restore_backup(id, &settings),
                 BackupAgent::Claude => claude::restore_backup(id),
             })
             .await

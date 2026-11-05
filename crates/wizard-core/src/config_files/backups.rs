@@ -6,7 +6,10 @@ use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 #[cfg(unix)]
 use std::{fs::Permissions, os::unix::fs::PermissionsExt as _};
 
@@ -21,6 +24,19 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
+    /// Only the agent's own configuration files. Wizard also edits app-owned state in place
+    /// (`~/.claude.json`, `ChatGPT`'s Preferences): their apps rewrite it constantly, and a
+    /// restore would roll back unrelated state such as MCP servers or a proxy Wizard removed.
+    pub(crate) fn backs_up(self, path: &Path) -> bool {
+        let names: &[&str] = match self {
+            Self::Codex => &["config.toml", ".env"],
+            Self::Claude => &["settings.json", "no-proxy.sh"],
+        };
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| names.contains(&name))
+    }
+
     fn directory(self) -> Result<PathBuf> {
         let name = match self {
             Self::Codex => "codex",
@@ -113,7 +129,8 @@ impl BackupManager {
         let backup = Backup::load(agent, id)?;
 
         let mut changes = Vec::with_capacity(backup.files.len());
-        for (path, snapshot) in &backup.files {
+        // Older backups may also hold app-owned state files.
+        for (path, snapshot) in backup.files.iter().filter(|(path, _)| agent.backs_up(path)) {
             let mut change = FileChange::read(path.clone())?;
             change.after = snapshot.clone();
             changes.push(change);
@@ -272,4 +289,20 @@ fn compare<A: PartialEq, B: PartialEq>(
     };
     let current_iter = current.iter().map(|(&k, &v)| (k, v));
     last.iter().eq(current_iter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentKind;
+    use std::path::Path;
+
+    #[test]
+    fn backups_cover_only_agent_configuration() {
+        assert!(AgentKind::Codex.backs_up(Path::new("/home/.codex/config.toml")));
+        assert!(AgentKind::Codex.backs_up(Path::new("/home/.codex/.env")));
+        assert!(!AgentKind::Codex.backs_up(Path::new("/config/Codex/Default/Preferences")));
+        assert!(AgentKind::Claude.backs_up(Path::new("/home/.claude/settings.json")));
+        assert!(AgentKind::Claude.backs_up(Path::new("/home/.claude/no-proxy.sh")));
+        assert!(!AgentKind::Claude.backs_up(Path::new("/home/.claude.json")));
+    }
 }

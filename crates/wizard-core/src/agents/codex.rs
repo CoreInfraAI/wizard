@@ -103,14 +103,24 @@ pub fn get_backups() -> Result<Vec<super::Backup>> {
     BackupManager::get_backups(AgentKind::Codex)
 }
 
-pub fn restore_backup(id: u32) -> Result<()> {
+/// Call from a Tokio blocking worker. Like a plan, restarts a running managed daemon,
+/// which may interrupt work.
+pub fn restore_backup(id: u32, settings: &Settings) -> Result<()> {
     let _guard = PreparedAgent::Codex.lock()?;
     BackupManager::load_backup(AgentKind::Codex, id)?;
+    let path = std::path::absolute(config_path()?)?;
     // Backups hold files only; the restored mode decides whether ChatGPT updates itself.
     #[cfg(target_os = "macos")]
     super::chatgpt_updates::reconcile(
-        mode_from_config(&config_files::toml::read(&config_path()?)?) == RoutingMode::Sub,
+        mode_from_config(&config_files::toml::read(&path)?) == RoutingMode::Sub,
     )?;
+    // A running daemon keeps the environment it started with.
+    if let Some(executable) = daemon_executable(settings)? {
+        restart_daemon(
+            &executable,
+            path.parent().context("Codex config has no parent")?,
+        )?;
+    }
     Ok(())
 }
 
@@ -230,10 +240,13 @@ pub fn prepare_routing(
     // Like Claude Desktop in Sub mode, ChatGPT then updates only through Wizard.
     #[cfg(target_os = "macos")]
     steps.extend(super::chatgpt_updates::step(mode == RoutingMode::Sub)?);
-    steps.push(PreparedStep::CodexRestartDaemon {
-        executable: daemon_executable(settings)?,
-        codex_home,
-    });
+    // Without the CLI and ChatGPT there is no daemon, and disabling must still work.
+    if let Some(executable) = daemon_executable(settings)? {
+        steps.push(PreparedStep::CodexRestartDaemon {
+            executable,
+            codex_home,
+        });
+    }
     Ok(PreparedPlan::new(PreparedAgent::Codex, steps))
 }
 
@@ -386,19 +399,23 @@ pub fn restart_bundled_daemon(settings: &Settings) -> Result<()> {
         .parent()
         .context("Codex config has no parent")?
         .to_owned();
-    restart_daemon(&daemon_executable(settings)?, &codex_home)
+    match daemon_executable(settings)? {
+        Some(executable) => restart_daemon(&executable, &codex_home),
+        None => Ok(()),
+    }
 }
 
 /// Prefer the standalone CLI; only discover the desktop app when it is absent.
-fn daemon_executable(settings: &Settings) -> Result<PathBuf> {
+/// `None` when neither is installed.
+fn daemon_executable(settings: &Settings) -> Result<Option<PathBuf>> {
     if let Some(executable) = standalone_cli(settings)? {
-        return Ok(executable);
+        return Ok(Some(executable));
     }
 
     // Ignore the saved path: on Windows it names a version folder that an update leaves behind.
     let desktop = match detection::detect_desktop(DesktopAgent::Codex, None) {
         AgentDetection::Found(desktop) => desktop.path,
-        AgentDetection::NotFound => anyhow::bail!("Codex CLI and ChatGPT not found"),
+        AgentDetection::NotFound => return Ok(None),
         AgentDetection::Error(error) => {
             anyhow::bail!("failed to find ChatGPT for daemon restart: {error}")
         }
@@ -423,7 +440,9 @@ fn daemon_executable(settings: &Settings) -> Result<PathBuf> {
     for relative in candidates {
         let path = resources.join(relative);
         if is_executable(&path) {
-            return std::path::absolute(path).context("failed to resolve bundled Codex executable");
+            return std::path::absolute(path)
+                .map(Some)
+                .context("failed to resolve bundled Codex executable");
         }
     }
     anyhow::bail!(

@@ -61,6 +61,7 @@ export function BackupDialog({ agent, onClose }: {
       <DialogTitle>Резервные копии настроек {agent === "codex" ? "Codex" : "Claude Code"}</DialogTitle>
       <DialogDescription>
         Сохранённые конфигурации перед изменениями Wizard. Это не история каждого переключения режима.
+        {agent === "codex" && " Если фоновая служба Codex запущена, Wizard перезапустит её после восстановления. Это может прервать текущую работу."}
       </DialogDescription>
       <DialogBody className="space-y-3">
         {backups ? (
