@@ -100,45 +100,11 @@ pub fn run_application() -> Result<()> {
         .manage(revision_signal::RevisionSignal::new(
             agents::AgentRevisionState,
         ))
+        // Tauri panics on a setup error, and panic=abort keeps that out of the log.
         .setup(move |app| {
-            log::info!("----------");
-            log::info!("starting CoreInfra Wizard {}", app.package_info().version);
-            let first_run =
-                tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
-            hub_auth::initialize(app.handle());
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            let tray_enabled = {
-                app.manage(tray::TrayState::default());
-                let preferences = settings::get_state(app.handle())?.application;
-                autostart::initialize(app.handle())?;
-                let autostart = autostart::set_enabled(app.handle(), preferences.autostart_enabled);
-
-                app.on_menu_event(|app, event| tray::on_menu_event(app, &event));
-                let tray = tray::set_enabled(app.handle(), preferences.tray_enabled);
-                autostart.and(tray)?;
-                tray::is_enabled(app.handle())
-            };
-            #[cfg(target_os = "linux")]
-            let tray_enabled = false;
-
-            if let Err(error) = tauri::async_runtime::block_on(async {
-                proxy::prepare_token(app.handle()).await?;
-                wizard_proxy_daemon::create_daemon().await?;
-                proxy::sync(app.handle()).await
-            }) {
-                log::error!("proxy startup failed: {error:#}");
-            }
-            // Proxy startup can briefly interrupt the system proxy used by Hub requests.
-            hub_tokens::HubTokensManager::start_loading(app.handle())?;
-            proxy::start_observer(app.handle());
-
-            system_proxy::start(app.handle());
-            if !minimized || !tray_enabled {
-                request_main_window(app.handle());
-            }
-            updater::start(app.handle().clone(), first_run)?;
-            desktop_install::start_background_checks(app.handle().clone());
-            Ok(())
+            setup(app, minimized).inspect_err(|error| {
+                log::error!("application setup failed: {error:#}");
+            })
         })
         .invoke_handler(tauri::generate_handler![
             desktop_install::get_desktop_install_state,
@@ -191,6 +157,50 @@ pub fn run_application() -> Result<()> {
         }
         _ => {}
     });
+    Ok(())
+}
+
+fn setup(app: &mut tauri::App, minimized: bool) -> Result<(), Box<dyn core::error::Error>> {
+    log::info!("----------");
+    log::info!("starting CoreInfra Wizard {}", app.package_info().version);
+    let first_run = tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
+    hub_auth::initialize(app.handle());
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let tray_enabled = {
+        app.manage(tray::TrayState::default());
+        let preferences = settings::get_state(app.handle())?.application;
+        autostart::initialize(app.handle())?;
+        // A failed OS effect must not keep the app, and its settings, from opening.
+        if let Err(error) = autostart::set_enabled(app.handle(), preferences.autostart_enabled) {
+            log::error!("autostart setup failed: {error:#}");
+        }
+
+        app.on_menu_event(|app, event| tray::on_menu_event(app, &event));
+        if let Err(error) = tray::set_enabled(app.handle(), preferences.tray_enabled) {
+            log::error!("tray setup failed: {error:#}");
+        }
+        tray::is_enabled(app.handle())
+    };
+    #[cfg(target_os = "linux")]
+    let tray_enabled = false;
+
+    if let Err(error) = tauri::async_runtime::block_on(async {
+        proxy::prepare_token(app.handle()).await?;
+        wizard_proxy_daemon::create_daemon().await?;
+        proxy::sync(app.handle()).await
+    }) {
+        log::error!("proxy startup failed: {error:#}");
+    }
+    // Proxy startup can briefly interrupt the system proxy used by Hub requests.
+    hub_tokens::HubTokensManager::start_loading(app.handle())?;
+    proxy::start_observer(app.handle());
+
+    system_proxy::start(app.handle());
+    if !minimized || !tray_enabled {
+        request_main_window(app.handle());
+    }
+    updater::start(app.handle().clone(), first_run)?;
+    desktop_install::start_background_checks(app.handle().clone());
     Ok(())
 }
 

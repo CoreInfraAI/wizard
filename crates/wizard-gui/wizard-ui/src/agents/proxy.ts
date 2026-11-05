@@ -14,19 +14,24 @@ export function useProxy(): { proxy: Proxy | undefined; error: string | undefine
 
     async function observe() {
       let lastRevision: number | null = null;
+      let reported: string | undefined;
       while (!stopped) {
         try {
           const next: ProxySnapshot = await invoke<ProxySnapshot>("get_proxy_state", { lastRevision });
           if (stopped) return;
           setProxy(next);
           setError(undefined);
+          reported = undefined;
           lastRevision = next.revision;
         } catch (cause: unknown) {
           if (stopped) return;
           const message = "Не удалось получить состояние прокси";
-          reportError(message, cause);
+          const detail = `${message}: ${cause instanceof Error ? cause.message : String(cause)}`;
+          // Retried every second: log a new error once, not every attempt.
+          if (detail !== reported) reportError(message, cause);
+          reported = detail;
           setProxy(undefined);
-          setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}`);
+          setError(detail);
           lastRevision = null;
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }

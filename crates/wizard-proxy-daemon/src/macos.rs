@@ -56,11 +56,39 @@ pub async fn start_daemon() -> io::Result<()> {
         )
     })??;
     if !status.success() {
+        // The user may have turned Wizard off in Login Items after registration.
+        if service_status() == Some(SMAppServiceStatus::RequiresApproval) {
+            return Err(approval_required());
+        }
         return Err(io::Error::other(
             "launchd rejected the proxy service start request",
         ));
     }
     Ok(())
+}
+
+fn approval_required() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "proxy service requires approval in System Settings > General > Login Items",
+    )
+}
+
+#[expect(
+    unsafe_code,
+    reason = "read the bundled LaunchAgent's SMAppService status"
+)]
+fn service_status() -> Option<SMAppServiceStatus> {
+    if !objc2::available!(macos = 13.0) {
+        return None;
+    }
+    autoreleasepool(|_| {
+        let name = NSString::from_str(PLIST_NAME);
+        // SAFETY: macOS availability is checked; the fixed plist belongs to this bundle.
+        let service = unsafe { SMAppService::agentServiceWithPlistName(&name) };
+        // SAFETY: service is retained and valid for this call.
+        Some(unsafe { service.status() })
+    })
 }
 
 // Returns whether a registration was removed, for update-failure recovery.
@@ -205,10 +233,7 @@ fn register_daemon() -> io::Result<()> {
 
         match status {
             SMAppServiceStatus::Enabled => Ok(()),
-            SMAppServiceStatus::RequiresApproval => Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "proxy service requires approval in System Settings > General > Login Items",
-            )),
+            SMAppServiceStatus::RequiresApproval => Err(approval_required()),
             SMAppServiceStatus::NotFound => Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "proxy LaunchAgent was not found by SMAppService",
