@@ -87,6 +87,10 @@ pub fn run_application() -> Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(desktop_install::InstallManagers::default())
         .manage(proxy::ProxyState::default())
+        // Proxy startup can sign out a rejected session, which clears the token list.
+        .manage(revision_signal::RevisionSignal::new(
+            hub_tokens::HubTokens::default(),
+        ))
         .manage(revision_signal::RevisionSignal::new(
             system_proxy::State::default(),
         ))
@@ -102,7 +106,6 @@ pub fn run_application() -> Result<()> {
             let first_run =
                 tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
             hub_auth::initialize(app.handle());
-            hub_tokens::HubTokensManager::initialize(app.handle())?;
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let tray_enabled = {
                 app.manage(tray::TrayState::default());
@@ -125,6 +128,8 @@ pub fn run_application() -> Result<()> {
             }) {
                 log::error!("proxy startup failed: {error:#}");
             }
+            // Proxy startup can briefly interrupt the system proxy used by Hub requests.
+            hub_tokens::HubTokensManager::start_loading(app.handle())?;
             proxy::start_observer(app.handle());
 
             system_proxy::start(app.handle());

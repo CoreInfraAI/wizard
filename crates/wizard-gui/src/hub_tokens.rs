@@ -180,9 +180,8 @@ where
 pub(crate) struct HubTokensManager;
 
 impl HubTokensManager {
-    /// Registers the empty list and, with a saved session, starts loading it.
-    pub(crate) fn initialize(app: &tauri::AppHandle) -> anyhow::Result<()> {
-        app.manage(RevisionSignal::new(HubTokens::default()));
+    /// With a saved session, starts loading the list.
+    pub(crate) fn start_loading(app: &tauri::AppHandle) -> anyhow::Result<()> {
         if !settings::get_state(app)?.hub_session.is_empty() {
             let app = app.clone();
             tauri::async_runtime::spawn(async move { Self::refresh(&app).await });
