@@ -471,7 +471,7 @@ async fn resolve_token(
 }
 
 /// The token in the application's routing configuration, else the Hub token Wizard created
-/// for it.
+/// for it, else Wizard's proxy token (Sub mode configures no agent token).
 async fn background_token(
     app: &tauri::AppHandle,
     desktop: DesktopApp,
@@ -480,6 +480,7 @@ async fn background_token(
     if settings.hub_session.is_empty() {
         return Ok(None);
     }
+    let proxy_token = settings.proxy_token.filter(|token| !token.is_empty());
     let configured = tauri::async_runtime::spawn_blocking(move || match desktop {
         DesktopApp::Claude => claude_desktop::configured_token(),
         DesktopApp::ChatGpt => codex::configured_token(),
@@ -493,10 +494,10 @@ async fn background_token(
         .state
         .named_token(desktop.token_agent().token_name());
     if let Ok(token) = configured {
-        Ok(token.or(hub_token))
+        Ok(token.or(hub_token).or(proxy_token))
     } else {
         log::warn!("{} configured token could not be read", desktop.product());
-        Ok(hub_token)
+        Ok(hub_token.or(proxy_token))
     }
 }
 

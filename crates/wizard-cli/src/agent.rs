@@ -229,7 +229,11 @@ async fn hub_token(yes: bool, name: &str) -> Result<Option<String>> {
     let session = settings.hub_session;
     let (update, profile) = hub::fetch_profile(&client, &session).await;
     let session = apply_session(update, &session)?;
-    let hub_id = profile.map_err(hub_error)?.personal_hub_id;
+    // The Hub selected in the GUI, as there.
+    let hub_id = profile
+        .map_err(hub_error)?
+        .active_hub_id(&settings.active_hub_id)
+        .to_owned();
     ensure!(!hub_id.is_empty(), "CoreInfra Hub не вернул hub аккаунта");
 
     let (update, tokens) = hub::list_agent_tokens(&client, &session, &hub_id).await;
