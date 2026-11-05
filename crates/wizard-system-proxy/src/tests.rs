@@ -194,11 +194,20 @@ fn global_address_is_supported_but_not_confused_with_similar_endpoints() -> Resu
         config.server = server.into();
         assert!(config.status()?.conflict);
         assert!(config.prepare(false, false)? == config);
+        assert!(config.prepare(true, false).is_err());
     }
     let mut config = disabled();
     config.flags |= PROXY;
     config.server = wizard_proxy::ADDRESS.into();
     assert!(!config.status()?.conflict);
     assert_eq!(config.prepare(false, false)?.flags, DIRECT);
+
+    config.flags = DIRECT;
+    let enabled = config.prepare(true, false)?;
+    assert_eq!(
+        enabled.server,
+        format!("http={0};https={0}", wizard_proxy::ADDRESS)
+    );
+    assert_eq!(enabled.flags, DIRECT | PROXY);
     Ok(())
 }

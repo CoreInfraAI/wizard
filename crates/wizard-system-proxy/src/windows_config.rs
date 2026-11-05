@@ -89,7 +89,7 @@ impl Config {
             if !forced {
                 ensure!(
                     entries(&self.server)?.iter().all(|(protocol, endpoint)| {
-                        (protocol.is_empty() && endpoint.is_empty())
+                        (protocol.is_empty() && (endpoint.is_empty() || *endpoint == address))
                             || protocol.eq_ignore_ascii_case("http")
                             || protocol.eq_ignore_ascii_case("https")
                     }),
