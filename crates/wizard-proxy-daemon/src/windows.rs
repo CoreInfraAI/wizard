@@ -103,6 +103,8 @@ async fn update_uninstall_task(
         Command::new(system_executable(r"WindowsPowerShell\v1.0\powershell.exe")?)
             .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
             .arg(include_str!("windows-uninstall.ps1"))
+            // Launched from pwsh, PowerShell 7 module paths break Windows PowerShell.
+            .env_remove("PSModulePath")
             .env("WIZARD_UNINSTALL_TASK", task_name(sid))
             .env("WIZARD_UNINSTALL_EXE", executable)
             .env("WIZARD_UNINSTALL_OPERATION", operation)

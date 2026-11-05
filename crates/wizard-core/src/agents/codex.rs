@@ -257,7 +257,8 @@ pub fn prepare_routing_for_gui(
     settings: &Settings,
 ) -> Result<PreparedPlan> {
     let mut plan = prepare_routing(mode, token, settings)?;
-    let enabled = if mode == RoutingMode::Disabled {
+    // Linux cannot start the local proxy yet: route only the CLI there.
+    let enabled = if mode == RoutingMode::Disabled || cfg!(target_os = "linux") {
         false
     } else {
         match detection::detect_desktop(
@@ -314,6 +315,8 @@ Join-Path $root 'LocalCache\Roaming\Codex\web\Codex\Default\Preferences' | Conve
         let mut command = tokio::process::Command::new("powershell.exe");
         command
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            // Launched from pwsh, PowerShell 7 module paths break Windows PowerShell.
+            .env_remove("PSModulePath")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

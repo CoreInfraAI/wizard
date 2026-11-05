@@ -132,7 +132,8 @@ pub(super) fn detect_desktop(
                 &["/Applications/ChatGPT.app", "/Applications/Codex.app"],
                 Some("com.openai.codex"),
             ),
-            DesktopAgent::Claude => (&[CLAUDE_APP_PATH], None),
+            // Installation replaces the detected bundle: never mistake another Claude.app for it.
+            DesktopAgent::Claude => (&[CLAUDE_APP_PATH], Some("com.anthropic.claudefordesktop")),
         };
         // A saved path is always one of these candidates. Ignore it, so that an old Codex.app
         // found once never shadows ChatGPT.app.
@@ -211,7 +212,10 @@ pub(super) fn detect_desktop(
             DesktopAgent::Claude => ("Claude,AnthropicPBC.Claude", "Claude.exe"),
             DesktopAgent::Codex => ("OpenAI.Codex", "ChatGPT.exe"),
         };
-        let info = match detect_desktop_windows(packages, executable, last_found) {
+        // A saved path names a versioned package folder, which can outlive an update.
+        // Always ask for the registered package instead.
+        let _ = last_found;
+        let info = match detect_desktop_windows(packages, executable) {
             Ok(Some(info)) => info,
             Ok(None) => return AgentDetection::NotFound,
             Err(error) => return AgentDetection::Error(format!("{error:#}")),
@@ -221,12 +225,8 @@ pub(super) fn detect_desktop(
 }
 
 #[cfg(target_os = "windows")]
-fn detect_desktop_windows(
-    packages: &str,
-    executable: &str,
-    last_found: Option<&Path>,
-) -> Result<Option<AgentInfo>> {
-    // Read installation/version metadata only. Pass the saved path through the
+fn detect_desktop_windows(packages: &str, executable: &str) -> Result<Option<AgentInfo>> {
+    // Read installation/version metadata only. Pass inputs through the
     // environment, not PowerShell source, and never launch the application.
     let script = r"
 $ErrorActionPreference = 'Stop'
@@ -235,10 +235,6 @@ function Write-Agent($path) {
     $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($path).ProductVersion
     if ([string]::IsNullOrWhiteSpace($version)) { $version = $null }
     @{ path = [System.IO.Path]::GetFullPath($path); version = $version } | ConvertTo-Json -Compress
-}
-if ($env:WIZARD_DESKTOP_PATH -and (Test-Path -LiteralPath $env:WIZARD_DESKTOP_PATH -PathType Leaf)) {
-    Write-Agent $env:WIZARD_DESKTOP_PATH
-    exit 0
 }
 $packages = foreach ($name in $env:WIZARD_DESKTOP_PACKAGES.Split(',')) {
     Get-AppxPackage -Name $name
@@ -260,15 +256,12 @@ foreach ($package in ($packages | Sort-Object Version -Descending)) {
     let mut command = tokio::process::Command::new("powershell.exe");
     command
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        // Launched from pwsh, PowerShell 7 module paths break Windows PowerShell.
+        .env_remove("PSModulePath")
         .env("WIZARD_DESKTOP_PACKAGES", packages)
         .env("WIZARD_DESKTOP_EXECUTABLE", executable)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(path) = last_found {
-        command.env("WIZARD_DESKTOP_PATH", path);
-    } else {
-        command.env_remove("WIZARD_DESKTOP_PATH");
-    }
     let output = command_output(command, Duration::from_secs(15))?;
     anyhow::ensure!(output.status.success(), "desktop installation query failed");
     serde_json::from_slice(&output.stdout).context("invalid desktop installation query response")

@@ -719,13 +719,15 @@ finally { if ($null -ne $lock) { $lock.Dispose() } }
 ";
 
 #[cfg(target_os = "windows")]
-const WINDOWS_ELEVATE: &str = r#"
+const WINDOWS_ELEVATE: &str = r"
 # Only public package metadata, the diagnostic path and originating SID cross elevation.
 $phase = 21
 try {
-    $json = ($package | ConvertTo-Json -Compress).Replace("'", "''")
+    # PowerShell also ends single-quoted strings at typographic quotes, e.g. in a profile name.
+    $quote = [Management.Automation.Language.CodeGeneration]
+    $json = $quote::EscapeSingleQuotedStringContent(($package | ConvertTo-Json -Compress))
     $path = ''
-    if ($package.diagnostic_path) { $path = $package.diagnostic_path.Replace("'", "''") }
+    if ($package.diagnostic_path) { $path = $quote::EscapeSingleQuotedStringContent($package.diagnostic_path) }
     $script = '$diagnosticPath = ''' + $path + '''; $packageJson = ''' + $json + ''';' + [Environment]::NewLine + $body
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
     $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
@@ -739,7 +741,7 @@ try {
     if ($_.Exception.NativeErrorCode -eq 1223 -or $_.Exception.InnerException.NativeErrorCode -eq 1223) { exit 19 }
     exit 21
 }
-"#;
+";
 
 #[cfg(target_os = "windows")]
 const WINDOWS_SETUP: &str = r"
