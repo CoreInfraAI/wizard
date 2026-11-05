@@ -211,3 +211,20 @@ fn global_address_is_supported_but_not_confused_with_similar_endpoints() -> Resu
     assert_eq!(enabled.flags, DIRECT | PROXY);
     Ok(())
 }
+
+#[test]
+fn inactive_foreign_mappings_offer_forced_mode() -> Result<()> {
+    for server in ["proxy.example:8080", "socks=foreign.example:1080", "a;b"] {
+        let mut config = disabled();
+        config.server = server.into();
+        // Normal enabling would discard the saved string, so the UI must offer forced mode.
+        assert!(config.status()?.conflict);
+        assert!(config.prepare(true, false).is_err());
+        assert_eq!(config.prepare(true, true)?.flags, DIRECT | PROXY);
+    }
+    let mut config = disabled();
+    config.server = "http=foreign.example:80;https=foreign.example:443".into();
+    assert!(!config.status()?.conflict);
+    assert!(config.prepare(true, false).is_ok());
+    Ok(())
+}

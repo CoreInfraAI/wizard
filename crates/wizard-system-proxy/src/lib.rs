@@ -74,7 +74,8 @@ pub fn status() -> Result<SystemProxyStatus> {
 }
 
 /// Set HTTP and HTTPS to the Wizard endpoint. With `forced`, replace foreign
-/// HTTP/HTTPS settings and disable PAC/auto-discovery. On Windows, forced mode
+/// HTTP/HTTPS settings and disable PAC/auto-discovery. On macOS, forced mode also
+/// disables SOCKS, FTP, RTSP and Gopher proxies. On Windows, forced mode
 /// replaces the entire manual proxy string with HTTP/HTTPS-only mappings,
 /// including global addresses and explicit non-HTTP mappings. Reading the current
 /// configuration must still succeed. Existing bypass rules and inactive settings
@@ -106,6 +107,12 @@ fn native_status() -> Result<SystemProxyStatus> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn native_update(enabled: bool, forced: bool) -> Result<()> {
+    // Nothing of Wizard's to remove, even from a string Wizard cannot parse: uninstall
+    // must not fail on foreign settings.
+    #[cfg(target_os = "windows")]
+    if !enabled && !Native::read()?.server.contains(wizard_proxy::ADDRESS) {
+        return Ok(());
+    }
     change::<Native>(enabled, forced)
 }
 

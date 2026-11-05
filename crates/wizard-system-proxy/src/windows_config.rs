@@ -47,6 +47,18 @@ fn entries(server: &str) -> Result<Vec<(&str, &str)>> {
     Ok(entries)
 }
 
+/// Whether normal enabling may replace this server string, even an inactive one:
+/// only forced mode discards global or non-HTTP mappings.
+fn replaceable(server: &str) -> bool {
+    entries(server).is_ok_and(|entries| {
+        entries.iter().all(|(protocol, endpoint)| {
+            (protocol.is_empty() && (endpoint.is_empty() || *endpoint == wizard_proxy::ADDRESS))
+                || protocol.eq_ignore_ascii_case("http")
+                || protocol.eq_ignore_ascii_case("https")
+        })
+    })
+}
+
 impl Config {
     pub fn status(&self) -> Result<ServiceStatus> {
         let active = self.flags & PROXY != 0;
@@ -74,6 +86,7 @@ impl Config {
                 || https == ProxyState::Foreign
                 || other
                 || (active && self.server.trim().is_empty())
+                || !replaceable(&self.server)
                 || self.flags & (AUTO_URL | AUTO_DETECT) != 0
                 || self.flags & !(DIRECT | PROXY | AUTO_URL | AUTO_DETECT) != 0,
         })
@@ -86,16 +99,10 @@ impl Config {
             // WinINet has a single manual-proxy switch. Forced mode replaces
             // the entire manual-proxy string, including non-HTTP mappings.
             // Normal mode preserves the stricter conflict and syntax checks.
-            if !forced {
-                ensure!(
-                    entries(&self.server)?.iter().all(|(protocol, endpoint)| {
-                        (protocol.is_empty() && (endpoint.is_empty() || *endpoint == address))
-                            || protocol.eq_ignore_ascii_case("http")
-                            || protocol.eq_ignore_ascii_case("https")
-                    }),
-                    "global or non-HTTP proxy mappings conflict with Wizard; use forced mode to replace manual proxy settings"
-                );
-            }
+            ensure!(
+                forced || replaceable(&self.server),
+                "global or non-HTTP proxy mappings conflict with Wizard; use forced mode to replace manual proxy settings"
+            );
             after.server = format!("http={address};https={address}");
             after.flags |= DIRECT | PROXY;
             if forced {

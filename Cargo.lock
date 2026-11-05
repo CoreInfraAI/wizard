@@ -5595,6 +5595,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "wizard-proxy",
  "wizard-settings",
+ "wizard-system-proxy",
 ]
 
 [[package]]

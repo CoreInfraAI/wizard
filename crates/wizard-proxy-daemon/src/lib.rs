@@ -226,6 +226,7 @@ fn uninstall_lock_file() -> io::Result<File> {
 }
 
 /// Remove the current installation's proxy service without changing settings.
+/// On Windows, first remove Wizard's system proxy entries: nothing listens afterwards.
 /// On macOS, run from the application bundle that registered the service.
 /// On macOS and Windows, close GUI instances first. Linux is a successful no-op.
 #[must_use]
@@ -237,6 +238,10 @@ pub fn uninstall() -> ExitCode {
             guard.try_lock().map_err(io::Error::from)?;
             guard
         };
+        // Under the lock: a running GUI must not observe or change the proxy meanwhile.
+        #[cfg(windows)]
+        wizard_system_proxy::disable()
+            .map_err(|error| io::Error::other(format!("system proxy cleanup failed: {error:#}")))?;
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?

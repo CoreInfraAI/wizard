@@ -199,6 +199,20 @@ async fn shutdown_replies_before_exit_and_preserves_settings() -> io::Result<()>
         .await?;
     let (mut remote, _) = destination.accept().await?;
 
+    // A browser page's cross-origin POST carries Origin and must not stop the proxy.
+    let mut browser = TcpStream::connect(address).await?;
+    browser
+        .write_all(
+            format!(
+                "POST /shutdown HTTP/1.1\r\nHost: {address}\r\nOrigin: https://example.com\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await?;
+    let mut rejected = Vec::new();
+    browser.read_to_end(&mut rejected).await?;
+    assert!(rejected.starts_with(b"HTTP/1.1 400"));
+
     let response: control::ShutdownResponse =
         control::request(&address.to_string(), control::Command::Shutdown).await?;
     assert_eq!(response.pid, std::process::id());

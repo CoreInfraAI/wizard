@@ -10,7 +10,7 @@ use core::{convert::Infallible, future::Future, pin::Pin, time::Duration};
 use http_body_util::{BodyExt, Full, combinators::UnsyncBoxBody};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
-    ALLOW, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, PROXY_AUTHORIZATION,
+    ALLOW, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, ORIGIN, PROXY_AUTHORIZATION,
     TRANSFER_ENCODING, USER_AGENT,
 };
 use hyper::http::uri::{Authority, PathAndQuery};
@@ -278,6 +278,8 @@ fn management_command(
         .and_then(|host| host.to_str().ok())
         != address
         || address.is_none()
+        // Browsers send Origin on cross-origin POST; the native control client never does.
+        || request.headers().contains_key(ORIGIN)
         || request.headers().contains_key(TRANSFER_ENCODING)
         || request
             .headers()

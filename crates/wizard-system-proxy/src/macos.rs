@@ -176,7 +176,15 @@ impl Backend for Native {
         let mut after = snapshot.clone();
         for service in &mut after.services {
             if enabled && forced {
-                for key in ["ProxyAutoConfigEnable", "ProxyAutoDiscoveryEnable"] {
+                // Every setting that service_status reports as a conflict.
+                for key in [
+                    "SOCKSEnable",
+                    "FTPEnable",
+                    "RTSPEnable",
+                    "GopherEnable",
+                    "ProxyAutoConfigEnable",
+                    "ProxyAutoDiscoveryEnable",
+                ] {
                     service.config = replacing(&service.config, key, &CFNumber::new_i32(0));
                 }
             }
@@ -390,6 +398,29 @@ mod tests {
         assert_eq!(status[0].http, ProxyState::Disabled);
         assert_eq!(status[0].https, ProxyState::Foreign);
         assert!(status[0].conflict);
+        Ok(())
+    }
+
+    #[test]
+    fn forced_mode_clears_every_reported_conflict() -> Result<()> {
+        let mut config = CFDictionary::<CFType, CFType>::empty().as_opaque().retain();
+        for key in ["SOCKSEnable", "FTPEnable", "ProxyAutoConfigEnable"] {
+            config = replacing(&config, key, &CFNumber::new_i32(1));
+        }
+        let before = Snapshot {
+            location: "fixture".into(),
+            services: vec![Service {
+                id: "fixture".into(),
+                config,
+            }],
+        };
+        assert!(Native::services(&before)?[0].conflict);
+        let normal = Native::prepare(&before, true, false)?;
+        assert!(Native::services(&normal)?[0].conflict);
+        let forced = Native::prepare(&before, true, true)?;
+        let status = &Native::services(&forced)?[0];
+        assert!(!status.conflict);
+        assert_eq!(status.http, ProxyState::Wizard);
         Ok(())
     }
 }
