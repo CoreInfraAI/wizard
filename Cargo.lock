@@ -5515,6 +5515,7 @@ dependencies = [
  "jsonc-parser",
  "libc",
  "log",
+ "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "plist",
@@ -5530,6 +5531,7 @@ dependencies = [
  "tokio-rustls",
  "toml_edit 0.25.15+spec-1.1.0",
  "uuid",
+ "windows-sys 0.61.2",
  "wizard-proxy",
  "wizard-settings",
 ]

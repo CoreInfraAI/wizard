@@ -37,6 +37,10 @@ wizard-settings.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
+objc2.workspace = true
 objc2-app-kit.workspace = true
-objc2-foundation = { workspace = true, features = ["NSError", "NSFileManager", "NSURL"] }
+objc2-foundation = { workspace = true, features = ["NSEnumerator", "NSError", "NSFileManager", "NSURL"] }
 plist.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RemoteDesktop", "Win32_System_Threading"] }

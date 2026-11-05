@@ -52,7 +52,8 @@ pub(super) const SPEC: AppSpec = AppSpec {
     package: WindowsPackage {
         name: "Claude",
         process: "Claude",
-        process_in_package: false,
+        // Claude Code also runs claude.exe.
+        process_in_package: true,
         publisher: WINDOWS_PUBLISHER,
         signer: "Anthropic",
     },
@@ -434,16 +435,44 @@ actual=$(sha256sum "$stage/package.deb") || exit 20
 [ "$(dpkg-deb -f "$stage/package.deb" Package)" = claude-desktop ] || exit 12
 [ "$(dpkg-deb -f "$stage/package.deb" Version)" = "$1" ] || exit 13
 [ "$(dpkg-deb -f "$stage/package.deb" Architecture)" = "$(dpkg --print-architecture)" ] || exit 14
-for process in /proc/[0-9]*/exe; do
-    executable=$(readlink "$process" 2>/dev/null || :)
-    case "$executable" in /usr/lib/claude-desktop/*) exit 15 ;; esac
-done
+claude_processes() {
+    for process in /proc/[0-9]*; do
+        case "$(readlink "$process/exe" 2>/dev/null || :)" in /usr/lib/claude-desktop/*) echo "${process#/proc/}" ;; esac
+    done
+}
+running=$(claude_processes)
+if [ -n "$running" ]; then
+    # Close only after Polkit approval, and only the requesting user's application.
+    [ -n "${PKEXEC_UID:-}" ] || exit 15
+    for pid in $running; do
+        # The real UID: Chromium's sandboxed processes make /proc/<pid> root-owned.
+        owner=$(awk '/^Uid:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null) || continue
+        [ -z "$owner" ] || [ "$owner" = "$PKEXEC_UID" ] || exit 25
+    done
+    [ "$3" = close ] || exit 15
+    # Electron quits cleanly on SIGTERM to its main process; helper processes have --type=.
+    for pid in $running; do
+        tr '\0' '\n' 2>/dev/null < "/proc/$pid/cmdline" | grep -q -e '--type=' || kill -TERM "$pid" 2>/dev/null || :
+    done
+    attempts=0
+    while [ -n "$(claude_processes)" ]; do
+        [ "$attempts" -lt 60 ] || exit 26
+        attempts=$((attempts + 1))
+        sleep 0.5
+    done
+fi
 DEBIAN_FRONTEND=noninteractive apt-get --assume-yes --no-install-recommends --no-remove install "$stage/package.deb" || exit 16
 [ "$(dpkg-query -W -f='${Status} ${Version}' claude-desktop)" = "install ok installed $1" ] || exit 17
 "#;
 
 #[cfg(target_os = "linux")]
-pub(super) fn install_linux(archive: &Path, release: &Release, sha256: &str) -> Result<()> {
+/// `close`: ask the user's running Claude Desktop to quit after Polkit approval.
+pub(super) fn install_linux(
+    archive: &Path,
+    release: &Release,
+    sha256: &str,
+    close: bool,
+) -> Result<()> {
     let version = release.version.to_string();
     let metadata = command_output(
         Command::new("/usr/bin/dpkg-deb").arg("-f").arg(archive),
@@ -464,7 +493,7 @@ pub(super) fn install_linux(archive: &Path, release: &Release, sha256: &str) -> 
         "Архитектура DEB не соответствует системе"
     );
     let status = Command::new("/usr/bin/pkexec").args(["--disable-internal-agent", "/bin/sh", "-c", LINUX_INSTALL, "wizard-claude-install"])
-        .arg(&version).arg(sha256)
+        .arg(&version).arg(sha256).arg(if close { "close" } else { "keep" })
         .stdin(fs::File::open(archive).context("Не удалось открыть пакет DEB")?)
         .stdout(Stdio::null()).stderr(Stdio::null()).status()
         .context("Не удалось запросить права администратора; необходим pkexec и графический агент Polkit")?;
@@ -476,6 +505,10 @@ pub(super) fn install_linux(archive: &Path, release: &Release, sha256: &str) -> 
         match status.code() {
             Some(12..=14) => "DEB не соответствует выбранному пакету, версии или архитектуре",
             Some(15) => "Полностью закройте Claude Desktop и повторите установку",
+            Some(25) =>
+                "Claude Desktop запущен у другого пользователя. Попросите его закрыть приложение и повторите установку",
+            Some(26) =>
+                "Claude Desktop не закрылся. Закройте его вручную, включая значок в трее, и повторите установку",
             Some(17) => "APT завершил установку, но ожидаемая версия Claude не обнаружена",
             Some(20) => "Не удалось подготовить DEB или его SHA-256 не совпадает",
             Some(126 | 127) =>

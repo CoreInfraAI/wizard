@@ -3,8 +3,10 @@
 mod chatgpt;
 mod claude;
 mod download;
+mod running;
 
 pub use download::{DownloadProgress, SavedDownload, download_release, saved_download};
+pub use running::running_apps;
 
 use super::TokenAgent;
 #[cfg(target_os = "macos")]
@@ -584,26 +586,72 @@ try {{
     )
 }
 
+/// Finds the package's running processes and asks them to close.
+#[cfg(target_os = "windows")]
+const WINDOWS_CLOSE: &str = r#"
+function Get-PackageProcesses {
+    $processes = @(Get-Process -Name $package.process -ErrorAction SilentlyContinue)
+    if (!$package.process_in_package -or $processes.Count -eq 0) { return $processes }
+    # Another application can use the same process name; count only this package's processes.
+    # A failed lookup must stop installation, not report the application as closed.
+    $installed = @(Get-AppxPackage -Name $package.name | Where-Object {
+        $_.Publisher -ceq $package.publisher -and $_.InstallLocation
+    })
+    if ($installed.Count -eq 0) { return }
+    $root = [IO.Path]::GetFullPath($installed[0].InstallLocation).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($process in $processes) {
+        try {
+            if ($process.Path -and [IO.Path]::GetFullPath($process.Path).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $process }
+        } catch {}
+    }
+}
+# Restart Manager asks applications to close as at sign-out; without RmForceShutdown they can refuse.
+$restartManager = @"
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class WizardRestartManager {
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)] public static extern int RmStartSession(out uint session, int flags, StringBuilder key);
+    [DllImport("rstrtmgr.dll")] public static extern int RmEndSession(uint session);
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)] public static extern int RmRegisterResources(uint session, uint files, string[] fileNames, uint count, uint[] processes, uint services, string[] serviceNames);
+    [DllImport("rstrtmgr.dll")] public static extern int RmShutdown(uint session, uint flags, IntPtr callback);
+}
+"@
+# RM_UNIQUE_PROCESS: process ID, then the start FILETIME as two DWORDs.
+function ConvertTo-UniqueProcesses($processes) {
+    ,[uint32[]]@($processes | ForEach-Object { $time = $_.StartTime.ToFileTime(); $_.Id; $time -band 4294967295; $time -shr 32 })
+}
+function Close-PackageProcesses($processes) {
+    $result = 1
+    try {
+        # Ask only main processes: helpers have --type=, no windows, and exit with them.
+        $ids = @($processes | ForEach-Object { $_.Id })
+        $mainIds = @(Get-CimInstance -ClassName Win32_Process -Filter ("Name = '{0}.exe'" -f $package.process) -OperationTimeoutSec 5 | Where-Object {
+            $ids -contains $_.ProcessId -and $_.CommandLine -notmatch '--type='
+        } | ForEach-Object { $_.ProcessId })
+        $main = @($processes | Where-Object { $mainIds -contains $_.Id })
+        if ($main.Count -eq 0) { $main = $processes }
+        Add-Type -TypeDefinition $restartManager
+        [uint32]$session = 0
+        if ([WizardRestartManager]::RmStartSession([ref]$session, 0, [Text.StringBuilder]::new(64)) -eq 0) {
+            try {
+                $result = [WizardRestartManager]::RmRegisterResources($session, 0, $null, $main.Count, (ConvertTo-UniqueProcesses $main), 0, $null)
+                if ($result -eq 0) { $result = [WizardRestartManager]::RmShutdown($session, 0, [IntPtr]::Zero) }
+            } finally { [void][WizardRestartManager]::RmEndSession($session) }
+        }
+        if ($result -ne 0) { Write-InstallMessage ('Restart Manager shutdown failed: error={0}' -f $result) }
+    } catch { Write-InstallDiagnostic $_ }
+    # An application that agreed to close may still be exiting.
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (@(Get-PackageProcesses).Count -gt 0) {
+        if ([DateTime]::UtcNow -ge $deadline) { exit 26 }
+        Start-Sleep -Milliseconds 500
+    }
+}
+"#;
+
 #[cfg(target_os = "windows")]
 const WINDOWS_INSTALL: &str = r"
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-function Test-PackageRunning {
-    $processes = @(Get-Process -Name $package.process -ErrorAction SilentlyContinue)
-    if (!$package.process_in_package -or $processes.Count -eq 0) { return $processes.Count -gt 0 }
-    # Another application can use the same process name; count only this package's processes.
-    $installed = @(Get-AppxPackage -Name $package.name -ErrorAction SilentlyContinue | Where-Object {
-        $_.Publisher -ceq $package.publisher -and $_.InstallLocation
-    })
-    if ($installed.Count -eq 0) { return $false }
-    $root = [IO.Path]::GetFullPath($installed[0].InstallLocation).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-    foreach ($process in $processes) {
-        try {
-            if ($process.Path -and [IO.Path]::GetFullPath($process.Path).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
-        } catch {}
-    }
-    return $false
-}
 $phase = 18
 $lock = $null
 try {
@@ -643,7 +691,14 @@ try {
     if ($arch -notin @('x64', 'arm64') -or $identity.ProcessorArchitecture -cne $arch) { exit 14 }
 
     $phase = 15
-    if (Test-PackageRunning) { exit 15 }
+    $running = @(Get-PackageProcesses)
+    if ($running.Count -gt 0) {
+        # Another user's application cannot be asked to close.
+        if (@($running | Where-Object { $_.SessionId -ne [Diagnostics.Process]::GetCurrentProcess().SessionId }).Count -gt 0) { exit 25 }
+        if (!$package.close) { exit 15 }
+        # Close only after UAC approval: until then the user can still cancel installation.
+        if ($install) { Close-PackageProcesses $running }
+    }
     if (!$install) { exit 0 }
     $phase = 16
     # Let deployment close remaining package components; no deferred registration or downgrade.
@@ -681,8 +736,58 @@ try {
 }
 "#;
 
+#[cfg(target_os = "windows")]
+const WINDOWS_SETUP: &str = r"
+$diagnosticPath = $null
+$package = $env:WIZARD_DESKTOP_PACKAGE | ConvertFrom-Json
+$package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+";
+
+/// Drops indentation, blank lines and whole-line comments. No multi-line string in the scripts
+/// depends on them; the C# declarations ignore them.
+#[cfg_attr(
+    not(any(target_os = "windows", test)),
+    expect(dead_code, reason = "Windows elevation")
+)]
+fn compact_powershell(script: &str) -> String {
+    script
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The script that installs with administrator rights. Its command line carries it as base64 of
+/// UTF-16, within 32767 characters.
+#[cfg(target_os = "windows")]
+fn windows_elevated_script() -> String {
+    compact_powershell(&windows_install_script(
+        "$package = $packageJson | ConvertFrom-Json\n$install = $true",
+        &format!("{WINDOWS_CLOSE}\n{WINDOWS_INSTALL}"),
+    ))
+}
+
+/// The unelevated check before UAC, and the script that requests UAC and installs.
+#[cfg(target_os = "windows")]
+fn windows_install_scripts() -> (String, String) {
+    let preflight = windows_install_script(
+        &format!("{WINDOWS_SETUP}\n$install = $false"),
+        &format!("{WINDOWS_CLOSE}\n{WINDOWS_INSTALL}"),
+    );
+    // A single-quoted here-string holds the elevated script: no line may start with `'@`.
+    let elevation = windows_install_script(
+        WINDOWS_SETUP,
+        &format!(
+            "$body = @'\n{}\n'@\n{WINDOWS_ELEVATE}",
+            windows_elevated_script()
+        ),
+    );
+    (preflight, elevation)
+}
+
 /// `verified`: the download was checked against the feed, not only against the package's own
-/// signature.
+/// signature. `close`: ask the running application to close after UAC approval.
 #[cfg(target_os = "windows")]
 fn install_windows(
     spec: &AppSpec,
@@ -690,6 +795,7 @@ fn install_windows(
     version: &Version,
     sha256: &str,
     verified: bool,
+    close: bool,
 ) -> Result<()> {
     let name = spec.name;
     ensure!(
@@ -724,37 +830,22 @@ fn install_windows(
         "version": format!("{version}.0"),
         "sha256": sha256,
         "sid": "",
+        "close": close,
     })
     .to_string();
-    let setup = r"
-$diagnosticPath = $null
-$package = $env:WIZARD_DESKTOP_PACKAGE | ConvertFrom-Json
-$package.sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-";
-    // Reject corrupt packages and a running application before asking for UAC, even in
-    // force-close mode.
+    let (preflight, elevation) = windows_install_scripts();
+    // Reject corrupt packages before asking for UAC, and a running application unless the user
+    // agreed to close it.
     run_windows_install(
         spec,
-        powershell(&windows_install_script(
-            &format!("{setup}\n$install = $false"),
-            WINDOWS_INSTALL,
-        ))
-        .env("WIZARD_DESKTOP_PACKAGE", &package),
+        powershell(&preflight).env("WIZARD_DESKTOP_PACKAGE", &package),
         "preflight",
         None,
         verified,
     )?;
-    let elevated = windows_install_script(
-        "$package = $packageJson | ConvertFrom-Json\n$install = $true",
-        WINDOWS_INSTALL,
-    );
     run_windows_install(
         spec,
-        powershell(&windows_install_script(
-            setup,
-            &format!("$body = @'\n{elevated}\n'@\n{WINDOWS_ELEVATE}"),
-        ))
-        .env("WIZARD_DESKTOP_PACKAGE", &package),
+        powershell(&elevation).env("WIZARD_DESKTOP_PACKAGE", &package),
         "elevation",
         diagnostic_path.as_deref(),
         verified,
@@ -830,6 +921,14 @@ fn run_windows_install(
             "Полностью закройте {}, включая значок в трее, и повторите установку",
             spec.product
         ),
+        Some(25) => format!(
+            "{} запущен у другого пользователя Windows. Попросите его закрыть приложение и повторите установку",
+            spec.product
+        ),
+        Some(26) => format!(
+            "{} не закрылся. Закройте его вручную, включая значок в трее, и повторите установку",
+            spec.product
+        ),
         Some(17) => format!(
             "Windows завершила установку, но ожидаемая версия {name} не обнаружена у исходного пользователя"
         ),
@@ -894,15 +993,26 @@ pub fn archive_rejected(error: &anyhow::Error) -> bool {
     error.is::<RejectedArchive>()
 }
 
-/// Installs a downloaded release. `confirmed` approves the release's `confirmation`.
+/// Installs a downloaded release. `confirmed` approves the release's `confirmation`. `close`
+/// approves closing the applications in [`running_apps`]; whatever installation closes opens
+/// again afterwards, also when installation fails.
 /// The archive stays for a retry when installation fails, unless the archive itself is at fault.
-pub fn install_release(download: &DownloadedRelease, confirmed: bool) -> Result<Installed> {
+pub fn install_release(
+    download: &DownloadedRelease,
+    confirmed: bool,
+    close: bool,
+) -> Result<Installed> {
     let product = download.release.target.app.product();
     log::info!(
-        "{product} installation started: version {}",
+        "{product} installation started: version {}, close running: {close}",
         download.release.version
     );
-    let result = install_release_inner(download, confirmed);
+    let mut reopen = running::Reopen::default();
+    let mut result = install_release_inner(download, confirmed, close, &mut reopen);
+    let notices = reopen.run(&download.release.target);
+    if let Ok(installed) = &mut result {
+        installed.notices.extend(notices);
+    }
     match &result {
         Ok(_) => {
             log::info!(
@@ -924,7 +1034,13 @@ pub fn install_release(download: &DownloadedRelease, confirmed: bool) -> Result<
     result
 }
 
-fn install_release_inner(download: &DownloadedRelease, confirmed: bool) -> Result<Installed> {
+/// `reopen` records what installation closes.
+fn install_release_inner(
+    download: &DownloadedRelease,
+    confirmed: bool,
+    close: bool,
+    reopen: &mut running::Reopen,
+) -> Result<Installed> {
     let archive = download.directory.join(DOWNLOAD_NAME);
     // Other read failures may pass, so they keep the archive.
     let sha256 = archive_sha256(&archive).map_err(|error| {
@@ -938,13 +1054,17 @@ fn install_release_inner(download: &DownloadedRelease, confirmed: bool) -> Resul
     }
 
     #[cfg(target_os = "macos")]
-    let mut notices = install_macos(download, confirmed)?;
+    let mut notices = install_macos(download, confirmed, close, reopen)?;
     #[cfg(not(target_os = "macos"))]
     let mut notices = {
         ensure!(
             download.release.target.rename.is_none() || confirmed,
             "Подтвердите переименование приложения"
         );
+        if close {
+            // Only the elevated script knows what it closes: record what runs before elevation.
+            *reopen = running::Reopen::capture(&download.release.target);
+        }
         Vec::new()
     };
     #[cfg(target_os = "windows")]
@@ -954,10 +1074,13 @@ fn install_release_inner(download: &DownloadedRelease, confirmed: bool) -> Resul
         &download.release.version,
         &download.sha256,
         !matches!(download.release.integrity, Integrity::PackageSignature),
+        close,
     )?;
     #[cfg(target_os = "linux")]
     match download.release.target.app {
-        DesktopApp::Claude => claude::install_linux(&archive, &download.release, &download.sha256)?,
+        DesktopApp::Claude => {
+            claude::install_linux(&archive, &download.release, &download.sha256, close)?;
+        }
         DesktopApp::ChatGpt => bail!("ChatGPT не выпускается для этой системы"),
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -978,9 +1101,15 @@ fn install_release_inner(download: &DownloadedRelease, confirmed: bool) -> Resul
 }
 
 /// Replaces the bundle, moving aside a confirmed foreign bundle first and superseded copies to
-/// the Trash afterwards. Returns notices about the moved bundles.
+/// the Trash afterwards. Returns notices about the moved bundles. `close` asks the running
+/// applications to quit once everything else is ready, and records them in `reopen`.
 #[cfg(target_os = "macos")]
-fn install_macos(download: &DownloadedRelease, confirmed: bool) -> Result<Vec<String>> {
+fn install_macos(
+    download: &DownloadedRelease,
+    confirmed: bool,
+    close: bool,
+    reopen: &mut running::Reopen,
+) -> Result<Vec<String>> {
     let DownloadedRelease {
         directory, release, ..
     } = download;
@@ -1019,6 +1148,17 @@ fn install_macos(download: &DownloadedRelease, confirmed: bool) -> Result<Vec<St
     )?;
     verify_bundle(spec, &staged, &release.version)?;
 
+    if let Some(rename) = &release.target.rename {
+        ensure!(
+            confirmed,
+            "Подтвердите переименование {}, чтобы продолжить установку",
+            rename.name
+        );
+    }
+    if close {
+        *reopen = running::quit(&release.target);
+    }
+    // After quitting: an application can install its own staged update as it quits.
     let installed = detect_target(release.target.app, release.target.path.as_deref())?;
     ensure!(
         installed == release.target,
@@ -1027,22 +1167,34 @@ fn install_macos(download: &DownloadedRelease, confirmed: bool) -> Result<Vec<St
     );
     ensure!(
         !app_is_running(spec.bundle.id),
-        "Полностью закройте {}, включая значок в меню, и повторите установку",
-        spec.product
+        "{}",
+        if close {
+            format!(
+                "{} не закрылся. Закройте его вручную, включая значок в меню, и повторите установку",
+                spec.product
+            )
+        } else {
+            format!(
+                "Полностью закройте {}, включая значок в меню, и повторите установку",
+                spec.product
+            )
+        }
     );
 
     let mut notices = Vec::new();
     let renamed = match &release.target.rename {
         Some(rename) => {
             ensure!(
-                confirmed,
-                "Подтвердите переименование {}, чтобы продолжить установку",
-                rename.name
-            );
-            ensure!(
                 !app_is_running(rename.bundle_id),
-                "Закройте {} и повторите установку",
-                rename.name
+                "{}",
+                if close {
+                    format!(
+                        "{} не закрылся. Закройте его вручную и повторите установку",
+                        rename.name
+                    )
+                } else {
+                    format!("Закройте {} и повторите установку", rename.name)
+                }
             );
             ensure!(
                 !rename.to.exists(),
@@ -1211,7 +1363,7 @@ mod tests {
         };
 
         for _ in 0..2 {
-            let error = install_release(&download, false).unwrap_err();
+            let error = install_release(&download, false, false).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 if cfg!(target_os = "windows") {
@@ -1289,7 +1441,7 @@ mod tests {
 
         fs::create_dir(&directory).unwrap();
         fs::write(&archive, b"invalid archive").unwrap();
-        let (result, logs) = capture_logs(|| install_release(&download, false));
+        let (result, logs) = capture_logs(|| install_release(&download, false, false));
         let error = result.unwrap_err();
         assert!(archive_rejected(&error));
         assert_eq!(
@@ -1301,10 +1453,93 @@ mod tests {
         assert!(!logs.contains("installation completed"));
         assert!(!directory.exists());
 
-        let (result, logs) = capture_logs(|| install_release(&download, false));
+        let (result, logs) = capture_logs(|| install_release(&download, false, false));
         assert!(archive_rejected(&result.unwrap_err()));
         assert!(logs.contains("ERROR Claude Desktop installation failed"));
         assert!(logs.contains("Не удалось открыть архив для проверки SHA-256"));
+    }
+
+    #[test]
+    fn compact_powershell_keeps_code_and_here_strings() {
+        let script = "\n# comment\nfunction Test {\n    # inner\n    $text = @\"\n    using System;\n\"@\n    if ($x) { exit 1 } # trailing\n}\n";
+        assert_eq!(
+            compact_powershell(script),
+            "function Test {\n$text = @\"\nusing System;\n\"@\nif ($x) { exit 1 } # trailing\n}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_install_scripts_parse_and_fit_command_lines() {
+        use base64::Engine as _;
+
+        let parse = |script: &str| {
+            let output = powershell(
+                "$errors = $null
+[void][Management.Automation.Language.Parser]::ParseInput($env:WIZARD_TEST_SCRIPT, [ref]$null, [ref]$errors)
+$errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }
+exit $errors.Count",
+            )
+            .env("WIZARD_TEST_SCRIPT", script)
+            .output()
+            .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let (preflight, elevation) = windows_install_scripts();
+        let elevated = windows_elevated_script();
+        parse(&preflight);
+        parse(&elevation);
+        parse(&elevated);
+
+        // Framed as WINDOWS_ELEVATE frames it, with longer metadata than any real package.
+        let framed = format!(
+            "$diagnosticPath = '{}'; $packageJson = '{}';\r\n{elevated}",
+            "p".repeat(260),
+            "j".repeat(1500)
+        );
+        let utf16: Vec<u8> = framed.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(utf16)
+            .len();
+        assert!(
+            encoded < 30_000,
+            "elevated command line too long: {encoded}"
+        );
+        assert!(elevation.len() < 30_000, "{}", elevation.len());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_restart_manager_registers_processes() {
+        // Registers this PowerShell process without asking anything to close.
+        let script = windows_install_script(
+            "",
+            &format!(
+                "{WINDOWS_CLOSE}\n{}",
+                r"
+Add-Type -TypeDefinition $restartManager
+[uint32]$session = 0
+if ([WizardRestartManager]::RmStartSession([ref]$session, 0, [Text.StringBuilder]::new(64)) -ne 0) { exit 2 }
+try {
+    $ids = ConvertTo-UniqueProcesses @(Get-Process -Id $PID)
+    if ($ids.Length -ne 3 -or $ids[0] -ne $PID) { exit 3 }
+    if ([WizardRestartManager]::RmRegisterResources($session, 0, $null, 1, $ids, 0, $null) -ne 0) { exit 4 }
+} finally { [void][WizardRestartManager]::RmEndSession($session) }
+exit 0
+"
+            ),
+        );
+        let output = powershell(&script).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

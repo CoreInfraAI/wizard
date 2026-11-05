@@ -145,6 +145,7 @@ pub fn run_application() -> Result<()> {
             desktop_install::check_desktop_release,
             desktop_install::download_desktop_release,
             desktop_install::install_desktop_release,
+            desktop_install::get_desktop_running_apps,
             desktop_install::pause_desktop_download,
             system_proxy::get_system_proxy_state,
             system_proxy::set_system_proxy,

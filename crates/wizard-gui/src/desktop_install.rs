@@ -54,7 +54,10 @@ pub(crate) enum State {
         notes: Vec<String>,
         confirmation: Option<String>,
     },
-    Installing,
+    Installing {
+        /// The user agreed to close the running applications, which open again afterwards.
+        close: bool,
+    },
     Installed {
         version: String,
         notices: Vec<String>,
@@ -199,7 +202,17 @@ pub(crate) fn start_background_checks(app: tauri::AppHandle) {
                     continue;
                 }
                 log::info!("Starting {} background check", desktop.product());
-                if start(app.clone(), desktop, None, Operation::Check, true, false).is_err() {
+                if start(
+                    app.clone(),
+                    desktop,
+                    None,
+                    Operation::Check,
+                    true,
+                    false,
+                    false,
+                )
+                .is_err()
+                {
                     log::warn!("{} background check could not start", desktop.product());
                 }
             }
@@ -227,7 +240,15 @@ pub(crate) fn check_desktop_release(
     desktop: DesktopApp,
     token: TokenChoice,
 ) -> Result<(), String> {
-    start(app, desktop, Some(token), Operation::Check, false, false)
+    start(
+        app,
+        desktop,
+        Some(token),
+        Operation::Check,
+        false,
+        false,
+        false,
+    )
 }
 
 #[tauri::command]
@@ -236,7 +257,15 @@ pub(crate) fn download_desktop_release(
     desktop: DesktopApp,
     token: TokenChoice,
 ) -> Result<(), String> {
-    start(app, desktop, Some(token), Operation::Download, false, false)
+    start(
+        app,
+        desktop,
+        Some(token),
+        Operation::Download,
+        false,
+        false,
+        false,
+    )
 }
 
 /// Stops the download. What it received stays saved, and downloading again continues it.
@@ -261,14 +290,47 @@ pub(crate) fn pause_desktop_download(
     }
 }
 
-/// `confirmed` approves the change that the selected release asks to confirm.
+/// Products that installing the downloaded release would close because they run now. Empty
+/// without a downloaded release or while another operation runs.
+#[tauri::command]
+pub(crate) async fn get_desktop_running_apps(
+    desktop: DesktopApp,
+    managers: tauri::State<'_, InstallManagers>,
+) -> Result<Vec<String>, String> {
+    let target = {
+        let Ok(session) = managers.get(desktop).session.try_lock() else {
+            return Ok(Vec::new());
+        };
+        match &session.package {
+            Some(Package::Downloaded(download)) => download.release.target.clone(),
+            _ => return Ok(Vec::new()),
+        }
+    };
+    tauri::async_runtime::spawn_blocking(move || installer::running_apps(&target))
+        .await
+        .map(|products| products.into_iter().map(str::to_owned).collect())
+        .map_err(|_| format!("Не удалось проверить, запущен ли {}", desktop.product()))
+}
+
+/// `confirmed` approves the change that the selected release asks to confirm. `close` approves
+/// closing the applications that the user was told run now.
 #[tauri::command]
 pub(crate) fn install_desktop_release(
     app: tauri::AppHandle,
     desktop: DesktopApp,
     confirmed: bool,
+    close: bool,
 ) -> Result<(), String> {
-    start(app, desktop, None, Operation::Install, false, confirmed).inspect_err(|message| {
+    start(
+        app,
+        desktop,
+        None,
+        Operation::Install,
+        false,
+        confirmed,
+        close,
+    )
+    .inspect_err(|message| {
         log::error!(
             "{} installation could not start: {message}",
             desktop.product()
@@ -283,6 +345,7 @@ fn start(
     operation: Operation,
     automatic: bool,
     confirmed: bool,
+    close: bool,
 ) -> Result<(), String> {
     let manager = Arc::clone(app.state::<InstallManagers>().get(desktop));
     if manager.unsupported {
@@ -335,7 +398,7 @@ fn start(
             if !matches!(session.package, Some(Package::Downloaded(_))) {
                 return Err(format!("Сначала скачайте {name}"));
             }
-            manager.signal.notify(State::Installing);
+            manager.signal.notify(State::Installing { close });
         }
     }
 
@@ -348,6 +411,7 @@ fn start(
             operation,
             automatic,
             confirmed,
+            close,
             pause,
         )
         .await;
@@ -470,6 +534,7 @@ async fn run(
     operation: Operation,
     automatic: bool,
     confirmed: bool,
+    close: bool,
     pause: Option<oneshot::Receiver<()>>,
 ) -> Result<(), String> {
     let desktop = manager.desktop;
@@ -584,7 +649,7 @@ async fn run(
             let download = Arc::clone(download);
             let version = download.release.display_version.clone();
             let result = tauri::async_runtime::spawn_blocking(move || {
-                installer::install_release(&download, confirmed)
+                installer::install_release(&download, confirmed, close)
             })
             .await
             .map_err(|error| {

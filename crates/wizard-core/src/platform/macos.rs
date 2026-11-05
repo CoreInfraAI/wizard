@@ -1,8 +1,9 @@
 use anyhow::{Context as _, Result};
+use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSRunningApplication;
 use objc2_foundation::{NSProcessInfo, NSString};
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(super) mod tcc;
 
@@ -17,10 +18,38 @@ pub(crate) fn os_version() -> String {
 
 /// Checks all running instances by bundle identifier without launching or closing them.
 pub(crate) fn app_is_running(bundle_id: &str) -> bool {
-    let bundle_id = NSString::from_str(bundle_id);
-    let applications = NSRunningApplication::runningApplicationsWithBundleIdentifier(&bundle_id);
+    autoreleasepool(|_| {
+        let bundle_id = NSString::from_str(bundle_id);
+        let applications =
+            NSRunningApplication::runningApplicationsWithBundleIdentifier(&bundle_id);
 
-    applications.count() != 0
+        applications.count() != 0
+    })
+}
+
+/// Bundle locations of the running instances.
+pub(crate) fn running_app_paths(bundle_id: &str) -> Vec<PathBuf> {
+    autoreleasepool(|_| {
+        let bundle_id = NSString::from_str(bundle_id);
+        NSRunningApplication::runningApplicationsWithBundleIdentifier(&bundle_id)
+            .iter()
+            .filter_map(|application| application.bundleURL()?.path())
+            .map(|path| PathBuf::from(path.to_string()))
+            .collect()
+    })
+}
+
+/// Asks every running instance to quit, like Quit in its menu. An application can refuse or ask
+/// the user first, so the request returns before it exits.
+pub(crate) fn request_app_quit(bundle_id: &str) {
+    autoreleasepool(|_| {
+        let id = NSString::from_str(bundle_id);
+        for application in NSRunningApplication::runningApplicationsWithBundleIdentifier(&id) {
+            if !application.terminate() {
+                log::warn!("quit request was not delivered to an instance of {bundle_id}");
+            }
+        }
+    });
 }
 
 #[derive(Deserialize)]
