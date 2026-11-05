@@ -226,7 +226,10 @@ pub(crate) fn build(
         .join("release")
         .join("bundle");
     remove_path(&bundle_dir)?;
-    remove_path(output)?;
+    // Never delete a caller-supplied directory: it may hold unrelated files.
+    if fs::read_dir(output).is_ok_and(|mut entries| entries.next().is_some()) {
+        bail!("output directory {} must be empty", output.display());
+    }
 
     // The workflow builds xtask before exposing the signing key. Remove the key
     // from the Tauri build process, including its frontend hook and Rust build.
