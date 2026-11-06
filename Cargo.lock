@@ -5490,7 +5490,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wizard-cli"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -5504,7 +5504,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-core"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5538,7 +5538,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-gui"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5561,7 +5561,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-proxy"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "base64 0.22.1",
  "http-body-util",
@@ -5580,7 +5580,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-proxy-daemon"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "block2",
  "chrono",
@@ -5600,7 +5600,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-settings"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -5612,7 +5612,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-system-proxy"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "objc2-core-foundation",
@@ -5705,7 +5705,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
