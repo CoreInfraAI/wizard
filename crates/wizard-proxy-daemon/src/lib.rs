@@ -74,19 +74,30 @@ pub struct UpdateGuard {
 }
 
 /// Stop and unregister the service after downloading and verifying an update.
-/// Failure must abort installation. Await completion: native work may outlive cancellation.
+/// Failure must abort installation. Removal can fail after it has already stopped
+/// the service, so failure first restores it on a best-effort basis.
+/// Await completion: native work may outlive cancellation.
 pub async fn prepare_update() -> io::Result<UpdateGuard> {
-    prepare_update_with(platform::uninstall()).await
+    prepare_update_with(platform::uninstall(), restore_service()).await
 }
 
 async fn prepare_update_with(
     uninstall: impl Future<Output = io::Result<bool>>,
+    restore: impl Future<Output = io::Result<()>>,
 ) -> io::Result<UpdateGuard> {
     let lock = SYNC_LOCK.lock().await;
     log::info!("preparing proxy service for application update");
-    let restore_service = uninstall
-        .await
-        .inspect_err(|error| diagnostics::error("proxy update preparation", error))?;
+    let restore_service = match uninstall.await {
+        Ok(restore_service) => restore_service,
+        Err(error) => {
+            diagnostics::error("proxy update preparation", &error);
+            log::info!("restoring proxy service after failed update preparation");
+            if let Err(recovery) = restore.await {
+                diagnostics::error("proxy recovery after failed update preparation", &recovery);
+            }
+            return Err(error);
+        }
+    };
     log::info!("proxy update preparation completed: registration_removed={restore_service}");
     Ok(UpdateGuard {
         _lock: lock,
@@ -94,15 +105,18 @@ async fn prepare_update_with(
     })
 }
 
+/// Register the service from the current bundle and start it if settings need it.
+/// Callers must hold `SYNC_LOCK`.
+async fn restore_service() -> io::Result<()> {
+    platform::create_daemon().await?;
+    sync_with_settings().await
+}
+
 impl UpdateGuard {
     /// Best-effort restoration from the bundle left by a failed installer.
     /// Never reacquire `SYNC_LOCK` here: this guard already owns it.
     pub async fn restore_after_failure(self) -> io::Result<()> {
-        self.restore_with(async {
-            platform::create_daemon().await?;
-            sync_with_settings().await
-        })
-        .await
+        self.restore_with(restore_service()).await
     }
 
     async fn restore_with(self, restore: impl Future<Output = io::Result<()>>) -> io::Result<()> {
@@ -342,10 +356,13 @@ mod update_tests {
     #[tokio::test]
     async fn update_guard_serializes_preparation_installation_and_recovery() {
         // Fake removal: no registration, process, or user settings are touched.
-        let guard = prepare_update_with(async {
-            assert!(SYNC_LOCK.try_lock().is_err(), "lock must precede removal");
-            Ok(false)
-        })
+        let guard = prepare_update_with(
+            async {
+                assert!(SYNC_LOCK.try_lock().is_err(), "lock must precede removal");
+                Ok(false)
+            },
+            async { panic!("successful preparation must not restore the service") },
+        )
         .await
         .expect("prepare update");
         assert!(
@@ -367,7 +384,7 @@ mod update_tests {
             .expect("no-op recovery");
         assert!(SYNC_LOCK.try_lock().is_ok());
 
-        let guard = prepare_update_with(async { Ok(true) })
+        let guard = prepare_update_with(async { Ok(true) }, async { unreachable!() })
             .await
             .expect("fake service removal");
         let error = guard
@@ -385,13 +402,27 @@ mod update_tests {
         assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
         assert!(SYNC_LOCK.try_lock().is_ok());
 
-        let error = prepare_update_with(async {
-            assert!(SYNC_LOCK.try_lock().is_err());
-            Err(io::Error::from(io::ErrorKind::PermissionDenied))
-        })
+        // Removal may fail after stopping the service: restore it under the lock,
+        // and report the removal error rather than the recovery error.
+        let mut restored = false;
+        let error = prepare_update_with(
+            async {
+                assert!(SYNC_LOCK.try_lock().is_err());
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            },
+            async {
+                assert!(
+                    SYNC_LOCK.try_lock().is_err(),
+                    "recovery must remain exclusive"
+                );
+                restored = true;
+                Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+            },
+        )
         .await
         .err()
         .expect("preparation must fail");
+        assert!(restored, "failed preparation must restore the service");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(
             SYNC_LOCK.try_lock().is_ok(),
