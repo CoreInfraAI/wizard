@@ -821,20 +821,22 @@ mod tests {
         assert_eq!(fresh.path, Some(system.join("ChatGPT.app")));
         assert_eq!(fresh.version, None);
         assert!(!fresh.replaces && fresh.rename.is_none() && fresh.superseded.is_empty());
+        assert!(fresh.first_install());
 
         // Only an old Codex.app in the user's folder: install next to it and supersede it.
         bundle(&user.join("Codex.app"), BUNDLE_ID, "26.915.31945");
         let migrated = detect_in(&directories).unwrap();
         assert_eq!(migrated.path, Some(user.join("ChatGPT.app")));
         assert_eq!(migrated.version, Some(Version::new(26, 915, 31945)));
-        assert!(!migrated.replaces);
+        assert!(!migrated.replaces && !migrated.first_install());
         assert_eq!(migrated.superseded, [user.join("Codex.app")]);
 
         // ChatGPT Classic occupies the name: move it aside after confirmation.
         std::fs::remove_dir_all(user.join("Codex.app")).unwrap();
         bundle(&system.join("ChatGPT.app"), CLASSIC_BUNDLE_ID, "1.2026.184");
         let classic = detect_in(&directories).unwrap();
-        assert!(!classic.replaces);
+        // Moving Classic aside still installs the first ChatGPT.
+        assert!(!classic.replaces && classic.first_install());
         let rename = classic.rename.unwrap();
         assert_eq!(rename.from, system.join("ChatGPT.app"));
         assert_eq!(rename.to, system.join("ChatGPT Classic.app"));
@@ -852,7 +854,7 @@ mod tests {
         let current = detect_in(&directories).unwrap();
         assert_eq!(current.path, Some(user.join("ChatGPT.app")));
         assert_eq!(current.version, Some(Version::new(26, 1027, 61615)));
-        assert!(current.replaces && current.rename.is_none());
+        assert!(current.replaces && current.rename.is_none() && !current.first_install());
         assert_eq!(current.superseded, [system.join("Codex.app")]);
 
         // Another application under the name is never replaced.

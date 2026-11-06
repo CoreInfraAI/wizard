@@ -6,7 +6,7 @@ mod download;
 mod running;
 
 pub use download::{DownloadProgress, SavedDownload, download_release, saved_download};
-pub use running::running_apps;
+pub use running::{open_first_install, running_apps};
 
 use super::TokenAgent;
 #[cfg(target_os = "macos")]
@@ -155,6 +155,11 @@ impl Target {
             superseded: Vec::new(),
         }
     }
+
+    /// Whether no copy of the application is installed yet, so installation adds the first one.
+    const fn first_install(&self) -> bool {
+        self.version.is_none()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -204,7 +209,7 @@ impl Release {
     /// Whether an existing installation, possibly a superseded copy, is updated.
     #[must_use]
     pub const fn updates_installation(&self) -> bool {
-        self.target.version.is_some()
+        !self.target.first_install()
     }
 
     /// What installation changes besides the application itself.
@@ -995,7 +1000,8 @@ pub fn archive_rejected(error: &anyhow::Error) -> bool {
 
 /// Installs a downloaded release. `confirmed` approves the release's `confirmation`. `close`
 /// approves closing the applications in [`running_apps`]; whatever installation closes opens
-/// again afterwards, also when installation fails.
+/// again afterwards, also when installation fails. The caller opens a first installation with
+/// [`open_first_install`].
 /// The archive stays for a retry when installation fails, unless the archive itself is at fault.
 pub fn install_release(
     download: &DownloadedRelease,
@@ -1090,10 +1096,11 @@ fn install_release_inner(
     );
 
     let target = &download.release.target;
-    // A new ChatGPT creates its profile on first launch; routing can be applied only then.
-    if target.app == DesktopApp::ChatGpt && !target.replaces && target.superseded.is_empty() {
+    // A new ChatGPT creates its profile on first launch; routing can be applied only then. It is
+    // applied with ChatGPT closed: a running ChatGPT may write its profile back over the change.
+    if target.app == DesktopApp::ChatGpt && target.first_install() {
         notices.push(
-            "Откройте ChatGPT один раз, затем нажмите «Применить» в разделе «Подключение», чтобы подключить его к CoreInfra."
+            "Чтобы подключить ChatGPT к CoreInfra, после его первого запуска закройте ChatGPT, нажмите «Применить» в разделе «Подключение» и откройте его снова."
                 .to_owned(),
         );
     }

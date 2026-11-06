@@ -648,6 +648,7 @@ async fn run(
             // Retain the cached archive even if the blocking task fails or panics.
             let download = Arc::clone(download);
             let version = download.release.display_version.clone();
+            let target = download.release.target.clone();
             let result = tauri::async_runtime::spawn_blocking(move || {
                 installer::install_release(&download, confirmed, close)
             })
@@ -699,6 +700,20 @@ async fn run(
                     }
                 }
             }
+            // After the daemon restart, which could otherwise restart a daemon that the new
+            // application has just started.
+            let notice = tauri::async_runtime::spawn_blocking(move || {
+                installer::open_first_install(&target)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                log::error!("{} first launch worker failed", desktop.product());
+                Some(format!(
+                    "Не удалось открыть {}. Откройте его вручную.",
+                    desktop.product()
+                ))
+            });
+            installed.notices.extend(notice);
             manager.signal.notify(State::Installed {
                 version,
                 notices: installed.notices,

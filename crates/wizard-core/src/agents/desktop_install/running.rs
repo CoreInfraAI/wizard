@@ -1,4 +1,5 @@
-//! Applications that an installation closes, and opening them again afterwards.
+//! Applications that an installation closes, opening them again afterwards, and opening a
+//! first installation.
 //!
 //! Wizard only asks applications to quit: an application that refuses or hangs keeps running,
 //! and the installation then fails as if the user had not agreed to close it.
@@ -189,6 +190,59 @@ impl Reopen {
     }
 }
 
+/// Opens a first installation in the foreground, where the user signs in next; an update opens
+/// nothing beyond what [`Reopen`] restores. Call from a blocking worker once installation and
+/// its follow-up work have succeeded. Returns a notice when the application could not be opened.
+#[must_use]
+pub fn open_first_install(target: &Target) -> Option<String> {
+    if !target.first_install() {
+        return None;
+    }
+    let product = target.app.product();
+    match open_installed(target) {
+        Ok(()) => {
+            log::info!("{product} opened after its first installation");
+            None
+        }
+        Err(error) => {
+            log::error!("{product} could not be opened after its first installation: {error:#}");
+            Some(format!(
+                "Не удалось открыть {product}: {error:#}. Откройте его вручную."
+            ))
+        }
+    }
+}
+
+/// Opens the installed application, or brings it to the front when it already runs.
+fn open_installed(target: &Target) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    let opened = {
+        let path = target
+            .path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("не указан путь установки"))?;
+        command_output(
+            Command::new("/usr/bin/open").arg(path),
+            &format!("Не удалось открыть {}", path.display()),
+        )
+        .map(drop)
+    };
+    #[cfg(target_os = "windows")]
+    let opened = windows::open_package(&target.app.spec().package);
+    #[cfg(target_os = "linux")]
+    let opened = {
+        // Installation fails for ChatGPT here, so the launcher is always Claude's.
+        debug_assert_eq!(target.app, super::DesktopApp::Claude);
+        linux::open(std::path::Path::new(linux::LAUNCHER), &[])
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let opened = {
+        let _ = target;
+        Ok(())
+    };
+    opened
+}
+
 #[cfg(target_os = "windows")]
 mod windows {
     use super::super::{WindowsPackage, command_output, powershell};
@@ -332,6 +386,8 @@ mod linux {
 
     /// Where the Claude Desktop package installs; the installation script checks the same place.
     const DIRECTORY: &str = "/usr/lib/claude-desktop";
+    /// What the package's menu entry runs, as `Exec=claude-desktop %U`.
+    pub(super) const LAUNCHER: &str = "/usr/bin/claude-desktop";
 
     pub(super) struct Process {
         executable: PathBuf,
