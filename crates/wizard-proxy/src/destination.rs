@@ -1,19 +1,12 @@
-//! Destination parsing and matching ported from thinker, revision
-//! f200242dc8030b465da6ed389310c001923904b2:
+//! Destination parsing and matching, kept in sync with the Hub's CONNECT allowlist.
 
 use core::{fmt, net::SocketAddr, str::FromStr};
 use std::sync::LazyLock;
 
 const ALLOWED_DESTINATIONS: &[&str] = &[
-    "auth.openai.com:443",
-    "chatgpt.com:443",
-    "openai.com:443",
-    "releases.openai.com:443",
-    "api.openai.com:443",
-    "developers.openai.com:443",
-    "files.openai.com:443",
-    "platform.openai.com:443",
-    "persistent.oaistatic.com:443",
+    "**.openai.com:443",
+    "**.chatgpt.com:443",
+    "**.oaistatic.com:443",
     "claude.com:443",
     "claude.ai:443",
     "assets-proxy.anthropic.com:443",
@@ -27,8 +20,7 @@ const ALLOWED_DESTINATIONS: &[&str] = &[
     "*.cursor.sh:443",
     "*.cursor-cdn.com:443",
     "*.cursorapi.com:443",
-    "*.cursorvm.com:443",
-    "*.*.cursorvm.com:443",
+    "**.cursorvm.com:443",
     "api.origin.cursor.com:443",
     "cursor.com:443",
     "prod.authentication.cursor.sh:443",
@@ -85,7 +77,7 @@ fn route_destination(
     }
 
     // Wizard-only policy: check the same host at each pattern's permitted port.
-    // Reuse thinker's unchanged matcher instead of duplicating wildcard semantics.
+    // Reuse the Hub's unchanged matcher instead of duplicating wildcard semantics.
     for pattern in patterns {
         destination.port = pattern.port;
         if pattern.matches(&destination) {
@@ -179,8 +171,9 @@ fn validate_dns_host(host: &str) -> Result<(), InvalidDestination> {
     Ok(())
 }
 
-/// Exact names or consecutive leading `*` labels followed by at least two
-/// fixed DNS labels. Each star matches exactly one label, not an arbitrary glob.
+/// Exact names or a single leading wildcard label followed by at least two
+/// fixed DNS labels: `*` matches exactly one label, while `**` matches the apex
+/// and any number of labels.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ConnectDestinationPattern {
     host: String,
@@ -196,16 +189,17 @@ impl ConnectDestinationPattern {
         if self.port != destination.port() {
             return false;
         }
-        let mut labels = destination.host().split('.');
-        for pattern in self.host().split('.') {
-            let Some(label) = labels.next() else {
-                return false;
-            };
-            if pattern != "*" && pattern != label {
-                return false;
-            }
+        let host = destination.host();
+        if let Some(suffix) = self.host().strip_prefix("**.") {
+            return host == suffix
+                || host
+                    .strip_suffix(suffix)
+                    .is_some_and(|labels| labels.ends_with('.'));
         }
-        labels.next().is_none()
+        if let Some(suffix) = self.host().strip_prefix("*.") {
+            return host.split_once('.').is_some_and(|(_, rest)| rest == suffix);
+        }
+        host == self.host()
     }
 }
 
@@ -235,14 +229,13 @@ impl FromStr for ConnectDestinationPattern {
             return Err(InvalidDestination);
         }
         let (host, port) = value.rsplit_once(':').ok_or(InvalidDestination)?;
-        if host.len() > 253 {
-            return Err(InvalidDestination);
-        }
-        let mut suffix = host;
-        while let Some(rest) = suffix.strip_prefix("*.") {
-            suffix = rest;
-        }
-        if suffix == host || suffix.contains('*') || suffix.split('.').count() < 2 {
+        let suffix = host
+            .strip_prefix("**.")
+            .or_else(|| host.strip_prefix("*."))
+            .filter(|suffix| !suffix.contains('*'))
+            .ok_or(InvalidDestination)?;
+        // A `**.` prefix also matches the apex, so it does not count toward 253 bytes.
+        if (!host.starts_with("**.") && host.len() > 253) || suffix.split('.').count() < 2 {
             return Err(InvalidDestination);
         }
         // Reuse the concrete parser for suffix, IP-literal and port validation.

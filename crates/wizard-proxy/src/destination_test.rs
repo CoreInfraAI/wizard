@@ -1,6 +1,6 @@
-// The first six tests mirror thinker's crates/ff-hub-config/src/connect_proxy_test.rs
-// at the revision documented in destination.rs. Keep the shared cases in sync;
-// the routing-policy tests below cover Wizard's intentional direct-route behavior.
+// The first seven tests mirror the Hub's CONNECT destination pattern tests. Keep
+// the shared cases in sync; the routing-policy tests below cover Wizard's
+// intentional direct-route behavior.
 use super::{
     ALLOWED_DESTINATIONS, ConnectDestination, ConnectDestinationPattern, Route, route,
     route_destination,
@@ -41,11 +41,9 @@ fn exact_patterns_preserve_concrete_destination_grammar() {
 }
 
 #[test]
-fn wildcard_patterns_match_exactly_one_label_per_star() {
-    let one: ConnectDestinationPattern = "*.CursorVM.com:00443".parse().expect("valid pattern");
-    let two: ConnectDestinationPattern = "*.*.CURSORVM.COM:443".parse().expect("valid pattern");
-    assert_eq!(one.to_string(), "*.cursorvm.com:443");
-    assert_eq!(two.host(), "*.*.cursorvm.com");
+fn single_star_matches_exactly_one_label() {
+    let pattern: ConnectDestinationPattern = "*.CursorVM.com:00443".parse().expect("valid pattern");
+    assert_eq!(pattern.to_string(), "*.cursorvm.com:443");
 
     for value in [
         "cluster.cursorvm.com:443",
@@ -53,21 +51,11 @@ fn wildcard_patterns_match_exactly_one_label_per_star() {
         "0.cursorvm.com:443",
     ] {
         let destination = value.parse().expect("valid destination");
-        assert!(one.matches(&destination), "{value}");
-        assert!(!two.matches(&destination), "{value}");
-    }
-    for value in [
-        "computer.cluster.cursorvm.com:443",
-        "A-B.C-D.CURSORVM.COM:443",
-    ] {
-        let destination = value.parse().expect("valid destination");
-        assert!(!one.matches(&destination), "{value}");
-        assert!(two.matches(&destination), "{value}");
+        assert!(pattern.matches(&destination), "{value}");
     }
     for value in [
         "cursorvm.com:443",
-        "computer.cluster.extra.cursorvm.com:443",
-        "computer.cluster.cursorvm.com:80",
+        "computer.cluster.cursorvm.com:443",
         "cluster.cursorvm.com:8443",
         "cluster.evilcursorvm.com:443",
         "cluster.cursorvm.com.evil:443",
@@ -75,8 +63,38 @@ fn wildcard_patterns_match_exactly_one_label_per_star() {
         "cursorvm.com.evil:443",
     ] {
         let destination = value.parse().expect("valid destination");
-        assert!(!one.matches(&destination), "{value}");
-        assert!(!two.matches(&destination), "{value}");
+        assert!(!pattern.matches(&destination), "{value}");
+    }
+}
+
+#[test]
+fn double_star_matches_apex_and_any_depth() {
+    let pattern: ConnectDestinationPattern = "**.OpenAI.com:00443".parse().expect("valid pattern");
+    assert_eq!(pattern.to_string(), "**.openai.com:443");
+    assert_eq!(pattern.host(), "**.openai.com");
+
+    for value in [
+        "openai.com:443",
+        "b.openai.com:443",
+        "A.B.OpenAI.com:443",
+        "a.b.c.d.openai.com:443",
+    ] {
+        let destination = value.parse().expect("valid destination");
+        assert!(pattern.matches(&destination), "{value}");
+    }
+    for value in [
+        "evilopenai.com:443",
+        "a.evilopenai.com:443",
+        "openai.com.evil:443",
+        "a.openai.com.evil:443",
+        "openai-com:443",
+        "a.openai-com:443",
+        "openai.co:443",
+        "openai.com:8443",
+        "a.b.openai.com:80",
+    ] {
+        let destination = value.parse().expect("valid destination");
+        assert!(!pattern.matches(&destination), "{value}");
     }
 }
 
@@ -84,18 +102,30 @@ fn wildcard_patterns_match_exactly_one_label_per_star() {
 fn wildcard_patterns_reject_unbounded_and_partial_wildcards() {
     for value in [
         "*:443",
+        "**:443",
         "*.*:443",
         "*.com:443",
+        "**.com:443",
         "*.*.com:443",
         "*.localhost:443",
-        "**.cursorvm.com:443",
+        "**.localhost:443",
+        "*.*.cursorvm.com:443",
+        "**.**.cursorvm.com:443",
+        "*.**.cursorvm.com:443",
+        "**.*.cursorvm.com:443",
+        "***.cursorvm.com:443",
+        "**cursorvm.com:443",
+        "**.cursorvm.com.**:443",
         "foo*.cursorvm.com:443",
         "*foo.cursorvm.com:443",
+        "**foo.cursorvm.com:443",
         "foo.*.cursorvm.com:443",
+        "foo.**.cursorvm.com:443",
         "*.foo.*.cursorvm.com:443",
         "*.cursorvm.*:443",
-        "*.*.cursorvm.*:443",
+        "**.cursorvm.*:443",
         "api2.cursor.sh:*",
+        "**.openai.com:*",
     ] {
         assert!(
             value.parse::<ConnectDestinationPattern>().is_err(),
@@ -125,6 +155,7 @@ fn patterns_reject_invalid_hosts_and_ports() {
         "*.foo_bar.com:443",
         "*.cürsorvm.com:443",
         "*.127.0.0.1:443",
+        "**.127.0.0.1:443",
         "*.127.1:443",
         "*.0x7f.1:443",
         "*.[::1]:443",
@@ -158,6 +189,16 @@ fn patterns_enforce_dns_label_and_total_length_limits() {
         .parse()
         .expect("valid destination");
     assert!(pattern.matches(&destination));
+
+    let any_depth = format!("*{max_host}:443")
+        .parse::<ConnectDestinationPattern>()
+        .expect("`**.` prefix is not counted toward 253 bytes");
+    let apex = format!("{}:443", &max_host[2..])
+        .parse()
+        .expect("valid destination");
+    assert!(any_depth.matches(&apex));
+    assert!(any_depth.matches(&destination));
+
     for value in [
         format!("{max_host}c:443"),
         format!("*.{}.com:443", "a".repeat(64)),
@@ -173,7 +214,7 @@ fn patterns_enforce_dns_label_and_total_length_limits() {
 fn concrete_destinations_still_reject_wildcards() {
     for value in [
         "*.cursorvm.com:443",
-        "*.*.cursorvm.com:443",
+        "**.cursorvm.com:443",
         "foo*.cursorvm.com:443",
         "*:443",
     ] {
@@ -190,7 +231,7 @@ fn built_in_list_is_valid_unique_and_routes_representative_destinations() {
             .expect("valid built-in pattern");
         assert!(seen.insert(pattern), "duplicate destination");
         // Exercise every configured pattern through the actual routing entry point.
-        let destination = value.replace('*', "test");
+        let destination = value.replace("**", "a.b").replace('*', "test");
         assert_eq!(route(&destination), Ok(Route::Proxy), "{value}");
         for port in [1, 80, 8443, 65535] {
             assert_eq!(
@@ -202,6 +243,23 @@ fn built_in_list_is_valid_unique_and_routes_representative_destinations() {
     }
     assert_eq!(route("API.OpenAI.COM:00443"), Ok(Route::Proxy));
     assert_eq!(route("PROD.Authentication.Cursor.SH:443"), Ok(Route::Proxy));
+    for value in [
+        "openai.com:443",
+        "sub.api.openai.com:443",
+        "chatgpt.com:443",
+        "persistent.oaistatic.com:443",
+        "cursorvm.com:443",
+        "a.b.c.cursorvm.com:443",
+    ] {
+        assert_eq!(route(value), Ok(Route::Proxy), "{value}");
+    }
+    for value in [
+        "sub.api.openai.com:80",
+        "cursorvm.com:80",
+        "a.b.c.cursorvm.com:8443",
+    ] {
+        assert_eq!(route(value), Ok(Route::Block), "{value}");
+    }
 }
 
 #[test]
@@ -228,16 +286,14 @@ fn only_valid_unmatched_destinations_go_direct() {
     for value in [
         "example.com:443",
         "example.com:80",
-        "sub.api.openai.com:80",
         "api.openai.com.example.com:8443",
-        "cursorvm.com:80",
-        "a.b.c.cursorvm.com:8443",
-        "sub.api.openai.com:443",
         "api.openai.com.example.com:443",
-        "cursorvm.com:443",
-        "a.b.c.cursorvm.com:443",
+        "evilopenai.com:443",
+        "a.evilcursorvm.com:8443",
+        "sub.api.anthropic.com:443",
         "cursor.sh:443",
         "a.b.cursor.sh:443",
+        "cursorapi.com:80",
         "127.0.0.1:443",
         "[::1]:443",
         "[2001:db8::1]:8080",
