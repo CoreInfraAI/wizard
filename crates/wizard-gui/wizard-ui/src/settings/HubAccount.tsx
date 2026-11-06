@@ -1,7 +1,7 @@
 import { useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { MenuButton, useClose } from "@headlessui/react";
 import { ComputerDesktopIcon, EllipsisHorizontalIcon, MoonIcon, SunIcon } from "@heroicons/react/20/solid";
-import { loginHubAccount, logoutHubAccount, openHub, selectHub, useHubAccount } from "./hub_account";
+import { hubDisplayName, loginHubAccount, logoutHubAccount, openHub, selectHub, useHubAccount } from "./hub_account";
 import { getTheme, setTheme, subscribeTheme } from "./theme";
 import { Dropdown, DropdownDescription, DropdownDivider, DropdownHeader, DropdownHeading, DropdownItem, DropdownLabel, DropdownMenu, DropdownSection } from "../components/catalyst/dropdown";
 import { SidebarItem, SidebarLabel } from "../components/catalyst/sidebar";
@@ -62,7 +62,8 @@ export function HubAccountMenu({ hub, settingsCurrent }: { hub: HubAccountContro
   const typeaheadUntil = useRef(0);
   const theme = useSyncExternalStore(subscribeTheme, getTheme);
   const activeHub = account?.profile?.hubs.find((item) => item.hub_id === account.active_hub_id);
-  const activeName = activeHub?.display_name?.trim() || activeHub?.hub_name || "CoreInfra AI Hub";
+  // Like Hub and Agent, the personal hub is always "Личный хаб" on the button.
+  const activeName = activeHub?.is_personal ? "Личный хаб" : activeHub ? hubDisplayName(activeHub) : "CoreInfra AI Hub";
   const disabled = hub.submitting || hub.agentBusy;
 
   return (
@@ -117,7 +118,7 @@ export function HubAccountMenu({ hub, settingsCurrent }: { hub: HubAccountContro
                 <DropdownHeading>Хабы</DropdownHeading>
                 {account.profile?.hubs.map((item) => {
                   const active = item.hub_id === account.active_hub_id;
-                  const name = item.display_name?.trim() || item.hub_name;
+                  const name = hubDisplayName(item);
                   return (
                     <DropdownItem key={item.hub_id} data-keep-open disabled={disabled}
                       aria-current={active ? "true" : undefined}

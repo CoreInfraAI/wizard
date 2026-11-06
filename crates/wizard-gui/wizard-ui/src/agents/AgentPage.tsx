@@ -5,6 +5,7 @@ import { BackupDialog } from "./BackupDialog";
 import { DesktopInstall, useDesktopInstall } from "./DesktopInstall";
 import { type HubTokensState, refreshHubTokens, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
 import type { HubAccountControl } from "../settings/HubAccount";
+import { hubDisplayName } from "../settings/hub_account";
 import { useProxy } from "./proxy";
 import { reportError } from "../logs/log";
 import { Badge } from "../components/catalyst/badge";
@@ -39,7 +40,7 @@ const hubModes: ModeOption<HubMode>[] = [
 ];
 
 // Hub access shared by all pages. Token values are secrets: never log them.
-type Hub = HubTokensState & { signedIn: boolean; activeHubName?: string };
+type Hub = HubTokensState & { signedIn: boolean; tokenSource?: string };
 
 // Names of Hub tokens created for agents, used for the default choice and the create option.
 // Keep in sync with `TokenAgent::token_name` in `crates/wizard-core/src/agents/mod.rs`.
@@ -118,7 +119,7 @@ function TokenField({ token, hub, disabled }: {
 }) {
   return (
     <Field>
-      <Label>{hub.activeHubName ? `Токен из хаба ${hub.activeHubName}` : "Хаб не выбран"}</Label>
+      <Label>{hub.tokenSource ?? "Хаб не выбран"}</Label>
       <Listbox disabled={disabled || !hub.signedIn} value={token.selectedOption} by="key" placeholder="Выберите токен" onChange={token.choose} className="max-w-sm">
         {token.options.map((option) => (
           <ListboxOption key={option.key} value={option}>
@@ -269,7 +270,7 @@ export function AgentPage({ agents, page, proxy, account }: {
   const hub: Hub = {
     ...useHubTokens(account.account?.active_hub_id),
     signedIn: account.signedIn,
-    activeHubName: activeHub?.display_name?.trim() || activeHub?.hub_name,
+    tokenSource: activeHub && (activeHub.is_personal ? "Токен из личного хаба" : `Токен из хаба ${hubDisplayName(activeHub)}`),
   };
   const claudeDesktopToken = useTokenMenu("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
   const claudeInstall = useDesktopInstall("claude");

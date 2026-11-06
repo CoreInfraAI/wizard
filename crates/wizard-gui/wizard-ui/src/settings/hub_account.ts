@@ -6,6 +6,9 @@ type HubProfile = { personal_hub_id: string; personal_hub_name: string; username
 type HubAccount = { signed_in: boolean; profile: HubProfile | null; active_hub_id: string | null; pending: boolean; error: string | null };
 type HubAccountSnapshot = HubAccount & { revision: number };
 
+export const hubDisplayName = (hub: ProfileHub) =>
+  hub.display_name?.trim() || hub.hub_name.trim() || hub.hub_id;
+
 export function useHubAccount() {
   const [account, setAccount] = useState<HubAccount>();
   const [error, setError] = useState<string>();
