@@ -181,7 +181,8 @@ async fn saved_download(
 pub(crate) fn start_background_checks(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let tokens = app.state::<RevisionSignal<hub_tokens::HubTokens>>();
-        let mut revision = None;
+        // The timer's immediate first tick covers startup; wake only on later token changes.
+        let mut revision = Some(tokens.current().revision);
         // Only inspect the deadline here; network checks are limited by last_check.
         // This also retries a due check skipped while another operation held the lock.
         let mut timer = tokio::time::interval(Duration::from_mins(5));
@@ -198,10 +199,6 @@ pub(crate) fn start_background_checks(app: tauri::AppHandle) {
                 continue;
             }
             for desktop in DesktopApp::ALL {
-                if app.state::<InstallManagers>().get(desktop).unsupported {
-                    continue;
-                }
-                log::info!("Starting {} background check", desktop.product());
                 if start(
                     app.clone(),
                     desktop,
@@ -429,11 +426,13 @@ fn start(
             if automatic {
                 session.last_check = Some(Instant::now());
             }
-            if matches!(operation, Operation::Install) {
-                log::error!("{} installation failed: {message}", desktop.product());
-            } else {
+            match operation {
+                Operation::Install => {
+                    log::error!("{} installation failed: {message}", desktop.product());
+                }
                 // Check/download errors can originate in authenticated requests.
-                log::warn!("{} installation operation failed", desktop.product());
+                Operation::Check => log::warn!("{} release check failed", desktop.product()),
+                Operation::Download => log::warn!("{} download failed", desktop.product()),
             }
             // An installation that rejected the archive deleted it: offer to download it again.
             let operation = match (operation, &session.package) {
@@ -546,6 +545,7 @@ async fn run(
                 let Some(token) = background_token(app, desktop).await? else {
                     return Ok(());
                 };
+                log::info!("Starting {} background check", desktop.product());
                 session.package = None;
                 session.last_check = Some(Instant::now());
                 manager.signal.notify(State::Checking);
@@ -569,11 +569,17 @@ async fn run(
                 .await
                 .map_err(|error| format!("{error:#}"))?;
             let Some(release) = release else {
+                log::debug!("{} is up to date", desktop.product());
                 saved_download(desktop, None).await;
                 session.package = None;
                 manager.signal.notify(State::UpToDate);
                 return Ok(());
             };
+            log::info!(
+                "{} {} is available",
+                desktop.product(),
+                release.display_version
+            );
             let notes = release_notes(app, &release).await?;
             let mut saved = saved_download(desktop, Some(&release)).await;
             if saved.is_some_and(|saved| saved.complete()) {
