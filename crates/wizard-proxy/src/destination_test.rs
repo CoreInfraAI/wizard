@@ -248,6 +248,11 @@ fn built_in_list_is_valid_unique_and_routes_representative_destinations() {
         "sub.api.openai.com:443",
         "chatgpt.com:443",
         "persistent.oaistatic.com:443",
+        "claude.com:443",
+        "claude.ai:443",
+        "anthropic.com:443",
+        "sub.api.anthropic.com:443",
+        "bridge.claudeusercontent.com:443",
         "cursorvm.com:443",
         "a.b.c.cursorvm.com:443",
     ] {
@@ -255,6 +260,7 @@ fn built_in_list_is_valid_unique_and_routes_representative_destinations() {
     }
     for value in [
         "sub.api.openai.com:80",
+        "downloads.claude.ai:80",
         "cursorvm.com:80",
         "a.b.c.cursorvm.com:8443",
     ] {
@@ -290,7 +296,6 @@ fn only_valid_unmatched_destinations_go_direct() {
         "api.openai.com.example.com:443",
         "evilopenai.com:443",
         "a.evilcursorvm.com:8443",
-        "sub.api.anthropic.com:443",
         "cursor.sh:443",
         "a.b.cursor.sh:443",
         "cursorapi.com:80",
