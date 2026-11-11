@@ -10,6 +10,7 @@ import { SidebarLayout } from "./components/catalyst/sidebar-layout";
 import { ErrorText } from "./components/ErrorText";
 import { OpenLogsButton } from "./logs/OpenLogsButton";
 import { useHubAccountControl } from "./settings/HubAccount";
+import { HubSignIn } from "./settings/HubSignIn";
 import { SettingsPage } from "./settings/SettingsPage";
 import { useUpdateState } from "./updates/update";
 import { UpdateScreen } from "./updates/UpdateScreen";
@@ -48,6 +49,7 @@ function App() {
       navbar={null}
       sidebar={<AppSidebar page={page} account={account} update={update} />}
     >
+      <HubSignIn hub={account} />
       {page === "settings" && <SettingsPage />}
       {page !== "settings" && agents.status === "loading" && <Badge color="sky" className="animate-pulse">Загрузка…</Badge>}
       {page !== "settings" && agents.status === "error" && <ErrorText>Не удалось загрузить состояние агентов: {agents.message}</ErrorText>}

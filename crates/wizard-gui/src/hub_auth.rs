@@ -268,6 +268,16 @@ pub(crate) async fn open_hub(app: tauri::AppHandle, theme: String) -> Result<(),
         .map_err(|error| error.message().to_owned())
 }
 
+/// Opens the registration page in the system browser, leaving Wizard open.
+#[tauri::command]
+pub(crate) async fn open_hub_registration() -> Result<(), String> {
+    let url = Url::parse("https://hub.coreinfra.ai/register")
+        .map_err(|_| "Некорректный адрес регистрации")?;
+    login::open_browser(&url)
+        .await
+        .map_err(|error| error.message().to_owned())
+}
+
 /// Republishes the saved account after a session change, keeping `pending` and `error`.
 pub(crate) fn republish(app: &tauri::AppHandle) {
     app.state::<RevisionSignal<HubAccount>>().update(|account| {

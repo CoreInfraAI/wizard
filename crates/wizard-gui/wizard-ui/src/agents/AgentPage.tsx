@@ -295,22 +295,6 @@ export function AgentPage({ agents, page, proxy, account }: {
     }
   }
 
-  const signIn = !account.signedIn && (
-    <Fieldset className="mt-10">
-      <Legend>CoreInfra AI Hub</Legend>
-      <Text>Войдите в CoreInfra AI Hub, чтобы подключить агента. Вход в аккаунт не изменяет настройки агентов.</Text>
-      <FieldGroup>
-        <div>
-          <Button outline disabled={!account.account || account.submitting} onClick={account.change}>
-            {account.account?.pending ? "Ожидание входа…" : "Войти через CoreInfra Hub"}
-          </Button>
-          {/* The sidebar footer shows the error on wide windows; narrow ones hide the sidebar. */}
-          {account.error && <div className="mt-3 lg:hidden"><ErrorText>{account.error}</ErrorText></div>}
-        </div>
-      </FieldGroup>
-    </Fieldset>
-  );
-
   let content: ReactNode;
   switch (page) {
     // Keep a prepared plan alive while the settings page is selected.
@@ -343,7 +327,6 @@ export function AgentPage({ agents, page, proxy, account }: {
               )}
             </DescriptionList>
           )}
-          {(codex.status === "found" || !chatGptInstall.hidden) && signIn}
           {codex.status === "found" && (
             <RoutingFieldset agent="codex" token={chatGptInstall.hidden ? undefined : codexToken} modes={routingModes("Codex")} mode={codex.data.routing_mode}
               toChange={(mode) => ({ CodexSetRouting: mode })} agentToken={codex.data.token} hub={hub}
@@ -375,7 +358,6 @@ export function AgentPage({ agents, page, proxy, account }: {
               <RoutingRows mode={claude.data.routing_mode} agentToken={claude.data.token} hub={hub} />
             )}
           </DescriptionList>
-          {claude.status === "found" && signIn}
           {claude.status === "found" && (
             <RoutingFieldset agent="claude" modes={routingModes("Claude")} mode={claude.data.routing_mode}
               toChange={(mode) => ({ ClaudeSetRouting: mode })} agentToken={claude.data.token} hub={hub}
@@ -401,7 +383,6 @@ export function AgentPage({ agents, page, proxy, account }: {
               </>
             )}
           </DescriptionList>
-          {signIn}
           {desktop.status === "found" && (
             <RoutingFieldset agent="claude_desktop" token={claudeDesktopToken} modes={routingModes("Claude")} mode={desktop.data.routing_mode}
               toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })} agentToken={desktop.data.token} hub={hub}
@@ -434,7 +415,6 @@ export function AgentPage({ agents, page, proxy, account }: {
               <RoutingRows mode={detection.data.routing_mode} agentToken={detection.data.token} hub={hub} />
             )}
           </DescriptionList>
-          {detection.status === "found" && signIn}
           {detection.status === "found" && (
             <RoutingFieldset agent={page} modes={hubModes} mode={detection.data.routing_mode}
               toChange={(mode) => (page === "opencode" ? { SetOpenCodeHub: mode } : { SetPiHub: mode })}

@@ -44,3 +44,4 @@ export const loginHubAccount = () => invoke<void>("login_hub_account");
 export const logoutHubAccount = () => invoke<void>("logout_hub_account");
 export const selectHub = (hubId: string) => invoke<void>("select_hub", { hubId });
 export const openHub = (theme: string) => invoke<void>("open_hub", { theme });
+export const openHubRegistration = () => invoke<void>("open_hub_registration");
