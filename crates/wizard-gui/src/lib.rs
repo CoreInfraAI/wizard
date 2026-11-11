@@ -127,6 +127,7 @@ pub fn run_application() -> Result<()> {
             hub_auth::logout_hub_account,
             hub_auth::select_hub,
             hub_auth::open_hub,
+            hub_auth::open_hub_registration,
             hub_tokens::get_hub_tokens_state,
             hub_tokens::get_configured_token_info,
             hub_tokens::refresh_hub_tokens,

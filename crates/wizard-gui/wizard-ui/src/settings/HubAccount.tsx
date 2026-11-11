@@ -1,7 +1,7 @@
 import { useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { MenuButton, useClose } from "@headlessui/react";
 import { ComputerDesktopIcon, EllipsisHorizontalIcon, MoonIcon, SunIcon } from "@heroicons/react/20/solid";
-import { hubDisplayName, loginHubAccount, logoutHubAccount, openHub, selectHub, useHubAccount } from "./hub_account";
+import { hubDisplayName, loginHubAccount, logoutHubAccount, openHub, openHubRegistration, selectHub, useHubAccount } from "./hub_account";
 import { getTheme, setTheme, subscribeTheme } from "./theme";
 import { Dropdown, DropdownDescription, DropdownDivider, DropdownHeader, DropdownHeading, DropdownItem, DropdownLabel, DropdownMenu, DropdownSection } from "../components/catalyst/dropdown";
 import { SidebarItem, SidebarLabel } from "../components/catalyst/sidebar";
@@ -44,6 +44,7 @@ export function useHubAccountControl() {
       if (!agentBusy) void run(() => selectHub(hubId));
     },
     open: () => void run(() => openHub(getTheme())),
+    register: () => void run(openHubRegistration),
   };
 }
 
