@@ -58,9 +58,10 @@ export function BackupDialog({ agent, onClose }: {
 
   return (
     <Dialog open onClose={() => { if (!pending) onClose(); }}>
-      <DialogTitle>Резервные копии настроек {agent === "codex" ? "Codex" : "Claude Code"}</DialogTitle>
+      <DialogTitle>Резервные копии настроек {agent === "codex" ? "Codex" : agent === "claude_desktop" ? "Claude Desktop" : "Claude Code"}</DialogTitle>
       <DialogDescription>
         Сохранённые конфигурации перед изменениями Wizard. Это не история каждого переключения режима.
+        {agent === "claude_desktop" && " Восстановится весь сохранённый профиль, включая настройки MCP, выбор профиля и режим подключения. После восстановления перезапустите Claude Desktop."}
         {agent === "codex" && " Если фоновая служба Codex запущена, Wizard перезапустит её после восстановления. Это может прервать текущую работу."}
       </DialogDescription>
       <DialogBody className="space-y-3">

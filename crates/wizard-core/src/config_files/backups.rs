@@ -21,6 +21,7 @@ const STATE_VERSION: u32 = 1;
 pub enum AgentKind {
     Codex,
     Claude,
+    ClaudeDesktop,
 }
 
 impl AgentKind {
@@ -28,9 +29,32 @@ impl AgentKind {
     /// (`~/.claude.json`, `ChatGPT`'s Preferences): their apps rewrite it constantly, and a
     /// restore would roll back unrelated state such as MCP servers or a proxy Wizard removed.
     pub(crate) fn backs_up(self, path: &Path) -> bool {
+        if self == Self::ClaudeDesktop {
+            let Some(parent) = path.parent() else {
+                return false;
+            };
+            let name = path.file_name().and_then(|name| name.to_str());
+            if parent.file_name().is_some_and(|name| name == "Claude-3p") {
+                return name == Some("claude_desktop_config.json");
+            }
+            return parent
+                .file_name()
+                .is_some_and(|name| name == "configLibrary")
+                && parent
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == "Claude-3p")
+                && name.is_some_and(|name| {
+                    name == "_meta.json"
+                        || name.strip_suffix(".json").is_some_and(|id| {
+                            uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
+                        })
+                });
+        }
         let names: &[&str] = match self {
             Self::Codex => &["config.toml", ".env"],
             Self::Claude => &["settings.json", "no-proxy.sh"],
+            Self::ClaudeDesktop => unreachable!(),
         };
         path.file_name()
             .and_then(|name| name.to_str())
@@ -41,28 +65,43 @@ impl AgentKind {
         let name = match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::ClaudeDesktop => "claude_desktop",
         };
 
         Ok(wizard_settings::paths::config_dir()?
             .join("backups")
             .join(name))
     }
-
-    fn ensure_directory(self) -> Result<PathBuf> {
-        let directory = self.directory()?;
-        fs::create_dir_all(&directory)?;
-        #[cfg(unix)]
-        fs::set_permissions(&directory, Permissions::from_mode(0o700))?;
-        Ok(directory)
-    }
 }
 
-pub struct BackupManager;
+pub struct BackupManager {
+    agent: AgentKind,
+    directory: PathBuf,
+}
 
 impl BackupManager {
-    pub fn get_backups(agent: AgentKind) -> Result<Vec<Backup>> {
-        let directory = agent.directory()?;
-        let entries = match fs::read_dir(&directory) {
+    pub fn new(agent: AgentKind) -> Result<Self> {
+        Ok(Self {
+            agent,
+            directory: agent.directory()?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_directory(agent: AgentKind, directory: PathBuf) -> Self {
+        Self { agent, directory }
+    }
+
+    fn ensure_directory(&self) -> Result<&Path> {
+        fs::create_dir_all(&self.directory)?;
+        #[cfg(unix)]
+        fs::set_permissions(&self.directory, Permissions::from_mode(0o700))?;
+        Ok(&self.directory)
+    }
+
+    pub fn get_backups(&self) -> Result<Vec<Backup>> {
+        let directory = &self.directory;
+        let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error).context("failed to list backups"),
@@ -84,7 +123,7 @@ impl BackupManager {
             if name != format!("{id}.json") {
                 continue;
             }
-            let Ok(backup) = Backup::load(agent, id) else {
+            let Ok(backup) = Backup::load(&self.directory, id) else {
                 continue;
             };
             backups.push(backup);
@@ -94,52 +133,64 @@ impl BackupManager {
         Ok(backups)
     }
 
-    pub fn apply_changes(agent: AgentKind, changes: &[FileChange]) -> Result<()> {
-        Self::create_backup_if_needed(agent, changes)?;
+    pub fn apply_changes(&self, changes: &[FileChange]) -> Result<()> {
+        self.create_backup_if_needed(changes)?;
 
         FileChange::apply_all(changes)?;
 
-        Self::save_last_written(agent, changes)
+        self.save_last_written(changes)
     }
 
-    pub fn create_backup_if_needed(agent: AgentKind, changes: &[FileChange]) -> Result<()> {
+    pub fn create_backup_if_needed(&self, changes: &[FileChange]) -> Result<()> {
         if changes.iter().all(|change| !change.is_changed()) {
             return Ok(());
         }
 
-        State::load(agent)?.create_backup_if_needed(changes)
+        State::load(self)?.create_backup_if_needed(self, changes)
     }
 
-    pub fn save_last_written(agent: AgentKind, changes: &[FileChange]) -> Result<()> {
+    pub fn save_last_written(&self, changes: &[FileChange]) -> Result<()> {
         if changes.iter().all(|change| !change.is_changed()) {
             return Ok(());
         }
 
-        let mut state = State::load(agent)?;
+        let mut state = State::load(self)?;
         state.last_written = Some(
             changes
                 .iter()
                 .map(|change| (change.path().clone(), change.after.clone()))
                 .collect(),
         );
-        state.save()
+        state.save(self)
     }
 
-    pub fn load_backup(agent: AgentKind, id: u32) -> Result<()> {
-        let backup = Backup::load(agent, id)?;
+    pub fn load_backup(&self, id: u32) -> Result<()> {
+        self.apply_changes(&self.restore_changes(id)?)
+            .context("failed to restore backup")
+    }
+
+    pub(crate) fn restore_changes(&self, id: u32) -> Result<Vec<FileChange>> {
+        let backup = Backup::load(&self.directory, id)?;
 
         let mut changes = Vec::with_capacity(backup.files.len());
         // Older backups may also hold app-owned state files.
-        for (path, snapshot) in backup.files.iter().filter(|(path, _)| agent.backs_up(path)) {
+        for (path, snapshot) in backup
+            .files
+            .iter()
+            .filter(|(path, _)| self.agent.backs_up(path))
+        {
             let mut change = FileChange::read(path.clone())?;
             change.after = snapshot.clone();
             changes.push(change);
         }
-        // Like a plan, back up only what the restore changes.
-        changes.retain(FileChange::is_changed);
+        // Desktop restores keep the profile, selection and deployment mode together.
+        // Other agents back up only what the restore changes.
+        if self.agent != AgentKind::ClaudeDesktop {
+            changes.retain(FileChange::is_changed);
+        }
         // Restore existing files first; delete files absent from the backup last.
         changes.sort_by_key(|change| matches!(change.after, FileSnapshot::Missing));
-        Self::apply_changes(agent, &changes).context("failed to restore backup")
+        Ok(changes)
     }
 }
 
@@ -161,13 +212,13 @@ impl State {
             last_written: None,
         }
     }
-    fn load(agent: AgentKind) -> Result<Self> {
-        let path = agent.directory()?.join("state.json");
+    fn load(manager: &BackupManager) -> Result<Self> {
+        let path = manager.directory.join("state.json");
 
         let snapshot = FileSnapshot::read(&path)
             .with_context(|| format!("failed to read backup state {}", path.display()))?;
         let Some(content) = snapshot.content() else {
-            return Ok(Self::default(agent));
+            return Ok(Self::default(manager.agent));
         };
 
         let state: Self = serde_json::from_str(content)
@@ -177,17 +228,17 @@ impl State {
             "unsupported backup state version"
         );
         ensure!(
-            state.agent == agent,
+            state.agent == manager.agent,
             "backup state belongs to a different agent"
         );
         Ok(state)
     }
-    fn save(&self) -> Result<()> {
+    fn save(&self, manager: &BackupManager) -> Result<()> {
         let mut content = serde_json::to_string_pretty(self)
             .map_err(|_| anyhow::anyhow!("failed to serialize backup state"))?;
         content.push('\n');
 
-        let path = self.agent.ensure_directory()?.join("state.json");
+        let path = manager.ensure_directory()?.join("state.json");
 
         let mut change = FileChange::read(path)?;
         change.after = FileSnapshot::new(content, 0o600);
@@ -198,7 +249,11 @@ impl State {
         self.next_backup_id = self.next_backup_id.strict_add(1);
         backup_id
     }
-    fn create_backup_if_needed(&mut self, changes: &[FileChange]) -> Result<()> {
+    fn create_backup_if_needed(
+        &mut self,
+        manager: &BackupManager,
+        changes: &[FileChange],
+    ) -> Result<()> {
         // A path may occur in multiple steps; keep its first original snapshot.
         let current_state: BTreeMap<&PathBuf, &FileSnapshot> = changes
             .iter()
@@ -212,8 +267,8 @@ impl State {
 
         // Save the next ID first, so a failed state save can never reuse an existing backup's ID.
         let id = self.get_next_backup_id();
-        self.save()?;
-        Backup::from_changes(id, changes).save(self.agent)
+        self.save(manager)?;
+        Backup::from_changes(id, changes).save(manager)
     }
 }
 
@@ -239,9 +294,7 @@ impl Backup {
                 .collect(),
         }
     }
-    fn load(agent: AgentKind, id: u32) -> Result<Self> {
-        let directory = agent.directory()?;
-
+    fn load(directory: &Path, id: u32) -> Result<Self> {
         let path = directory.join(format!("{id}.json"));
         let snapshot = FileSnapshot::read(&path)
             .with_context(|| format!("failed to read backup {}", path.display()))?;
@@ -260,12 +313,12 @@ impl Backup {
         Ok(backup)
     }
 
-    fn save(&self, agent: AgentKind) -> Result<()> {
+    fn save(&self, manager: &BackupManager) -> Result<()> {
         let mut content = serde_json::to_string_pretty(self)
             .map_err(|_| anyhow::anyhow!("failed to serialize backup"))?;
         content.push('\n');
 
-        let directory = agent.ensure_directory()?;
+        let directory = manager.ensure_directory()?;
 
         let mut change = FileChange::read(directory.join(format!("{}.json", self.id)))?;
         // Another Wizard process may have used this ID; never replace its backup.

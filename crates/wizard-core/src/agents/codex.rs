@@ -100,14 +100,14 @@ fn mode_from_config(doc: &DocumentMut) -> RoutingMode {
 }
 
 pub fn get_backups() -> Result<Vec<super::Backup>> {
-    BackupManager::get_backups(AgentKind::Codex)
+    BackupManager::new(AgentKind::Codex)?.get_backups()
 }
 
 /// Call from a Tokio blocking worker. Like a plan, restarts a running managed daemon,
 /// which may interrupt work.
 pub fn restore_backup(id: u32, settings: &Settings) -> Result<()> {
     let _guard = PreparedAgent::Codex.lock()?;
-    BackupManager::load_backup(AgentKind::Codex, id)?;
+    BackupManager::new(AgentKind::Codex)?.load_backup(id)?;
     let path = std::path::absolute(config_path()?)?;
     // Backups hold files only; the restored mode decides whether ChatGPT updates itself.
     #[cfg(target_os = "macos")]
