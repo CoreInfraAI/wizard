@@ -39,7 +39,7 @@ export function applyAgentPlan(plan: PreparedPlan): Promise<void> {
   return invoke<void>("apply_agent_plan", { plan });
 }
 
-export type BackupAgent = "codex" | "claude";
+export type BackupAgent = "codex" | "claude" | "claude_desktop";
 
 export type Backup = {
   id: number;

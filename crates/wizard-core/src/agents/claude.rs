@@ -105,12 +105,12 @@ fn mode_from_config(settings: &Value) -> RoutingMode {
 }
 
 pub fn get_backups() -> Result<Vec<super::Backup>> {
-    BackupManager::get_backups(AgentKind::Claude)
+    BackupManager::new(AgentKind::Claude)?.get_backups()
 }
 
 pub fn restore_backup(id: u32) -> Result<()> {
     let _guard = PreparedAgent::Claude.lock()?;
-    BackupManager::load_backup(AgentKind::Claude, id)
+    BackupManager::new(AgentKind::Claude)?.load_backup(id)
 }
 
 /// `token` is ignored when disabled.

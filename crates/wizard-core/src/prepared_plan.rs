@@ -134,7 +134,7 @@ impl PreparedPlan {
     }
 
     /// Call from a Tokio blocking worker. Adjacent file changes are applied as a group.
-    /// Codex/Claude backups cover the entire plan; there is no rollback on failure.
+    /// Agent backups cover the entire plan; there is no rollback on failure.
     pub fn apply(self) -> Result<()> {
         anyhow::ensure!(
             !self.steps.iter().any(|step| matches!(
@@ -156,6 +156,25 @@ impl PreparedPlan {
     /// returns. Proxy callbacks receive only demand.
     pub fn apply_with_proxies(
         self,
+        set_claude_enabled: impl FnMut(bool) -> Result<()>,
+        set_codex_enabled: impl FnMut(bool) -> Result<()>,
+    ) -> Result<()> {
+        let backup = self.backup_agent().map(BackupManager::new).transpose()?;
+        self.apply_with_backup(backup, set_claude_enabled, set_codex_enabled)
+    }
+
+    fn backup_agent(&self) -> Option<AgentKind> {
+        match self.agent {
+            PreparedAgent::Codex => Some(AgentKind::Codex),
+            PreparedAgent::Claude => Some(AgentKind::Claude),
+            PreparedAgent::ClaudeDesktop => Some(AgentKind::ClaudeDesktop),
+            PreparedAgent::Pi | PreparedAgent::OpenCode => None,
+        }
+    }
+
+    pub(crate) fn apply_with_backup(
+        self,
+        manager: Option<BackupManager>,
         mut set_claude_enabled: impl FnMut(bool) -> Result<()>,
         mut set_codex_enabled: impl FnMut(bool) -> Result<()>,
     ) -> Result<()> {
@@ -166,36 +185,34 @@ impl PreparedPlan {
         for step in &self.steps {
             if let PreparedStep::ChangeFile { change } | PreparedStep::PiApplyAuth { change, .. } =
                 step
-                && change.is_changed()
+                && (change.is_changed() || matches!(self.agent, PreparedAgent::ClaudeDesktop))
             {
                 change.verify_before()?;
             }
         }
 
-        let backup_agent = match self.agent {
-            PreparedAgent::Codex => Some(AgentKind::Codex),
-            PreparedAgent::Claude => Some(AgentKind::Claude),
-            PreparedAgent::ClaudeDesktop | PreparedAgent::Pi | PreparedAgent::OpenCode => None,
-        };
-        let backup = backup_agent.map(|agent| {
+        let backup = self.backup_agent().zip(manager).map(|(agent, manager)| {
             let changes: Vec<_> = self
                 .steps
                 .iter()
-                // Only changed files: restoring an untouched file would roll back unrelated edits.
+                // Desktop needs the profile, selection and deployment mode together, even
+                // when only its token changes. Other agents back up only changed files.
                 .filter_map(|step| match step {
                     PreparedStep::ChangeFile { change }
-                        if change.is_changed() && agent.backs_up(change.path()) =>
+                        if (change.is_changed() || agent == AgentKind::ClaudeDesktop)
+                            && agent.backs_up(change.path()) =>
                     {
                         Some(change.clone())
                     }
                     _ => None,
                 })
                 .collect();
-            (agent, changes)
+            (manager, changes)
         });
 
-        if let Some((agent, changes)) = &backup {
-            BackupManager::create_backup_if_needed(*agent, changes)
+        if let Some((manager, changes)) = &backup {
+            manager
+                .create_backup_if_needed(changes)
                 .context("failed to save backup before applying plan")?;
         }
 
@@ -227,8 +244,9 @@ impl PreparedPlan {
             }
         }
 
-        if let Some((agent, changes)) = &backup {
-            BackupManager::save_last_written(*agent, changes)
+        if let Some((manager, changes)) = &backup {
+            manager
+                .save_last_written(changes)
                 .context("plan applied, but saving backup state failed")?;
         }
         Ok(())

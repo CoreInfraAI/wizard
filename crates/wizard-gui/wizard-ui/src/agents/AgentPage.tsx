@@ -371,7 +371,7 @@ export function AgentPage({ agents, page, proxy, account }: {
       const desktop = agents.claude_desktop;
       content = (
         <>
-          <PageHeading title="Claude Desktop" />
+          <PageHeading title="Claude Desktop" actions={<BackupButton agent="claude_desktop" disabled={isChangeInProgress} />} />
           <DescriptionList className="mt-8 sm:mt-10">
             <DescriptionTerm>Версия</DescriptionTerm>
             <DescriptionDetails><Version detection={desktop} /></DescriptionDetails>

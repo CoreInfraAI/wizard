@@ -64,6 +64,7 @@ pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>,
     tauri::async_runtime::spawn_blocking(move || match agent {
         BackupAgent::Codex => codex::get_backups(),
         BackupAgent::Claude => claude::get_backups(),
+        BackupAgent::ClaudeDesktop => claude_desktop::get_backups(),
     })
     .await
     .context("backup listing task failed")
@@ -284,11 +285,25 @@ pub(crate) async fn apply_direct_change(
     log::info!("received direct change: {name}");
 
     let result = match change {
+        DirectChange::RestoreBackup {
+            agent: BackupAgent::ClaudeDesktop,
+            id,
+        } => {
+            let plan = tauri::async_runtime::spawn_blocking(move || {
+                claude_desktop::prepare_restore_backup(id)
+            })
+            .await
+            .context("backup restore preparation task failed")
+            .flatten()
+            .map_err(|error| format!("{error:#}"))?;
+            return apply_agent_plan(plan, app).await;
+        }
         DirectChange::RestoreBackup { agent, id } => {
             let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
             let result = tauri::async_runtime::spawn_blocking(move || match agent {
                 BackupAgent::Codex => codex::restore_backup(id, &settings),
                 BackupAgent::Claude => claude::restore_backup(id),
+                BackupAgent::ClaudeDesktop => unreachable!(),
             })
             .await
             .context("backup restore task failed")
