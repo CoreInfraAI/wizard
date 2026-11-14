@@ -73,7 +73,15 @@ impl UpdateSources {
 }
 
 pub(crate) fn start(app: tauri::AppHandle, first_run: bool) -> Result<()> {
-    app.manage(UpdateSources::from_config(&app, first_run)?);
+    let sources = UpdateSources::from_config(&app, first_run)?;
+    let disabled = sources.endpoints.is_empty();
+    app.manage(sources);
+    if disabled {
+        log::info!("application updates disabled: no endpoints configured");
+        app.state::<Arc<RevisionSignal<UpdateState>>>()
+            .notify(UpdateState::UpToDate);
+        return Ok(());
+    }
     start_update(app.clone());
 
     let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
@@ -218,6 +226,10 @@ async fn check_in_background(app: &tauri::AppHandle, state: &RevisionSignal<Upda
 
 async fn find_update(app: &tauri::AppHandle) -> Result<Option<Update>> {
     let sources = app.state::<UpdateSources>();
+    // An empty endpoint list explicitly disables updates for local test bundles.
+    if sources.endpoints.is_empty() {
+        return Ok(None);
+    }
     let mut last_error = None;
     for endpoint in &sources.endpoints {
         let result = if endpoint.hub {

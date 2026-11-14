@@ -72,9 +72,12 @@ node crates/wizard-gui/wizard-ui/node_modules/@tauri-apps/cli/tauri.js dev
 For a standalone local application (a faster debug build, signed ad hoc):
 
 ```sh
-node crates/wizard-gui/wizard-ui/node_modules/@tauri-apps/cli/tauri.js build --debug --bundles app
+node crates/wizard-gui/wizard-ui/node_modules/@tauri-apps/cli/tauri.js build --debug --bundles app --config '{"plugins":{"updater":{"endpoints":[]}}}'
 open "target/debug/bundle/macos/CoreInfra Wizard.app"
 ```
+
+The empty updater endpoint list disables update checks in this local bundle, so a
+published release cannot replace the code you are testing.
 
 Omit `--debug` for the release build described above. Neither command installs the
 bundle into `/Applications`. Local builds use the same saved account and proxy
