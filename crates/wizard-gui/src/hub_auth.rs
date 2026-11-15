@@ -271,7 +271,7 @@ pub(crate) async fn open_hub(app: tauri::AppHandle, theme: String) -> Result<(),
 /// Opens the registration page in the system browser, leaving Wizard open.
 #[tauri::command]
 pub(crate) async fn open_hub_registration() -> Result<(), String> {
-    let url = Url::parse("https://hub.coreinfra.ai/register")
+    let url = Url::parse("https://hub.coreinfra.ai/register?source=wizard")
         .map_err(|_| "Некорректный адрес регистрации")?;
     login::open_browser(&url)
         .await

@@ -54,7 +54,7 @@ export function HubSignIn({ hub }: { hub: HubAccountControl }) {
               {pending
                 ? "После входа вернитесь в Wizard — аккаунт подключится автоматически."
                 : <>Wizard установлен, теперь войдите в аккаунт хаба, если аккаунта нет – <Link
-                    href="https://hub.coreinfra.ai/register" target="_blank" rel="noreferrer"
+                    href="https://hub.coreinfra.ai/register?source=wizard" target="_blank" rel="noreferrer"
                     className="text-zinc-800 underline decoration-zinc-400 underline-offset-2 hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:text-zinc-200 dark:decoration-zinc-500"
                     aria-disabled={hub.submitting || undefined}
                     onClick={(event) => { event.preventDefault(); hub.register(); }}

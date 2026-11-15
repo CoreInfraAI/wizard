@@ -102,10 +102,12 @@ impl CallbackServer {
     pub fn authorization_url(&self) -> Url {
         let mut url = Url::parse(&format!("{HUB_ORIGIN}{AUTHORIZATION_PATH}"))
             .expect("Hub authorization URL is valid");
-        url.query_pairs_mut().append_pair(
-            CALLBACK_PARAMETER,
-            &format!("http://{}{CALLBACK_PATH}", self.address),
-        );
+        url.query_pairs_mut()
+            .append_pair("source", "wizard")
+            .append_pair(
+                CALLBACK_PARAMETER,
+                &format!("http://{}{CALLBACK_PATH}", self.address),
+            );
         url
     }
 
