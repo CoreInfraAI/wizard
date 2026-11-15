@@ -102,10 +102,12 @@ impl CallbackServer {
     pub fn authorization_url(&self) -> Url {
         let mut url = Url::parse(&format!("{HUB_ORIGIN}{AUTHORIZATION_PATH}"))
             .expect("Hub authorization URL is valid");
-        url.query_pairs_mut().append_pair(
-            CALLBACK_PARAMETER,
-            &format!("http://{}{CALLBACK_PATH}", self.address),
-        );
+        url.query_pairs_mut()
+            .append_pair("source", "wizard")
+            .append_pair(
+                CALLBACK_PARAMETER,
+                &format!("http://{}{CALLBACK_PATH}", self.address),
+            );
         url
     }
 
@@ -366,6 +368,19 @@ mod tests {
         assert_eq!(
             link.map(String::from).as_deref(),
             Some("https://hub.coreinfra.ai/hub/api/login?key=test")
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_login_identifies_wizard_and_preserves_callback() {
+        let server = CallbackServer::bind().await.expect("callback listener");
+        let url = server.authorization_url();
+        assert_eq!(url.path(), "/app-login");
+        let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+        assert_eq!(params.get("source").map(AsRef::as_ref), Some("wizard"));
+        assert_eq!(
+            params.get("callback_url").map(AsRef::as_ref),
+            Some(format!("http://{}/callback", server.address).as_str())
         );
     }
 }
