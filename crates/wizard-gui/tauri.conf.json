@@ -34,6 +34,7 @@
         "form-action": ["'none'"],
         "frame-ancestors": ["'none'"],
         "img-src": ["'self'", "data:"],
+        "media-src": ["'self'", "https://coreinfra.ru/assets/wizard/"],
         "object-src": ["'none'"],
         "script-src": ["'self'"],
         "style-src": ["'self'"]
@@ -46,6 +47,7 @@
         "form-action": ["'none'"],
         "frame-ancestors": ["'none'"],
         "img-src": ["'self'", "data:"],
+        "media-src": ["'self'", "https://coreinfra.ru/assets/wizard/"],
         "object-src": ["'none'"],
         "script-src": ["'self'"],
         "style-src": ["'self'", "'unsafe-inline'"]

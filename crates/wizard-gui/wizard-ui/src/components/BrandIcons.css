@@ -1,0 +1,9 @@
+:root {
+  --brand-claude: #d97757;
+  --brand-openai: #000;
+  --brand-coreinfra: #112fc4;
+}
+:root[data-theme="dark"] {
+  --brand-openai: #fff;
+  --brand-coreinfra: #6174ef;
+}

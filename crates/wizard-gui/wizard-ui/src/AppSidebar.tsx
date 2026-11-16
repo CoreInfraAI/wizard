@@ -1,6 +1,7 @@
 import type { ComponentType, ComponentPropsWithoutRef } from "react";
 import { useClose } from "@headlessui/react";
-import { agentPaths, type AgentPageId, type AppPageId } from "./agents/navigation";
+import { Squares2X2Icon } from "@heroicons/react/20/solid";
+import { agentPaths, overviewPath, type AgentPageId, type AppPageId } from "./agents/navigation";
 import { AppLogo } from "./components/AppLogo";
 import { ClaudeIcon, OpenAiIcon, OpenCodeIcon, PiIcon } from "./components/BrandIcons";
 import { Button } from "./components/catalyst/button";
@@ -20,7 +21,7 @@ export function AppSidebar({ page, account, update }: {
 
   function item(id: AgentPageId, label: string, Icon: ComponentType<ComponentPropsWithoutRef<"svg">>) {
     return (
-      <SidebarItem href={`#${agentPaths[id]}`} current={page === id} aria-current={page === id ? "page" : undefined}>
+      <SidebarItem href={`#${agentPaths[id]}`} current={page === id} aria-current={page === id ? "page" : undefined} onClick={close}>
         <Icon />
         <SidebarLabel>{label}</SidebarLabel>
       </SidebarItem>
@@ -30,12 +31,18 @@ export function AppSidebar({ page, account, update }: {
   return (
     <Sidebar aria-label="CoreInfra Wizard">
       <SidebarHeader className="shrink-0 mac-window:lg:pt-8">
-        <Button plain href={`#${agentPaths.claude_desktop}`} onClick={close}
+        <Button plain href={`#${overviewPath}`} onClick={close}
           className="w-full justify-start! px-[calc(--spacing(2)-1px)]!" aria-label="CoreInfra Wizard">
           <AppLogo className="h-9 max-w-full" />
         </Button>
       </SidebarHeader>
       <SidebarBody>
+        <SidebarSection>
+          <SidebarItem href={`#${overviewPath}`} current={page === "overview"} aria-current={page === "overview" ? "page" : undefined} onClick={close}>
+            <Squares2X2Icon />
+            <SidebarLabel>Обзор</SidebarLabel>
+          </SidebarItem>
+        </SidebarSection>
         <SidebarSection>
           <SidebarHeading className="text-zinc-700 dark:text-zinc-200!">Агенты</SidebarHeading>
           {item("claude_desktop", "Claude Desktop", ClaudeIcon)}

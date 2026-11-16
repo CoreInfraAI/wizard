@@ -87,6 +87,44 @@ The interface reference is the Hub in the neighboring `thinker` repository:
 `crates/ff-hub/hub-ui/src/modules/App.tsx` (agent order and divider) and
 `packages/coreinfra-ui/src/hub-sidebar-footer.tsx` (account menu and theme controls).
 
+### Overview and initial setup
+
+**Обзор** is the default full-window page, above **Агенты** in the sidebar.
+The three action cards use the live account and detection state:
+
+- **Подключите свой аккаунт** becomes the selected hub and account identity after sign-in.
+- **Установите агентов** becomes available after sign-in.
+- **Настройте агентов** requires sign-in and at least one detected agent.
+
+On first launch, navigation is hidden. «Пропустить быструю настройку» beside
+«Начало работы» reveals it and remembers the choice across launches. Overview
+remains accessible from the sidebar. Configuration reuses the regular agent form
+and plan confirmation; multiple installed agents always show a selection first.
+The final action launches the configured desktop app or CLI.
+
+Connection options are ordered API access, subscription, then without CoreInfra.
+Token selection is automatic: reuse the configured token if it belongs to the
+selected Hub, otherwise reuse the oldest token named for the agent, or create one
+on confirmation. A note shows its name instead of a selector. Claude Desktop's
+subscription uses the existing Wizard proxy-token flow. «Завершить настройку»
+opens the change plan and confirms it before the launch step.
+
+Downloads run in the backend and preserve explicit pauses across dialog closes.
+Installing requires a separate «Установить» confirmation; «Отмена» retains the
+archive. Installed apps show their version and offer an update check. Completed
+installs and checks close with «Готово».
+
+Choosing a subscription offers to enable the system proxy if it is off.
+Only «Включить» changes OS settings; cancel keeps the selected mode. The prompt
+does not overwrite another proxy. Disable it in Settings → System proxy.
+
+The [Wizard demo](https://coreinfra.ru/wizard) loads only after a click; its poster
+is local. `coreinfra.ru/assets/wizard/` is allowed in both Tauri media CSPs.
+Controls use Catalyst with 14 px text. Card surfaces stay neutral; drawings gain
+color on hover/focus. The first account-card hover plays the marker animation
+once per launch; newly unlocked steps circle only their buttons. Animations
+respect Reduced Motion.
+
 ## License
 
 Except where separately noted, CoreInfra Wizard's original source code is licensed under the [Mozilla Public License, v. 2.0](LICENSE). If a copy of the MPL was not distributed with this project, you can obtain one at <https://mozilla.org/MPL/2.0/>.

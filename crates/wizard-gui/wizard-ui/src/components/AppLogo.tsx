@@ -8,7 +8,7 @@ export function AppLogo({ className }: { className?: string }) {
       focusable="false"
       viewBox="0 0 1145 256"
       fill="none"
-      className={clsx(className, "[--logo-lettering:#252298] [--logo-mark:#112FC4] [--logo-accent:#1E3FE3] dark:[--logo-lettering:#3633C6] dark:[--logo-mark:#1335D9] dark:[--logo-accent:#1D42FB]")}
+      className={clsx(className, "[--logo-lettering:#252298] [--logo-mark:#112FC4] [--logo-accent:#1E3FE3] dark:[--logo-lettering:#A5B4FC] dark:[--logo-mark:#6174EF] dark:[--logo-accent:#8594FF]")}
     >
       <use href={`${wizardLogo}#logo`} />
     </svg>

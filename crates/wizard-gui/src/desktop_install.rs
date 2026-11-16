@@ -205,8 +205,7 @@ pub(crate) fn start_background_checks(app: tauri::AppHandle) {
                     None,
                     Operation::Check,
                     true,
-                    false,
-                    false,
+                    InstallOptions::default(),
                 )
                 .is_err()
                 {
@@ -243,8 +242,7 @@ pub(crate) fn check_desktop_release(
         Some(token),
         Operation::Check,
         false,
-        false,
-        false,
+        InstallOptions::default(),
     )
 }
 
@@ -260,8 +258,7 @@ pub(crate) fn download_desktop_release(
         Some(token),
         Operation::Download,
         false,
-        false,
-        false,
+        InstallOptions::default(),
     )
 }
 
@@ -310,13 +307,15 @@ pub(crate) async fn get_desktop_running_apps(
 }
 
 /// `confirmed` approves the change that the selected release asks to confirm. `close` approves
-/// closing the applications that the user was told run now.
+/// closing the applications that the user was told run now. Onboarding defers the first
+/// launch until configuration; other callers retain the default immediate first launch.
 #[tauri::command]
 pub(crate) fn install_desktop_release(
     app: tauri::AppHandle,
     desktop: DesktopApp,
     confirmed: bool,
     close: bool,
+    open_after_install: Option<bool>,
 ) -> Result<(), String> {
     start(
         app,
@@ -324,8 +323,11 @@ pub(crate) fn install_desktop_release(
         None,
         Operation::Install,
         false,
-        confirmed,
-        close,
+        InstallOptions {
+            confirmed,
+            close,
+            open_after_install: open_after_install.unwrap_or(true),
+        },
     )
     .inspect_err(|message| {
         log::error!(
@@ -335,14 +337,20 @@ pub(crate) fn install_desktop_release(
     })
 }
 
+#[derive(Clone, Copy, Default)]
+struct InstallOptions {
+    confirmed: bool,
+    close: bool,
+    open_after_install: bool,
+}
+
 fn start(
     app: tauri::AppHandle,
     desktop: DesktopApp,
     token: Option<TokenChoice>,
     operation: Operation,
     automatic: bool,
-    confirmed: bool,
-    close: bool,
+    install: InstallOptions,
 ) -> Result<(), String> {
     let manager = Arc::clone(app.state::<InstallManagers>().get(desktop));
     if manager.unsupported {
@@ -395,7 +403,9 @@ fn start(
             if !matches!(session.package, Some(Package::Downloaded(_))) {
                 return Err(format!("Сначала скачайте {name}"));
             }
-            manager.signal.notify(State::Installing { close });
+            manager.signal.notify(State::Installing {
+                close: install.close,
+            });
         }
     }
 
@@ -407,8 +417,7 @@ fn start(
             token,
             operation,
             automatic,
-            confirmed,
-            close,
+            install,
             pause,
         )
         .await;
@@ -533,8 +542,7 @@ async fn run(
     token: Option<TokenChoice>,
     operation: Operation,
     automatic: bool,
-    confirmed: bool,
-    close: bool,
+    install: InstallOptions,
     pause: Option<oneshot::Receiver<()>>,
 ) -> Result<(), String> {
     let desktop = manager.desktop;
@@ -657,7 +665,7 @@ async fn run(
             let version = download.release.display_version.clone();
             let target = download.release.target.clone();
             let result = tauri::async_runtime::spawn_blocking(move || {
-                installer::install_release(&download, confirmed, close)
+                installer::install_release(&download, install.confirmed, install.close)
             })
             .await
             .map_err(|error| {
@@ -709,18 +717,20 @@ async fn run(
             }
             // After the daemon restart, which could otherwise restart a daemon that the new
             // application has just started.
-            let notice = tauri::async_runtime::spawn_blocking(move || {
-                installer::open_first_install(&target)
-            })
-            .await
-            .unwrap_or_else(|_| {
-                log::error!("{} first launch worker failed", desktop.product());
-                Some(format!(
-                    "Не удалось открыть {}. Откройте его вручную.",
-                    desktop.product()
-                ))
-            });
-            installed.notices.extend(notice);
+            if install.open_after_install {
+                let notice = tauri::async_runtime::spawn_blocking(move || {
+                    installer::open_first_install(&target)
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    log::error!("{} first launch worker failed", desktop.product());
+                    Some(format!(
+                        "Не удалось открыть {}. Откройте его вручную.",
+                        desktop.product()
+                    ))
+                });
+                installed.notices.extend(notice);
+            }
             manager.signal.notify(State::Installed {
                 version,
                 notices: installed.notices,
