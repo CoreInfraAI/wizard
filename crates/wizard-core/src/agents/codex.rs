@@ -347,12 +347,12 @@ fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
 
     let proxy = json!({
         "mode": "fixed_servers",
-        "server": format!("http://{}", wizard_proxy::ADDRESS),
+        "server": format!("http://{}", wizard_proxy::CHATGPT_ADDRESS),
     });
     // Continue recognizing the previous ChatGPT endpoint as Wizard's configuration.
     let previous_proxy = json!({
         "mode": "fixed_servers",
-        "server": format!("http://{}", wizard_proxy::OLD_ADDRESS),
+        "server": format!("http://{}", wizard_proxy::ADDRESS),
     });
     json::update(&mut change.after, |config| {
         let current = config.get("proxy");
@@ -602,10 +602,10 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn chatgpt_uses_lower_port_and_recognizes_both_wizard_endpoints() -> Result<()> {
+    fn chatgpt_uses_its_port_and_recognizes_both_wizard_endpoints() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("Preferences");
-        for address in [wizard_proxy::ADDRESS, wizard_proxy::OLD_ADDRESS] {
+        for address in [wizard_proxy::ADDRESS, wizard_proxy::CHATGPT_ADDRESS] {
             let before = json!({
                 "unrelated": true,
                 "proxy": { "mode": "fixed_servers", "server": format!("http://{address}") },
@@ -618,7 +618,7 @@ mod tests {
             assert_eq!(
                 config["proxy"],
                 json!({
-                    "mode": "fixed_servers", "server": "http://127.0.0.1:33787",
+                    "mode": "fixed_servers", "server": "http://127.0.0.1:33788",
                 })
             );
             assert_eq!(config["unrelated"], true);

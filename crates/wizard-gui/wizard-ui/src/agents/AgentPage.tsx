@@ -214,14 +214,14 @@ export function AgentPage({ agents, page, proxy, account }: {
             )}
           </DescriptionList>
           {desktop.status === "found" && (
-            <RoutingFieldset editing needsApply={!proxyStartup.starting && proxy.proxy?.enabled === false} agent="claude_desktop" token={claudeDesktopToken} modes={routingModes("Claude")} mode={desktop.data.routing_mode}
+            <RoutingFieldset editing needsApply={desktop.data.proxy_needs_apply || (!proxyStartup.starting && proxy.proxy?.enabled === false)} agent="claude_desktop" token={claudeDesktopToken} modes={routingModes("Claude")} mode={desktop.data.routing_mode}
               toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })} agentToken={desktop.data.token} hub={hub}
               disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
           <Fieldset className="mt-10">
             <Legend>{desktop.status === "found" ? "Обновление приложения" : "Установка приложения"}</Legend>
             <FieldGroup>
-              {desktop.status !== "found" && <TokenNote token={claudeDesktopToken} hub={hub} disabled={isChangeInProgress} />}
+              {(desktop.status !== "found" || desktop.data.routing_mode === "sub") && <TokenNote token={claudeDesktopToken} hub={hub} disabled={isChangeInProgress} />}
               <DesktopInstall observation={claudeInstall} token={claudeDesktopToken.selected} tokenReady={claudeDesktopToken.ready}
                 disabled={isChangeInProgress} installed={desktop.status === "found"} />
             </FieldGroup>

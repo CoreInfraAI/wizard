@@ -35,10 +35,7 @@ impl AgentKind {
             };
             let name = path.file_name().and_then(|name| name.to_str());
             if parent.file_name().is_some_and(|name| name == "Claude-3p") {
-                return matches!(
-                    name,
-                    Some("claude_desktop_config.json" | "coreinfra-proxy-token")
-                );
+                return name == Some("claude_desktop_config.json");
             }
             return parent
                 .file_name()

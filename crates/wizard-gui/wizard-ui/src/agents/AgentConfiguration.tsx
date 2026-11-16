@@ -137,10 +137,12 @@ export function RoutingFieldset<M extends string>({ agent, modes, mode, toChange
   const [draft, setDraft] = useState<M | undefined>(initialMode);
   const selected = draft ?? mode;
   const enabled = selected !== "disabled";
+  const proxyOnly = agent === "claude_desktop" && selected === "sub";
   const localToken = useAgentToken(agent, agentToken, hub);
   const token = tokenOverride ?? localToken;
-  const changed = selected !== mode || (enabled && (needsApply || token.selected?.kind === "create"
-    || (token.selected?.kind === "existing" && token.selected.token !== agentToken)));
+  const tokenChanged = !proxyOnly && (token.selected?.kind === "create"
+    || (token.selected?.kind === "existing" && token.selected.token !== agentToken));
+  const changed = selected !== mode || (enabled && (needsApply || tokenChanged));
   const systemProxy = useSystemProxy();
   const [proxyPrompt, setProxyPrompt] = useState(false);
 
@@ -166,11 +168,12 @@ export function RoutingFieldset<M extends string>({ agent, modes, mode, toChange
             </RadioField>
           ))}
         </RadioGroup>
-        {(enabled || tokenOverride !== undefined) && <TokenNote token={token} hub={hub} disabled={disabled} />}
+        {proxyOnly ? <Text>Подключение через общий прокси Wizard.</Text>
+          : (enabled || tokenOverride !== undefined) && <TokenNote token={token} hub={hub} disabled={disabled} />}
         <div className={`flex flex-wrap items-center gap-3 ${actionsClassName}`}>
           {actions}
-          <Button type="button" disabled={disabled || (enabled && !token.ready) || (editing && !changed)}
-            onClick={() => onPrepare(toChange(selected), enabled ? token.selected ?? null : null)}>
+          <Button type="button" disabled={disabled || (enabled && (proxyOnly ? !hub.signedIn : !token.ready)) || (editing && !changed)}
+            onClick={() => onPrepare(toChange(selected), enabled && !proxyOnly ? token.selected ?? null : null)}>
             {editing ? "Применить" : "Завершить настройку"}
           </Button>
         </div>
