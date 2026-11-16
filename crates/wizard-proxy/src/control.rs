@@ -13,8 +13,12 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(2);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RESPONSE: usize = 1024;
 
+/// Include the proxy revision so incompatible development builds with the same
+/// application version are replaced once instead of keeping an old daemon alive.
+pub const DAEMON_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+proxy.2");
+
 /// Current runtime permission to proxy, not upstream health or token validity.
-/// All managed ports remain bound while the server is running.
+/// Both ports remain bound while the managed server is running.
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
@@ -45,12 +49,6 @@ pub(crate) enum Command {
 /// An unreachable server is an error, never a disabled-proxy report.
 pub async fn status() -> io::Result<Status> {
     request(crate::ADDRESS, Command::Status).await
-}
-
-/// Probe the daemon through the dedicated Claude Desktop listener. Older builds
-/// with the same application version may not have this listener yet.
-pub async fn claude_status() -> io::Result<Status> {
-    request(crate::CLAUDE_ADDRESS, Command::Status).await
 }
 
 /// Once accepted, Reload completes even if this exchange times out or disconnects.

@@ -106,10 +106,11 @@ Connection options are ordered API access, subscription, then without CoreInfra.
 The default token is selected automatically: reuse the configured token if it belongs to the
 selected Hub, otherwise reuse the oldest token named for the agent, or create one
 on confirmation. The note's «Изменить» link opens a menu of tokens in the selected
-Hub. The choice is shared by configuration and downloads. Claude Desktop also uses
-its own token in subscription mode, through a dedicated local listener; its
-credential is stored with mode 0600 and backed up alongside the agent profile.
-Legacy profiles keep working through the shared listener until configured again.
+Hub. The choice is shared by API configuration and downloads. Claude Desktop's
+subscription uses Wizard's shared proxy token and needs no separate agent token.
+The local proxy has exactly two listeners: `127.0.0.1:33787` for Claude Desktop and
+the system proxy, and `127.0.0.1:33788` for ChatGPT. Both use the same Wizard token;
+changing an agent's API token does not change either listener's credential.
 «Завершить настройку» opens the change plan before the launch step. Regular agent
 pages use «Применить», enabled for pending mode/token changes or a stopped proxy.
 

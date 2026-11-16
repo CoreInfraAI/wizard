@@ -5,7 +5,7 @@ use super::{
 use crate::{
     config_files::{
         backups::{AgentKind, BackupManager},
-        changes::{FileChange, FileSnapshot},
+        changes::FileChange,
         json,
     },
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
@@ -20,6 +20,8 @@ use std::{
 use wizard_settings::Settings;
 
 const HUB_URL: &str = "https://hub.coreinfra.ai/anthropic/api";
+// Read-only compatibility with an unreleased configuration. Never bind this port.
+const RETIRED_PROXY_URL: &str = "http://127.0.0.1:33789";
 pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -28,6 +30,7 @@ pub(crate) struct ClaudeDesktop {
     pub info: AgentInfo,
     pub routing_mode: RoutingMode,
     pub token: Option<AgentToken>,
+    pub proxy_needs_apply: bool,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
@@ -40,7 +43,7 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
 
-    let (routing_mode, token) = match read_routing() {
+    let (routing_mode, token, proxy_needs_apply) = match read_routing() {
         Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
@@ -48,11 +51,24 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         info,
         routing_mode,
         token,
+        proxy_needs_apply,
     })
 }
 
 fn config_library() -> Result<PathBuf> {
-    Ok(wizard_settings::paths::claude_config_dir()?.join("configLibrary"))
+    #[cfg(target_os = "macos")]
+    let directory = dirs::home_dir().map(|home| home.join("Library/Application Support"));
+    #[cfg(target_os = "windows")]
+    let directory = dirs::data_local_dir();
+    #[cfg(target_os = "linux")]
+    let directory = dirs::config_dir();
+
+    std::path::absolute(
+        directory
+            .context("failed to resolve Claude Desktop configuration directory")?
+            .join("Claude-3p/configLibrary"),
+    )
+    .context("failed to resolve Claude Desktop configuration path")
 }
 
 fn applied_id(meta: &Value) -> Result<Option<&str>> {
@@ -106,13 +122,17 @@ pub fn prepare_restore_backup(id: u32) -> Result<PreparedPlan> {
 
 fn prepare_restore_at(dir: &Path, manager: &BackupManager, id: u32) -> Result<PreparedPlan> {
     let mut changes = manager.restore_changes(id)?;
-    let token_path = dir.with_file_name("coreinfra-proxy-token");
-    // Backups from before per-agent proxy credentials restore the shared listener.
-    // Include the current credential in the backup made before this restore too.
-    if !changes.iter().any(|change| change.path() == &token_path) {
-        let mut token = FileChange::read(token_path.clone())?;
-        token.after = FileSnapshot::Missing;
-        changes.push(token);
+    // An old backup must not point Claude at a listener that no longer exists.
+    for change in &mut changes {
+        if change.path().parent() == Some(dir)
+            && let Ok(profile) = json::parse(&change.after)
+            && profile["egressProxyUrl"] == RETIRED_PROXY_URL
+        {
+            json::update(&mut change.after, |profile| {
+                profile["egressProxyUrl"] = json!(format!("http://{}", wizard_proxy::ADDRESS));
+                Ok(())
+            })?;
+        }
     }
     // A restore also backs up the state it replaces. If the user has selected another
     // profile since this backup, include that profile so the new backup is restorable.
@@ -142,19 +162,7 @@ fn prepare_restore_at(dir: &Path, manager: &BackupManager, id: u32) -> Result<Pr
         && let Some(id) = applied_id(&meta)?
     {
         let profile = restored(&dir.join(format!("{id}.json")))?;
-        let dedicated =
-            profile["egressProxyUrl"] == format!("http://{}", wizard_proxy::CLAUDE_ADDRESS);
-        if dedicated {
-            ensure!(
-                changes.iter().any(|change| change.path() == &token_path
-                    && change
-                        .after
-                        .content()
-                        .is_some_and(|token| !token.is_empty())),
-                "Claude Desktop backup is missing its proxy token"
-            );
-        }
-        (dedicated || profile["egressProxyUrl"] == format!("http://{}", wizard_proxy::ADDRESS))
+        profile["egressProxyUrl"] == format!("http://{}", wizard_proxy::ADDRESS)
             && profile.get("egressProxyPacUrl").is_none_or(Value::is_null)
     } else {
         false
@@ -169,48 +177,41 @@ fn prepare_restore_at(dir: &Path, manager: &BackupManager, id: u32) -> Result<Pr
     Ok(PreparedPlan::new(PreparedAgent::ClaudeDesktop, steps))
 }
 
-/// Hub reads the profile key; Sub reads the credential for its dedicated proxy.
-fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
+/// Hub reads the profile's key. Sub has no agent key; Wizard owns proxy credentials.
+fn read_routing() -> Result<(RoutingMode, Option<AgentToken>, bool)> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
     read_routing_at(&config_library()?)
 }
 
-fn read_routing_at(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>)> {
+fn read_routing_at(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
     let meta = json::read(&dir.join("_meta.json"))?;
     let Some(id) = applied_id(&meta)? else {
-        return Ok((RoutingMode::Disabled, None));
+        return Ok((RoutingMode::Disabled, None, false));
     };
 
     let config = json::read(&dir.join(format!("{id}.json")))?;
     let preferences = json::read(&dir.with_file_name("claude_desktop_config.json"))?;
-    let proxy_url = format!("http://{}", wizard_proxy::CLAUDE_ADDRESS);
-    let legacy_proxy_url = format!("http://{}", wizard_proxy::ADDRESS);
+    let proxy_url = format!("http://{}", wizard_proxy::ADDRESS);
+    let proxy_needs_apply = config["egressProxyUrl"] == RETIRED_PROXY_URL;
 
     if preferences["deploymentMode"] == "1p"
-        && (config["egressProxyUrl"] == proxy_url || config["egressProxyUrl"] == legacy_proxy_url)
+        && (config["egressProxyUrl"] == proxy_url || proxy_needs_apply)
         && config.get("egressProxyPacUrl").is_none()
     {
-        let token = if config["egressProxyUrl"] == proxy_url {
-            FileSnapshot::read(&dir.with_file_name("coreinfra-proxy-token"))?
-                .content()
-                .and_then(|token| AgentToken::new(token.to_owned()))
-        } else {
-            None
-        };
-        Ok((RoutingMode::Sub, token))
+        Ok((RoutingMode::Sub, None, proxy_needs_apply))
     } else if preferences["deploymentMode"] != "1p" && has_hub_connection(&config) {
         let token = config["inferenceGatewayApiKey"]
             .as_str()
             .and_then(|token| AgentToken::new(token.to_owned()));
-        Ok((RoutingMode::Hub, token))
+        Ok((RoutingMode::Hub, token, proxy_needs_apply))
     } else {
-        Ok((RoutingMode::Disabled, None))
+        Ok((RoutingMode::Disabled, None, false))
     }
 }
 
 /// Prepare a local profile update without writing files or restarting Claude. Hub writes `token`
-/// to the profile; Hub and Sub save the agent's proxy credential; Disabled removes it.
+/// to the profile; Hub and Sub enable local proxy demand; Disabled ignores it.
 pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     // Hub and Sub point Claude at the local proxy, which Linux cannot start yet.
     #[cfg(target_os = "linux")]
@@ -224,10 +225,6 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
 }
 
 fn prepare_routing_at(dir: &Path, mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
-    ensure!(
-        mode == RoutingMode::Disabled || !token.is_empty(),
-        "CoreInfra token is not set"
-    );
     let mut meta = FileChange::read(dir.join("_meta.json"))?;
     let metadata = json::parse(&meta.after)?;
     let selected = applied_id(&metadata)?;
@@ -235,14 +232,8 @@ fn prepare_routing_at(dir: &Path, mode: RoutingMode, token: &str) -> Result<Prep
     let id = selected.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
     let mut config = FileChange::read(dir.join(format!("{id}.json")))?;
     let mut preferences = FileChange::read(dir.with_file_name("claude_desktop_config.json"))?;
-    let mut proxy_token = FileChange::read(dir.with_file_name("coreinfra-proxy-token"))?;
-    proxy_token.after = if mode == RoutingMode::Disabled {
-        FileSnapshot::Missing
-    } else {
-        FileSnapshot::new(token.to_owned(), 0o600)
-    };
 
-    let proxy_url = format!("http://{}", wizard_proxy::CLAUDE_ADDRESS);
+    let proxy_url = format!("http://{}", wizard_proxy::ADDRESS);
     ensure!(
         selected.is_some() || config.before().content().is_none(),
         "new Claude Desktop profile already exists; prepare again"
@@ -309,9 +300,6 @@ fn prepare_routing_at(dir: &Path, mode: RoutingMode, token: &str) -> Result<Prep
     Ok(PreparedPlan::new(
         PreparedAgent::ClaudeDesktop,
         vec![
-            PreparedStep::ChangeFile {
-                change: proxy_token,
-            },
             PreparedStep::ChangeFile { change: config },
             PreparedStep::ChangeFile { change: meta },
             PreparedStep::ChangeFile {
@@ -345,7 +333,6 @@ mod tests {
                 dir.join(format!("{id}.json")),
                 dir.join("_meta.json"),
                 dir.with_file_name("claude_desktop_config.json"),
-                dir.with_file_name("coreinfra-proxy-token"),
             ];
             let contents = [
                 json!({
@@ -413,7 +400,7 @@ mod tests {
                 assert_eq!(fixture.manager().get_backups()?.len(), 1);
                 let restored = fixture.manager().restore_changes(1)?;
                 // Include unchanged selection and preferences, not just the changed profile.
-                assert_eq!(restored.len(), 4);
+                assert_eq!(restored.len(), 3);
                 for (path, snapshot) in fixture.files.iter().zip(&original) {
                     assert!(
                         restored
@@ -451,7 +438,7 @@ mod tests {
                 } else {
                     assert_eq!(
                         config["egressProxyUrl"],
-                        format!("http://{}", wizard_proxy::CLAUDE_ADDRESS)
+                        format!("http://{}", wizard_proxy::ADDRESS)
                     );
                 }
                 fixture.apply(
@@ -465,91 +452,47 @@ mod tests {
     }
 
     #[test]
-    fn subscription_uses_selected_token_and_backups_restore_it() -> Result<()> {
-        let fixture = Fixture::new("gateway")?;
-        let token_path = fixture.dir.with_file_name("coreinfra-proxy-token");
-        fixture.apply(
-            prepare_routing_at(&fixture.dir, RoutingMode::Sub, "selected-token")?,
-            true,
-        )?;
-        let (mode, token) = read_routing_at(&fixture.dir)?;
-        assert_eq!(mode, RoutingMode::Sub);
-        assert_eq!(
-            token.map(AgentToken::into_secret).as_deref(),
-            Some("selected-token")
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
+    fn retired_proxy_configuration_is_repaired_on_apply_and_backup_restore() -> Result<()> {
+        for mode in [RoutingMode::Hub, RoutingMode::Sub] {
+            let fixture = Fixture::new("gateway")?;
+            let token = if mode == RoutingMode::Hub {
+                "api-token"
+            } else {
+                ""
+            };
+            fixture.apply(prepare_routing_at(&fixture.dir, mode, token)?, true)?;
+
+            let mut profile = json::read(&fixture.files[0])?;
+            profile["egressProxyUrl"] = json!(RETIRED_PROXY_URL);
+            std::fs::write(&fixture.files[0], profile.to_string())?;
+            let (detected, agent_token, needs_apply) = read_routing_at(&fixture.dir)?;
+            assert_eq!(detected, mode);
+            assert!(needs_apply);
+            assert_eq!(agent_token.is_some(), mode == RoutingMode::Hub);
+            // Detection leaves the user's profile unchanged; Apply confirms the repair.
+            assert_eq!(json::read(&fixture.files[0])?, profile);
+
+            fixture.apply(prepare_routing_at(&fixture.dir, mode, token)?, true)?;
+            assert_eq!(fixture.manager().get_backups()?.len(), 2);
+            assert!(!read_routing_at(&fixture.dir)?.2);
+
+            // Restoring the backup of the retired configuration keeps the two-port layout.
+            fixture.apply(
+                prepare_restore_at(&fixture.dir, &fixture.manager(), 2)?,
+                true,
+            )?;
             assert_eq!(
-                std::fs::metadata(&token_path)?.permissions().mode() & 0o777,
-                0o600
+                json::read(&fixture.files[0])?["egressProxyUrl"],
+                "http://127.0.0.1:33787"
+            );
+            let (restored_mode, restored_token, needs_apply) = read_routing_at(&fixture.dir)?;
+            assert_eq!(restored_mode, mode);
+            assert!(!needs_apply);
+            assert_eq!(
+                restored_token.map(AgentToken::into_secret).as_deref(),
+                (mode == RoutingMode::Hub).then_some("api-token")
             );
         }
-
-        // A manual credential change is backed up together with the active profile.
-        std::fs::write(&token_path, "manual-token")?;
-        fixture.apply(
-            prepare_routing_at(&fixture.dir, RoutingMode::Sub, "replacement-token")?,
-            true,
-        )?;
-        assert_eq!(fixture.manager().get_backups()?.len(), 2);
-        fixture.apply(
-            prepare_restore_at(&fixture.dir, &fixture.manager(), 2)?,
-            true,
-        )?;
-        assert_eq!(
-            read_routing_at(&fixture.dir)?
-                .1
-                .map(AgentToken::into_secret)
-                .as_deref(),
-            Some("manual-token")
-        );
-
-        fixture.apply(
-            prepare_routing_at(&fixture.dir, RoutingMode::Disabled, "")?,
-            false,
-        )?;
-        assert!(!token_path.exists());
-        assert!(prepare_routing_at(&fixture.dir, RoutingMode::Sub, "").is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_subscription_moves_to_its_own_listener_on_apply() -> Result<()> {
-        let fixture = Fixture::new("gateway")?;
-        std::fs::write(
-            &fixture.files[0],
-            json!({"egressProxyUrl": format!("http://{}", wizard_proxy::ADDRESS)}).to_string(),
-        )?;
-        std::fs::write(&fixture.files[2], r#"{"deploymentMode":"1p"}"#)?;
-        let (mode, token) = read_routing_at(&fixture.dir)?;
-        assert_eq!(mode, RoutingMode::Sub);
-        assert!(token.is_none());
-        fixture.apply(
-            prepare_routing_at(&fixture.dir, RoutingMode::Sub, "agent-token")?,
-            true,
-        )?;
-        assert_eq!(
-            json::read(&fixture.files[0])?["egressProxyUrl"],
-            format!("http://{}", wizard_proxy::CLAUDE_ADDRESS)
-        );
-        assert_eq!(
-            read_routing_at(&fixture.dir)?
-                .1
-                .map(AgentToken::into_secret)
-                .as_deref(),
-            Some("agent-token")
-        );
-        fixture.apply(
-            prepare_restore_at(&fixture.dir, &fixture.manager(), 1)?,
-            true,
-        )?;
-        assert_eq!(
-            json::read(&fixture.files[0])?["egressProxyUrl"],
-            format!("http://{}", wizard_proxy::ADDRESS)
-        );
-        assert!(read_routing_at(&fixture.dir)?.1.is_none());
         Ok(())
     }
 
@@ -574,9 +517,7 @@ mod tests {
     fn new_profile_can_be_removed_by_restoring_its_backup() -> Result<()> {
         let fixture = Fixture::new("gateway")?;
         for path in &fixture.files {
-            if path.exists() {
-                std::fs::remove_file(path)?;
-            }
+            std::fs::remove_file(path)?;
         }
         fixture.apply(
             prepare_routing_at(&fixture.dir, RoutingMode::Hub, "token")?,
@@ -676,7 +617,7 @@ mod tests {
             true,
         )?;
         fixture.apply(
-            prepare_routing_at(&fixture.dir, RoutingMode::Sub, "token")?,
+            prepare_routing_at(&fixture.dir, RoutingMode::Sub, "")?,
             true,
         )?;
         assert_eq!(fixture.manager().get_backups()?.len(), 1);
@@ -723,8 +664,9 @@ mod tests {
                     std::fs::write(&profile_path, original.to_string())?;
                     std::fs::write(&preferences_path, r#"{"deploymentMode":"3p"}"#)?;
 
-                    let (detected, token) = read_routing_at(&dir)?;
+                    let (detected, token, proxy_needs_apply) = read_routing_at(&dir)?;
                     assert_eq!(detected, RoutingMode::Hub);
+                    assert!(!proxy_needs_apply);
                     assert_eq!(
                         token.map(AgentToken::into_secret).as_deref(),
                         Some("manual-token")

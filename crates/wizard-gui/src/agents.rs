@@ -182,9 +182,9 @@ impl AgentChange {
     }
 }
 
-/// Enabled modes require `token`; it is not validated. Never log it. `Create` issues the Hub
-/// token before preparation and is not part of the plan: cancelling or a failed preparation
-/// keeps the token, already published in the Hub token list.
+/// Enabled modes require `token`, except Claude Desktop subscription which uses
+/// Wizard's shared proxy credential. Never log tokens. `Create` issues the Hub token
+/// before preparation: cancelling or failed preparation keeps it in the Hub list.
 #[tauri::command]
 pub(crate) async fn prepare_agent_change(
     change: AgentChange,
@@ -202,7 +202,11 @@ pub(crate) async fn prepare_agent_change(
 
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
 
-    let token = if change.enabled() {
+    let token = if change.enabled()
+        && !matches!(
+            change,
+            AgentChange::ClaudeDesktopSetRouting(RoutingMode::Sub)
+        ) {
         match token {
             Some(TokenChoice::Existing { token }) if !token.is_empty() => token,
             Some(TokenChoice::Create) => {

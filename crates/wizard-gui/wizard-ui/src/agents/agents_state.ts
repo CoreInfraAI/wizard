@@ -27,8 +27,9 @@ export type PreparedAgentChange = {
   info: PreparedStepInfo[];
 };
 
-// Required for enabled modes. `create` makes the backend issue a Hub token named after the agent
-// before preparing; the token stays in Hub even if the plan is cancelled. Values are secrets.
+// Required for enabled modes except Claude Desktop subscription (shared Wizard proxy token).
+// `create` issues a Hub token before preparing; it stays in Hub if the plan is cancelled.
+// Values are secrets.
 export type TokenChoice = { kind: "existing"; token: string } | { kind: "create" };
 
 export function prepareAgentChange(change: AgentChange, token: TokenChoice | null): Promise<PreparedAgentChange> {
@@ -89,6 +90,7 @@ export type ClaudeDesktop = {
   routing_mode: RoutingMode;
   // CoreInfra token from the agent's configuration. Secret: never log or persist it.
   token: string | null;
+  proxy_needs_apply: boolean;
 };
 
 export type OpenCode = {
