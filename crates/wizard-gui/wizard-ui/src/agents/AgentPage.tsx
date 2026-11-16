@@ -1,198 +1,19 @@
-import { Fragment, type ReactNode, useEffect, useState } from "react";
-import { type AgentChange, type AgentDetection, type AgentId, type AgentStates, type BackupAgent, type HubMode, type PreparedAgentChange, type RoutingMode, type TokenChoice, prepareAgentChange } from "./agents_state";
+import { Fragment, type ReactNode, useState } from "react";
+import { type AgentChange, type AgentDetection, type AgentId, type AgentStates, type BackupAgent, type PreparedAgentChange, type RoutingMode, type TokenChoice, prepareAgentChange } from "./agents_state";
+import { currentModeLabels, routingModes, hubModes, getAgentToken, TokenNote, RoutingFieldset, type Hub } from "./AgentConfiguration";
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { DesktopInstall, useDesktopInstall } from "./DesktopInstall";
-import { type HubTokensState, refreshHubTokens, tokenLabel, tokenPrefix, useHubTokens } from "../settings/hub_tokens";
+import { tokenLabel, useHubTokens } from "../settings/hub_tokens";
 import type { HubAccountControl } from "../settings/HubAccount";
-import { hubDisplayName } from "../settings/hub_account";
 import { useProxy } from "./proxy";
 import { reportError } from "../logs/log";
 import { Badge } from "../components/catalyst/badge";
 import { Button } from "../components/catalyst/button";
 import { DescriptionDetails, DescriptionList, DescriptionTerm } from "../components/catalyst/description-list";
-import { Description, ErrorMessage, Field, FieldGroup, Fieldset, Label, Legend } from "../components/catalyst/fieldset";
+import { FieldGroup, Fieldset, Legend } from "../components/catalyst/fieldset";
 import { Heading } from "../components/catalyst/heading";
-import { Listbox, ListboxDescription, ListboxLabel, ListboxOption } from "../components/catalyst/listbox";
-import { Radio, RadioField, RadioGroup } from "../components/catalyst/radio";
-import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
-
-type ModeOption<M extends string> = { mode: M; label: string };
-
-const currentModeLabels: Record<RoutingMode, string> = {
-  sub: "Подписка",
-  hub: "API-доступ",
-  disabled: "Без CoreInfra",
-};
-
-function routingModes(subscription: "Claude" | "Codex"): ModeOption<RoutingMode>[] {
-  return [
-    { mode: "disabled", label: "Без CoreInfra AI Hub" },
-    { mode: "hub", label: "CoreInfra AI Hub – API-доступ (оплата за использование)" },
-    { mode: "sub", label: `CoreInfra AI Hub – своя подписка ${subscription}` },
-  ];
-}
-
-const hubModes: ModeOption<HubMode>[] = [
-  { mode: "disabled", label: "Без CoreInfra AI Hub" },
-  { mode: "hub", label: "CoreInfra AI Hub – API-доступ (оплата за использование)" },
-];
-
-// Hub access shared by all pages. Token values are secrets: never log them.
-type Hub = HubTokensState & { signedIn: boolean; tokenSource?: string };
-
-// Names of Hub tokens created for agents, used for the default choice and the create option.
-// Keep in sync with `TokenAgent::token_name` in `crates/wizard-core/src/agents/mod.rs`.
-const createdTokenNames: Record<AgentId, string> = {
-  codex: "agent-codex",
-  claude: "agent-claude-code",
-  claude_desktop: "agent-claude-desktop",
-  opencode: "agent-opencode",
-  pi: "agent-pi",
-};
-
-// `token: null` is the option that creates the agent's Hub token.
-type TokenOption = { key: string; label: string; current?: boolean; token: string | null };
-
-// Everything the token menu shows. Choosing an option only changes the local draft: creating
-// happens on an explicit apply/check/download action in the backend.
-// Selected: the draft, else the agent's token, else the oldest Hub token with the created name,
-// else creating. Creating is offered only when the loaded list has no such token: an unknown list
-// must not suggest a duplicate. Once a created token is listed, it replaces a create draft
-// (not the agent's other token), so a retry after a failed preparation does not create another.
-function useTokenMenu(agent: AgentId, agentToken: string | null, hub: Hub) {
-  const [draft, setDraft] = useState<TokenChoice>();
-  const createdName = createdTokenNames[agent];
-
-  const options: TokenOption[] = [];
-  // The agent's own token comes first, even when Hub does not list it (another hub, signed out).
-  if (agentToken !== null) {
-    options.push({ key: agentToken, label: tokenLabel(agentToken, hub.tokens), current: true, token: agentToken });
-  }
-  // Other Hub tokens, without the current one and tokens Wizard created for other agents;
-  // this agent's created tokens come first.
-  const otherNames = Object.values(createdTokenNames).filter((name) => name !== createdName);
-  const visible = hub.tokens
-    .filter((token) => token.token !== agentToken && !otherNames.includes(token.name))
-    .sort((a, b) => Number(b.name === createdName) - Number(a.name === createdName));
-  for (const token of visible) {
-    options.push({ key: token.token, label: token.name || tokenPrefix(token.token), token: token.token });
-  }
-  const listed = (token: string | null | undefined): token is string =>
-    options.some((option) => option.token !== null && option.token === token);
-
-  const named = hub.tokens
-    .filter((token) => token.name === createdName)
-    .sort((a, b) => a.issued_at - b.issued_at)[0]?.token;
-  const canCreate = hub.signedIn && hub.status === "ready" && named === undefined;
-  if (canCreate) {
-    options.splice(1, 0, { key: "create", label: `Создать ${createdName}`, token: null });
-  }
-
-  let selected: TokenChoice | undefined;
-  if (draft?.kind === "create") {
-    selected = named === undefined ? draft : { kind: "existing", token: named };
-  } else {
-    const token = [draft?.token, agentToken, named].find(listed);
-    selected = token !== undefined ? { kind: "existing", token } : canCreate ? { kind: "create" } : undefined;
-  }
-  const ready = hub.signedIn && hub.status === "ready" && selected !== undefined
-    && (selected.kind === "create" ? canCreate : listed(selected.token));
-  const selectedOption = options.find((option) =>
-    selected?.kind === "create" ? option.token === null : option.token === selected?.token);
-
-  // An applied change replaces the agent token; show it instead of the old draft.
-  useEffect(() => setDraft(undefined), [agentToken]);
-
-  function choose(option: TokenOption) {
-    setDraft(option.token === null ? { kind: "create" } : { kind: "existing", token: option.token });
-  }
-
-  return { options, selected, selectedOption, choose, ready };
-}
-
-function TokenField({ token, hub, disabled }: {
-  token: ReturnType<typeof useTokenMenu>;
-  hub: Hub;
-  disabled: boolean;
-}) {
-  return (
-    <Field>
-      <Label>{hub.tokenSource ?? "Хаб не выбран"}</Label>
-      <Listbox disabled={disabled || !hub.signedIn} value={token.selectedOption} by="key" placeholder="Выберите токен" onChange={token.choose} className="max-w-sm">
-        {token.options.map((option) => (
-          <ListboxOption key={option.key} value={option}>
-            <ListboxLabel>{option.label}</ListboxLabel>
-            {option.current && <ListboxDescription>Текущий</ListboxDescription>}
-          </ListboxOption>
-        ))}
-      </Listbox>
-      {!hub.signedIn && <Description>Войдите в CoreInfra Hub для выбора токена.</Description>}
-      {hub.status === "error" && (
-        <ErrorMessage>
-          {hub.error}{" "}
-          <button type="button" className="underline" onClick={() => {
-            void refreshHubTokens().catch((cause: unknown) => reportError("Не удалось загрузить токены CoreInfra Hub", cause));
-          }}>
-            Повторить
-          </button>
-        </ErrorMessage>
-      )}
-    </Field>
-  );
-}
-
-// Mode and token of one agent. The saved mode wins until the user picks another one.
-function RoutingFieldset<M extends string>({ agent, modes, mode, toChange, agentToken, token: tokenOverride, hub, note, disabled, error, onPrepare }: {
-  agent: AgentId;
-  token?: ReturnType<typeof useTokenMenu>;
-  modes: ModeOption<M>[];
-  mode: M;
-  toChange: (mode: M) => AgentChange;
-  agentToken: string | null;
-  hub: Hub;
-  note?: ReactNode;
-  disabled: boolean;
-  error?: string;
-  onPrepare: (change: AgentChange, token: TokenChoice | null) => void;
-}) {
-  const [draft, setDraft] = useState<M>();
-  const selected = draft ?? mode;
-  const enabled = selected !== "disabled";
-  const proxyOnly = agent === "claude_desktop" && selected === "sub";
-  const localToken = useTokenMenu(agent, agentToken, hub);
-  const token = tokenOverride ?? localToken;
-
-  useEffect(() => {
-    if (draft === mode) setDraft(undefined);
-  }, [draft, mode]);
-
-  return (
-    <Fieldset className="mt-10">
-      <Legend>Подключение</Legend>
-      {note && <Text>{note}</Text>}
-      <FieldGroup>
-        <RadioGroup value={selected} disabled={disabled} aria-label="Режим" onChange={(value) => setDraft(value as M)}>
-          {modes.map((option) => (
-            <RadioField key={option.mode} disabled={option.mode !== "disabled" && !hub.signedIn}>
-              <Radio value={option.mode} />
-              <Label>{option.label}</Label>
-            </RadioField>
-          ))}
-        </RadioGroup>
-        {(enabled || tokenOverride !== undefined) && <TokenField token={token} hub={hub} disabled={disabled} />}
-        <div>
-          <Button type="button" disabled={disabled || (enabled && (proxyOnly ? !hub.signedIn : !token.ready))}
-            onClick={() => onPrepare(toChange(selected), enabled && !proxyOnly ? token.selected ?? null : null)}>
-            Применить
-          </Button>
-          {error && <div className="mt-3"><ErrorText>{error}</ErrorText></div>}
-        </div>
-      </FieldGroup>
-    </Fieldset>
-  );
-}
 
 function PageHeading({ title, actions }: { title: string; actions?: ReactNode }) {
   return (
@@ -266,16 +87,14 @@ export function AgentPage({ agents, page, proxy, account }: {
   const [error, setError] = useState<{ page: AgentId | null; message: string }>();
   const pageError = error?.page === page ? error.message : undefined;
   const isChangeInProgress = isPreparingPlan || preparedChange !== undefined;
-  const activeHub = account.account?.profile?.hubs.find((item) => item.hub_id === account.account?.active_hub_id);
   const hub: Hub = {
     ...useHubTokens(account.account?.active_hub_id),
     signedIn: account.signedIn,
-    tokenSource: activeHub && (activeHub.is_personal ? "Токен из личного хаба" : `Токен из хаба ${hubDisplayName(activeHub)}`),
   };
-  const claudeDesktopToken = useTokenMenu("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
+  const claudeDesktopToken = getAgentToken("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
   const claudeInstall = useDesktopInstall("claude");
   // ChatGPT downloads use the token of the shared ChatGPT / Codex routing.
-  const codexToken = useTokenMenu("codex", agents.codex.status === "found" ? agents.codex.data.token : null, hub);
+  const codexToken = getAgentToken("codex", agents.codex.status === "found" ? agents.codex.data.token : null, hub);
   const chatGptInstall = useDesktopInstall("chatgpt");
 
   async function prepare(change: AgentChange, token: TokenChoice | null) {
@@ -320,7 +139,7 @@ export function AgentPage({ agents, page, proxy, account }: {
               <DescriptionTerm>Прокси для ChatGPT</DescriptionTerm>
               <DescriptionDetails>
                 <ProxyStatus proxy={proxy} />
-                {chatGptProxyStopped && <ErrorText>Прокси для ChatGPT не запущен, нажмите «Применить».</ErrorText>}
+                {chatGptProxyStopped && <ErrorText>Прокси для ChatGPT не запущен, нажмите «Завершить настройку».</ErrorText>}
               </DescriptionDetails>
               {codex.status === "found" && (
                 <RoutingRows mode={codex.data.routing_mode} agentToken={codex.data.token} hub={hub} />
@@ -336,7 +155,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             <Fieldset className="mt-10">
               <Legend>{chatGptFound ? "Обновление ChatGPT" : "Установка ChatGPT"}</Legend>
               <FieldGroup>
-                {codex.status !== "found" && <TokenField token={codexToken} hub={hub} disabled={isChangeInProgress} />}
+                {codex.status !== "found" && <TokenNote token={codexToken} hub={hub} disabled={isChangeInProgress} />}
                 <DesktopInstall observation={chatGptInstall} token={codexToken.selected} tokenReady={codexToken.ready}
                   disabled={isChangeInProgress} installed={chatGptFound} />
               </FieldGroup>
@@ -386,13 +205,12 @@ export function AgentPage({ agents, page, proxy, account }: {
           {desktop.status === "found" && (
             <RoutingFieldset agent="claude_desktop" token={claudeDesktopToken} modes={routingModes("Claude")} mode={desktop.data.routing_mode}
               toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })} agentToken={desktop.data.token} hub={hub}
-              note="Для входа в аккаунт включите VPN и примените режим «Без CoreInfra AI Hub» в Wizard."
               disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
           <Fieldset className="mt-10">
             <Legend>{desktop.status === "found" ? "Обновление приложения" : "Установка приложения"}</Legend>
             <FieldGroup>
-              {desktop.status !== "found" && <TokenField token={claudeDesktopToken} hub={hub} disabled={isChangeInProgress} />}
+              {desktop.status !== "found" && <TokenNote token={claudeDesktopToken} hub={hub} disabled={isChangeInProgress} />}
               <DesktopInstall observation={claudeInstall} token={claudeDesktopToken.selected} tokenReady={claudeDesktopToken.ready}
                 disabled={isChangeInProgress} installed={desktop.status === "found"} />
             </FieldGroup>

@@ -7,17 +7,18 @@ import { Dialog, DialogActions, DialogBody, DialogDescription, DialogTitle } fro
 import { Text } from "../components/catalyst/text";
 
 const agentNames: Record<AgentId, string> = {
-  codex: "Codex",
+  codex: "ChatGPT / Codex",
   claude: "Claude Code",
   pi: "Pi",
   opencode: "OpenCode",
   claude_desktop: "Claude Desktop",
 };
 
-export function PreparedPlanDialog({ prepared, onReprepared, onClose }: {
+export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied }: {
   prepared: PreparedAgentChange;
   onReprepared: (prepared: PreparedAgentChange) => void;
   onClose: () => void;
+  onApplied?: () => void;
 }) {
   const { agent, info } = prepared;
   const hasChanges = info.length > 0;
@@ -53,6 +54,7 @@ export function PreparedPlanDialog({ prepared, onReprepared, onClose }: {
 
     try {
       await applyAgentPlan(prepared.plan);
+      onApplied?.();
       onClose();
     } catch (cause: unknown) {
       const message = "Не удалось применить изменения";
@@ -86,14 +88,14 @@ export function PreparedPlanDialog({ prepared, onReprepared, onClose }: {
         {error && <div className="mt-4"><ErrorText>{error}</ErrorText></div>}
       </DialogBody>
       <DialogActions>
-        <Button plain disabled={busy} onClick={onClose}>
+        <Button plain disabled={busy} onClick={() => { if (!hasChanges) onApplied?.(); onClose(); }}>
           {hasChanges ? "Отмена" : "Закрыть"}
         </Button>
         {error && <Button outline disabled={busy} onClick={() => void reprepare()}>
           {repreparing ? "Пересоздание…" : "Пересоздать"}
         </Button>}
         {hasChanges && <Button disabled={busy} onClick={() => void apply()}>
-          {applying ? "Применение…" : "Применить"}
+          {applying ? "Сохраняем…" : "Завершить настройку"}
         </Button>}
       </DialogActions>
     </Dialog>

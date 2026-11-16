@@ -12,6 +12,7 @@ pub mod claude_desktop;
 pub mod codex;
 pub mod desktop_install;
 mod detection;
+pub mod launch;
 pub mod opencode;
 pub mod pi;
 
@@ -35,7 +36,7 @@ pub enum TokenAgent {
 
 impl TokenAgent {
     /// Name of the Hub token Wizard creates for this agent. Keep in sync with
-    /// `createdTokenNames` in `wizard-ui/src/agents/AgentList.tsx`.
+    /// `createdTokenNames` in `wizard-ui/src/agents/AgentConfiguration.tsx`.
     #[must_use]
     pub const fn token_name(self) -> &'static str {
         match self {

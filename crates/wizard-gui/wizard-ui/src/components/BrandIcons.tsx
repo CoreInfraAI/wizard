@@ -1,5 +1,6 @@
 // Agent icons from Hub (`hub-ui/src/modules/components/BrandIcons.tsx`).
 import type * as React from "react";
+import "./BrandIcons.css";
 
 type IconProps = React.ComponentPropsWithoutRef<"svg">;
 

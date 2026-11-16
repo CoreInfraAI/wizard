@@ -133,6 +133,7 @@ pub fn run_application() -> Result<()> {
             hub_tokens::refresh_hub_tokens,
             proxy::get_proxy_state,
             agents::get_agent_state,
+            agents::launch_agent,
             agents::get_agent_backups,
             agents::prepare_agent_change,
             agents::apply_agent_plan,

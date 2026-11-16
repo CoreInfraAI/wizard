@@ -57,6 +57,21 @@ pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateS
 }
 
 #[tauri::command]
+pub(crate) async fn launch_agent(
+    app: tauri::AppHandle,
+    agent: wizard_core::agents::launch::LaunchAgent,
+) -> Result<(), String> {
+    let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        wizard_core::agents::launch::launch(agent, &settings)
+    })
+    .await
+    .context("Не удалось выполнить запуск агента")
+    .flatten()
+    .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
 pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>, String> {
     // TODO: files can make this response large and include credentials.
     // Consider loading file contents on demand if backup inspection is added to the UI.

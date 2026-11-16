@@ -10,13 +10,13 @@ import "./HubSignIn.css";
 const INTRO_DURATION_MS = 3500;
 
 // Keep the first step visible even if agent detection is loading or fails.
-export function HubSignIn({ hub }: { hub: HubAccountControl }) {
+export function HubSignIn({ hub, compact = false }: { hub: HubAccountControl; compact?: boolean }) {
   const reducedMotion = useReducedMotion();
   const [introduced, setIntroduced] = useState(false);
   const finishIntro = useCallback(() => setIntroduced(true), []);
   const accountLoaded = hub.account !== undefined;
   const pending = hub.account?.pending;
-  const animateIntro = !introduced && !reducedMotion && !pending && !hub.error;
+  const animateIntro = !compact && !introduced && !reducedMotion && !pending && !hub.error;
 
   useEffect(() => {
     if (introduced) return;
@@ -48,12 +48,12 @@ export function HubSignIn({ hub }: { hub: HubAccountControl }) {
         <div className="hub-onboarding-content">
           <div aria-live="polite">
             <h2 className="hub-onboarding-title text-2xl/8 font-semibold tracking-tight text-zinc-950 dark:text-white">
-              {pending ? "Завершите вход в браузере" : "Ура!"}
+              {pending ? "Завершите вход в браузере" : compact ? "Подключите CoreInfra Hub" : "Ура!"}
             </h2>
             <p className="hub-onboarding-copy mt-3 max-w-lg text-sm/6 text-zinc-600 dark:text-zinc-400">
               {pending
                 ? "После входа вернитесь в Wizard — аккаунт подключится автоматически."
-                : <>Wizard установлен, теперь войдите в аккаунт хаба, если аккаунта нет – <Link
+                : <>{compact ? "Войдите, чтобы настраивать агентов. Если аккаунта нет — " : "Wizard установлен, теперь войдите в аккаунт хаба, если аккаунта нет – "}<Link
                     href="https://hub.coreinfra.ai/register?source=wizard" target="_blank" rel="noreferrer"
                     className="text-zinc-800 underline decoration-zinc-400 underline-offset-2 hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:text-zinc-200 dark:decoration-zinc-500"
                     aria-disabled={hub.submitting || undefined}

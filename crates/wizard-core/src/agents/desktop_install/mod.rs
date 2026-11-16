@@ -6,7 +6,7 @@ mod download;
 mod running;
 
 pub use download::{DownloadProgress, SavedDownload, download_release, saved_download};
-pub use running::{open_first_install, running_apps};
+pub use running::{open_existing, open_first_install, running_apps};
 
 use super::TokenAgent;
 #[cfg(target_os = "macos")]

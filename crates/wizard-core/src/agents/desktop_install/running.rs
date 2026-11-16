@@ -4,13 +4,15 @@
 //! Wizard only asks applications to quit: an application that refuses or hangs keeps running,
 //! and the installation then fails as if the user had not agreed to close it.
 
-use super::Target;
 #[cfg(target_os = "macos")]
 use super::command_output;
+use super::{DesktopApp, Target};
+use crate::agents::{AgentDetection, detection};
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{app_is_running, read_app_info, request_app_quit, running_app_paths};
 #[cfg(target_os = "macos")]
 use core::time::Duration;
+use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
@@ -168,7 +170,7 @@ impl Reopen {
 
         #[cfg(target_os = "windows")]
         if self.package && !windows::package_running(&target.app.spec().package) {
-            match windows::open_package(&target.app.spec().package) {
+            match windows::open_package(&target.app.spec().package, None) {
                 Ok(()) => log::info!("{} opened again after installation", target.app.product()),
                 Err(error) => report(target.app.product(), &error),
             }
@@ -213,14 +215,33 @@ pub fn open_first_install(target: &Target) -> Option<String> {
     }
 }
 
-/// Opens the installed application, or brings it to the front when it already runs.
+/// Re-detects before launching: an installer target can name a future path or a different
+/// application being replaced. Launch must use the same app that discovery showed in the UI.
+/// Call from a Tokio blocking worker.
+pub fn open_existing(app: DesktopApp, last_path: Option<&Path>) -> anyhow::Result<()> {
+    let agent = match app {
+        DesktopApp::Claude => detection::DesktopAgent::Claude,
+        DesktopApp::ChatGpt => detection::DesktopAgent::Codex,
+    };
+    match detection::detect_desktop(agent, last_path) {
+        AgentDetection::Found(info) => open_application(app, Some(&info.path)),
+        AgentDetection::NotFound => {
+            anyhow::bail!("Агент больше не найден. Вернитесь к выбору агента.")
+        }
+        AgentDetection::Error(error) => anyhow::bail!("Не удалось найти агента: {error}"),
+    }
+}
+
+/// Opens the just-installed application, or brings it to the front when it already runs.
 fn open_installed(target: &Target) -> anyhow::Result<()> {
+    open_application(target.app, target.path.as_deref())
+}
+
+fn open_application(app: DesktopApp, path: Option<&Path>) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     let opened = {
-        let path = target
-            .path
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("не указан путь установки"))?;
+        let _ = app;
+        let path = path.ok_or_else(|| anyhow::anyhow!("не указан путь установки"))?;
         command_output(
             Command::new("/usr/bin/open").arg(path),
             &format!("Не удалось открыть {}", path.display()),
@@ -228,17 +249,20 @@ fn open_installed(target: &Target) -> anyhow::Result<()> {
         .map(drop)
     };
     #[cfg(target_os = "windows")]
-    let opened = windows::open_package(&target.app.spec().package);
+    let opened = windows::open_package(&app.spec().package, path);
     #[cfg(target_os = "linux")]
     let opened = {
-        // Installation fails for ChatGPT here, so the launcher is always Claude's.
-        debug_assert_eq!(target.app, super::DesktopApp::Claude);
-        linux::open(std::path::Path::new(linux::LAUNCHER), &[])
+        let path = match path {
+            Some(path) => path,
+            None if app == DesktopApp::Claude => Path::new(linux::LAUNCHER),
+            None => anyhow::bail!("Не указан путь приложения"),
+        };
+        linux::open(path, &[])
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     let opened = {
-        let _ = target;
-        Ok(())
+        let _ = (app, path);
+        anyhow::bail!("Запуск приложения на этой платформе не поддерживается")
     };
     opened
 }
@@ -350,19 +374,30 @@ mod windows {
     }
 
     /// Starts the package's application as the user, like its Start menu entry.
-    pub(super) fn open_package(package: &WindowsPackage) -> Result<()> {
+    pub(super) fn open_package(
+        package: &WindowsPackage,
+        detected: Option<&std::path::Path>,
+    ) -> Result<()> {
         let script = r"
 $ErrorActionPreference = 'Stop'
 $package = $env:WIZARD_DESKTOP_PACKAGE | ConvertFrom-Json
-$installed = @(Get-AppxPackage -Name $package.name | Where-Object { $_.Publisher -ceq $package.publisher })
-if ($installed.Count -eq 0) { exit 2 }
-$application = @((Get-AppxPackageManifest -Package $installed[0].PackageFullName).Package.Applications.Application)[0]
-if ($null -eq $application) { exit 3 }
-Start-Process -FilePath ('shell:AppsFolder\' + $installed[0].PackageFamilyName + '!' + $application.Id)
+$names = @($package.name)
+if ($package.path -and $package.name -eq 'Claude') { $names += 'AnthropicPBC.Claude' }
+$installed = @(foreach ($name in $names) { Get-AppxPackage -Name $name | Where-Object { $_.Publisher -ceq $package.publisher } })
+foreach ($candidate in ($installed | Sort-Object Version -Descending)) {
+    $applications = @((Get-AppxPackageManifest -Package $candidate.PackageFullName).Package.Applications.Application)
+    foreach ($application in $applications) {
+        if ($package.path -and (Join-Path $candidate.InstallLocation $application.Executable) -ine $package.path) { continue }
+        Start-Process -FilePath ('shell:AppsFolder\' + $candidate.PackageFamilyName + '!' + $application.Id)
+        exit 0
+    }
+}
+exit 2
 ";
         let parameters = serde_json::json!({
             "name": package.name,
             "publisher": package.publisher,
+            "path": detected,
         })
         .to_string();
         command_output(

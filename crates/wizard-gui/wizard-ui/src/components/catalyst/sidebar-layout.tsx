@@ -58,32 +58,36 @@ export function SidebarLayout({
   navbar,
   sidebar,
   fill = false,
+  hideNavigation = false,
   children,
 }: React.PropsWithChildren<{
   navbar: React.ReactNode;
   sidebar: React.ReactNode;
   /** Fill the viewport with unpadded content; children own their scrolling. */
   fill?: boolean;
+  /** Keep first-run setup focused, without desktop or mobile navigation. */
+  hideNavigation?: boolean;
 }>) {
   let [showSidebar, setShowSidebar] = useState(false);
 
   return (
     <div
       className={clsx(
-        "relative isolate flex w-full bg-white max-lg:flex-col lg:bg-zinc-100 dark:bg-zinc-900 dark:lg:bg-zinc-950",
+        "relative isolate flex w-full bg-white max-lg:flex-col dark:bg-zinc-900",
+        !hideNavigation && "lg:bg-zinc-100 dark:lg:bg-zinc-950",
         fill ? "h-dvh overflow-hidden" : "min-h-svh",
       )}
     >
       {/* Sidebar on desktop */}
-      <div className="fixed inset-y-0 left-0 w-64 max-lg:hidden">{sidebar}</div>
+      {!hideNavigation && <div className="fixed inset-y-0 left-0 w-64 max-lg:hidden">{sidebar}</div>}
 
       {/* Sidebar on mobile */}
-      <MobileSidebar open={showSidebar} close={() => setShowSidebar(false)}>
+      {!hideNavigation && <MobileSidebar open={showSidebar} close={() => setShowSidebar(false)}>
         {sidebar}
-      </MobileSidebar>
+      </MobileSidebar>}
 
       {/* Navbar on mobile */}
-      <header
+      {!hideNavigation && <header
         className={clsx("flex items-center px-4 mac-window:pt-8 lg:hidden", fill && "shrink-0")}
       >
         <div className="py-2.5">
@@ -95,18 +99,20 @@ export function SidebarLayout({
           </NavbarItem>
         </div>
         <div className="min-w-0 flex-1">{navbar}</div>
-      </header>
+      </header>}
 
       {/* Content */}
       <main
         className={clsx(
-          "flex flex-1 flex-col lg:min-w-0 lg:pt-2 lg:pr-2 lg:pl-64",
-          fill ? "min-h-0 min-w-0 lg:pb-2" : "pb-2",
+          "flex flex-1 flex-col lg:min-w-0",
+          !hideNavigation && "lg:pt-2 lg:pr-2 lg:pl-64",
+          fill ? "min-h-0 min-w-0" : "pb-2",
+          fill && !hideNavigation && "lg:pb-2",
         )}
       >
         <div
           className={clsx(
-            "lg:rounded-lg lg:bg-white lg:shadow-xs lg:ring-1 lg:ring-zinc-950/5 dark:lg:bg-zinc-900 dark:lg:ring-white/10",
+            !hideNavigation && "lg:rounded-lg lg:bg-white lg:shadow-xs lg:ring-1 lg:ring-zinc-950/5 dark:lg:bg-zinc-900 dark:lg:ring-white/10",
             fill
               ? "flex min-h-0 flex-1 flex-col overflow-hidden"
               : "grow p-6 lg:p-10",
