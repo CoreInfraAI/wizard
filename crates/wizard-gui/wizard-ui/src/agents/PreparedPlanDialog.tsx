@@ -71,7 +71,9 @@ export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied,
       <DialogTitle>План изменений: {agentNames[agent]}</DialogTitle>
       {hasChanges && (
         <DialogDescription>
-          Завершите текущую работу и закройте агента перед применением. Wizard выполнит следующие действия.
+          {prepared.restarts_desktop
+            ? "Завершите текущую работу. Wizard закроет приложение, если оно запущено, применит настройки и откроет его."
+            : "Завершите текущую работу и закройте агента перед применением. Wizard выполнит следующие действия."}
         </DialogDescription>
       )}
       <DialogBody>

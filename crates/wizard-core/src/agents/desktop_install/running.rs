@@ -10,18 +10,159 @@ use super::{DesktopApp, Target};
 use crate::agents::{AgentDetection, detection};
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{app_is_running, read_app_info, request_app_quit, running_app_paths};
+use anyhow::Result;
+#[cfg(target_os = "macos")]
+use anyhow::ensure;
 #[cfg(target_os = "macos")]
 use core::time::Duration;
 use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
-use std::{process::Command, time::Instant};
+use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
 /// How long an application may take to quit, including a confirmation it asks the user for.
 /// The Windows and Linux installation scripts use the same limit.
 #[cfg(target_os = "macos")]
 const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Configuration owns the full close/write/open cycle. Never force-quit an application.
+/// A fresh installation opens only after its configuration has been saved successfully.
+pub(crate) fn with_closed(
+    app: DesktopApp,
+    last_path: Option<&Path>,
+    apply: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    run_closed(
+        || close_existing(app),
+        apply,
+        || open_existing(app, last_path),
+    )
+}
+
+fn run_closed(
+    close: impl FnOnce() -> Result<bool>,
+    apply: impl FnOnce() -> Result<()>,
+    open: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let was_running = close()?;
+    let applied = apply();
+    // Restore an already running app after an error, but never launch a first installation
+    // with incomplete settings. Preserve the configuration error if reopening also fails.
+    if !was_running && applied.is_err() {
+        return applied;
+    }
+    let opened = open();
+    match (applied, opened) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => {
+            Err(error.context("Настройки сохранены, но не удалось открыть приложение"))
+        }
+        (Err(error), Err(open_error)) => Err(error.context(format!(
+            "Не удалось снова открыть приложение: {open_error:#}"
+        ))),
+    }
+}
+
+fn close_existing(app: DesktopApp) -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let id = app.spec().bundle.id;
+        let was_running = app_is_running(id);
+        request_app_quit(id);
+        let deadline = Instant::now() + QUIT_TIMEOUT;
+        while app_is_running(id) {
+            ensure!(
+                Instant::now() < deadline,
+                "{} не закрылся. Завершите текущую работу и повторите настройку.",
+                app.product()
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        Ok(was_running)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows::close_package(&app.spec().package)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        anyhow::bail!(
+            "Перезапуск {} на этой платформе не поддерживается",
+            app.product()
+        )
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::run_closed;
+    use core::cell::RefCell;
+
+    #[test]
+    fn configuration_is_saved_before_first_launch_or_restart() -> anyhow::Result<()> {
+        for was_running in [false, true] {
+            let steps = RefCell::new(Vec::new());
+            run_closed(
+                || {
+                    steps.borrow_mut().push("closed");
+                    Ok(was_running)
+                },
+                || {
+                    steps.borrow_mut().push("configured");
+                    Ok(())
+                },
+                || {
+                    steps.borrow_mut().push("opened");
+                    Ok(())
+                },
+            )?;
+            assert_eq!(*steps.borrow(), ["closed", "configured", "opened"]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn refused_shutdown_prevents_configuration_and_launch() {
+        let result = run_closed(
+            || anyhow::bail!("quit refused"),
+            || panic!("must not change a running app's profile"),
+            || panic!("must not open another instance"),
+        );
+        assert_eq!(result.expect_err("must fail").to_string(), "quit refused");
+    }
+
+    #[test]
+    fn failed_configuration_only_reopens_a_previously_running_app() {
+        for was_running in [false, true] {
+            let mut opened = false;
+            let result = run_closed(
+                || Ok(was_running),
+                || anyhow::bail!("configuration failed"),
+                || {
+                    opened = true;
+                    Ok(())
+                },
+            );
+            assert_eq!(opened, was_running);
+            assert_eq!(
+                result.expect_err("must fail").to_string(),
+                "configuration failed"
+            );
+        }
+    }
+
+    #[test]
+    fn launch_failure_does_not_claim_setup_completed() {
+        let result = run_closed(|| Ok(false), || Ok(()), || anyhow::bail!("launch failed"));
+        let message = format!("{:#}", result.expect_err("must fail"));
+        assert!(message.contains("Настройки сохранены"));
+        assert!(message.contains("launch failed"));
+    }
+}
 
 /// Products that installing `target` would close because they run in this user session now.
 #[must_use]
@@ -271,6 +412,46 @@ fn open_application(app: DesktopApp, path: Option<&Path>) -> anyhow::Result<()> 
 mod windows {
     use super::super::{WindowsPackage, command_output, powershell};
     use anyhow::Result;
+
+    pub(super) fn close_package(package: &WindowsPackage) -> Result<bool> {
+        let script = super::super::windows_install_script(
+            "$package = $env:WIZARD_DESKTOP_PACKAGE | ConvertFrom-Json",
+            &format!(
+                "{}\n{}",
+                super::super::WINDOWS_CLOSE,
+                r"
+$running = @(Get-PackageProcesses)
+if (@($running | Where-Object { $_.SessionId -ne [Diagnostics.Process]::GetCurrentProcess().SessionId }).Count -gt 0) { exit 25 }
+if ($running.Count -gt 0) { Close-PackageProcesses $running }
+if ($running.Count -gt 0) { 'running' } else { 'stopped' }
+exit 0
+"
+            ),
+        );
+        let parameters = serde_json::json!({
+            "name": package.name,
+            "publisher": package.publisher,
+            "process": package.process,
+            "process_in_package": package.process_in_package,
+        });
+        let mut command = powershell(&script);
+        command.env("WIZARD_DESKTOP_PACKAGE", parameters.to_string());
+        let mut command = tokio::process::Command::from(command);
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let output = crate::platform::command_output(command, core::time::Duration::from_secs(45))?;
+        anyhow::ensure!(
+            output.status.success(),
+            "Приложение не закрылось. Завершите текущую работу и повторите настройку."
+        );
+        match output.stdout.trim_ascii() {
+            b"running" => Ok(true),
+            b"stopped" => Ok(false),
+            _ => anyhow::bail!("Не удалось проверить закрытие приложения"),
+        }
+    }
 
     /// Whether the package's process runs in this user session. The installation script repeats
     /// the check with the package's exact location.

@@ -79,8 +79,35 @@ fn needs_proxy(
     use wizard_core::agents::launch::LaunchAgent;
     match agent {
         LaunchAgent::ClaudeDesktop => settings.claude_proxy_enabled,
-        LaunchAgent::ChatGpt | LaunchAgent::Codex => settings.codex_proxy_enabled,
-        LaunchAgent::Claude | LaunchAgent::OpenCode | LaunchAgent::Pi => false,
+        LaunchAgent::ChatGpt => settings.codex_proxy_enabled,
+        LaunchAgent::Claude | LaunchAgent::Codex | LaunchAgent::OpenCode | LaunchAgent::Pi => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_proxy;
+    use wizard_core::agents::launch::LaunchAgent;
+
+    #[test]
+    fn cli_launch_does_not_require_the_desktop_proxy() {
+        for enabled in [false, true] {
+            let settings = wizard_settings::Settings {
+                claude_proxy_enabled: enabled,
+                codex_proxy_enabled: enabled,
+                ..Default::default()
+            };
+            assert_eq!(needs_proxy(LaunchAgent::ChatGpt, &settings), enabled);
+            assert_eq!(needs_proxy(LaunchAgent::ClaudeDesktop, &settings), enabled);
+            for cli in [
+                LaunchAgent::Codex,
+                LaunchAgent::Claude,
+                LaunchAgent::OpenCode,
+                LaunchAgent::Pi,
+            ] {
+                assert!(!needs_proxy(cli, &settings));
+            }
+        }
     }
 }
 
@@ -159,6 +186,7 @@ pub(crate) struct PreparedAgentChange {
     token: Option<String>,
     plan: PreparedPlan,
     info: Vec<PreparedStepInfo>,
+    restarts_desktop: bool,
 }
 
 impl AgentChange {
@@ -226,7 +254,16 @@ pub(crate) async fn prepare_agent_change(
             codex::prepare_routing_for_gui(mode, &token, &settings)
         }
         AgentChange::ClaudeSetRouting(mode) => claude::prepare_routing(mode, &token),
-        AgentChange::ClaudeDesktopSetRouting(mode) => claude_desktop::prepare_routing(mode, &token),
+        AgentChange::ClaudeDesktopSetRouting(mode) => {
+            let mut plan = claude_desktop::prepare_routing(mode, &token)?;
+            if cfg!(any(target_os = "macos", target_os = "windows")) {
+                plan.restart_desktop(
+                    wizard_core::agents::desktop_install::DesktopApp::Claude,
+                    settings.last_paths.claude_desktop.as_deref(),
+                );
+            }
+            Ok(plan)
+        }
         AgentChange::SetPiHub(mode) => pi::prepare_hub(mode, &token, &settings),
         AgentChange::SetOpenCodeHub(mode) => opencode::prepare_hub(mode, &token, &settings),
     })
@@ -239,6 +276,7 @@ pub(crate) async fn prepare_agent_change(
     })?;
 
     let info = plan.info();
+    let restarts_desktop = plan.restarts_desktop();
 
     log::info!("agent change prepared: {name}");
     Ok(PreparedAgentChange {
@@ -247,6 +285,7 @@ pub(crate) async fn prepare_agent_change(
         token: reprepare_token,
         plan,
         info,
+        restarts_desktop,
     })
 }
 

@@ -1,14 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { reportError } from "../logs/log";
-import type { AgentId } from "./agents_state";
 
 export type Proxy = { enabled: boolean };
 type ProxySnapshot = Proxy & { revision: number };
 
-export function useAgentProxyStartup(agent: AgentId | null) {
+type ProxyAgent = "chatgpt" | "claude_desktop";
+
+export function useAgentProxyStartup(agent: ProxyAgent | null) {
   const [attempt, setAttempt] = useState(0);
-  const [result, setResult] = useState<{ agent: AgentId; attempt: number; error?: string }>();
+  const [result, setResult] = useState<{ agent: ProxyAgent; attempt: number; error?: string }>();
   useEffect(() => {
     setResult(undefined);
     if (!agent) return;

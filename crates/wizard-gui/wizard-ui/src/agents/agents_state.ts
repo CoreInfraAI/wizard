@@ -25,6 +25,7 @@ export type PreparedAgentChange = {
   token: string | null;
   plan: PreparedPlan;
   info: PreparedStepInfo[];
+  restarts_desktop: boolean;
 };
 
 // Required for enabled modes except Claude Desktop subscription (shared Wizard proxy token).
@@ -72,6 +73,7 @@ export type Codex = {
   cli: AgentDetection<{ path: string; version: string | null }>;
   desktop: AgentDetection<{ path: string; version: string | null }>;
   routing_mode: RoutingMode;
+  proxy_needs_apply: boolean;
   // CoreInfra token from the agent's configuration. Secret: never log or persist it.
   token: string | null;
 };

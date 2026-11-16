@@ -105,8 +105,9 @@ export function AgentPage({ agents, page, proxy, account }: {
   // ChatGPT downloads use the token of the shared ChatGPT / Codex routing.
   const codexToken = useAgentToken("codex", agents.codex.status === "found" ? agents.codex.data.token : null, hub);
   const chatGptInstall = useDesktopInstall("chatgpt");
-  const proxyAgent = page === "codex" || page === "claude_desktop" ? page : null;
-  const proxyDetection = proxyAgent ? agents[proxyAgent] : undefined;
+  const proxyAgent = page === "codex" && agents.codex.status === "found" && agents.codex.data.desktop.status === "found"
+    ? "chatgpt" : page === "claude_desktop" ? "claude_desktop" : null;
+  const proxyDetection = page === "codex" || page === "claude_desktop" ? agents[page] : undefined;
   const proxyStartup = useAgentProxyStartup(proxyDetection?.status === "found" && proxyDetection.data.routing_mode !== "disabled" ? proxyAgent : null);
 
   async function prepare(change: AgentChange, token: TokenChoice | null) {
@@ -158,7 +159,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             </DescriptionList>
           )}
           {codex.status === "found" && (
-            <RoutingFieldset editing needsApply={chatGptProxyStopped} agent="codex" token={chatGptInstall.hidden ? undefined : codexToken} modes={routingModes("Codex")} mode={codex.data.routing_mode}
+            <RoutingFieldset editing needsApply={codex.data.proxy_needs_apply || chatGptProxyStopped} agent="codex" token={chatGptInstall.hidden ? undefined : codexToken} modes={routingModes("Codex")} mode={codex.data.routing_mode}
               toChange={(mode) => ({ CodexSetRouting: mode })} agentToken={codex.data.token} hub={hub}
               note="Настройка общая для ChatGPT и Codex." disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}

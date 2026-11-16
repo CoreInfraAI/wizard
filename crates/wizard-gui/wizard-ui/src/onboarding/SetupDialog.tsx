@@ -25,7 +25,7 @@ function Configure({ choice, agents, hub, account, onBusy, onComplete, onBack }:
   hub: Hub;
   account: HubAccountControl;
   onBusy: (busy: boolean) => void;
-  onComplete: () => void;
+  onComplete: (restarted: boolean) => void;
   onBack: () => void;
 }) {
   const [prepared, setPrepared] = useState<PreparedAgentChange>();
@@ -73,11 +73,11 @@ function Configure({ choice, agents, hub, account, onBusy, onComplete, onBack }:
         <Text>{agents.status === "loading" ? "Обновляем список приложений…" : "Агент не обнаружен. Дождитесь обновления списка или выберите другого агента."}</Text>
         <Button plain onClick={onBack}>Назад</Button>
       </div>}
-    {prepared && <PreparedPlanDialog prepared={prepared} onReprepared={setPrepared} onClose={() => setPrepared(undefined)} onApplied={onComplete} />}
+    {prepared && <PreparedPlanDialog prepared={prepared} onReprepared={setPrepared} onClose={() => setPrepared(undefined)} onApplied={() => onComplete(prepared.restarts_desktop)} />}
   </div>;
 }
 
-function Completed({ choice, onFinish, onBusy, onBack }: { choice: AgentChoice; onFinish: () => void; onBusy: (busy: boolean) => void; onBack: () => void }) {
+function Completed({ choice, restarted, onFinish, onBusy, onBack }: { choice: AgentChoice; restarted: boolean; onFinish: () => void; onBusy: (busy: boolean) => void; onBack: () => void }) {
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string>();
   const inFlight = useRef(false);
@@ -103,10 +103,10 @@ function Completed({ choice, onFinish, onBusy, onBack }: { choice: AgentChoice; 
       <span className="onboarding-agent-avatar" data-agent={choice.id}><AgentIcon choice={choice} /></span>
       <Heading level={2} className="font-semibold!" tabIndex={-1}>{choice.name} настроен</Heading>
     </div>
-    <Text className="mt-4">{choice.desktop ? "Можно открывать приложение и начинать работу." : "Агент откроется в терминале."}</Text>
+    <Text className="mt-4">{restarted ? "Приложение открыто с новыми настройками." : choice.desktop ? "Можно открывать приложение и начинать работу." : "Агент откроется в терминале."}</Text>
     <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
       <Button plain disabled={launching} onClick={onBack}>Выбрать другого агента</Button>
-      <Button disabled={launching} onClick={() => void launch()}>{launching ? "Запускаем…" : "Запустить агента"}</Button>
+      <Button disabled={launching} onClick={() => restarted ? onFinish() : void launch()}>{restarted ? "Готово" : launching ? "Запускаем…" : "Запустить агента"}</Button>
     </div>
     {error && <div className="mt-4" role="alert"><ErrorText>{error}</ErrorText></div>}
   </div>;
@@ -124,6 +124,7 @@ export function SetupDialog({ initialStage, account, agents, onClose, onFinished
   const installed = agents.status === "ready" ? choices.filter((choice) => isFound(choice, agents.data)) : [];
   const [selected, setSelected] = useState<ChoiceId>();
   const [stage, setStage] = useState<Stage>(initialStage === "select" ? "entry" : initialStage);
+  const [restarted, setRestarted] = useState(false);
   // Resolve the entry screen from live detection, not the first (possibly partial) snapshot.
   const viewStage = stage === "entry" ? installed.length === 1 ? "configure" : "select" : stage;
   const [installView, setInstallView] = useState<InstallView>("choose");
@@ -157,8 +158,8 @@ export function SetupDialog({ initialStage, account, agents, onClose, onFinished
     <Button plain className="absolute! top-5 right-5" disabled={busy} aria-label="Закрыть настройку" onClick={onClose}><XMarkIcon /></Button>
     <div ref={content} key={viewStage} className="onboarding-stage">
       {(viewStage === "install" || viewStage === "select") && <AgentSelection mode={viewStage} agents={agents} hub={hub} selected={selected} onSelect={choose} onContinue={configure} onClose={onClose} onInstallViewChange={setInstallView} />}
-      {viewStage === "configure" && selectedChoice && <Configure choice={selectedChoice} agents={agents} hub={hub} account={account} onBusy={changeBusy} onComplete={() => { setSelected(selectedChoice.id); changeBusy(false); setStage("complete"); }} onBack={() => setStage("select")} />}
-      {viewStage === "complete" && selectedChoice && <Completed choice={selectedChoice} onFinish={finish} onBusy={changeBusy} onBack={() => setStage("select")} />}
+      {viewStage === "configure" && selectedChoice && <Configure choice={selectedChoice} agents={agents} hub={hub} account={account} onBusy={changeBusy} onComplete={(restarted) => { setSelected(selectedChoice.id); setRestarted(restarted && Boolean(selectedChoice.desktop)); changeBusy(false); setStage("complete"); }} onBack={() => setStage("select")} />}
+      {viewStage === "complete" && selectedChoice && <Completed choice={selectedChoice} restarted={restarted} onFinish={finish} onBusy={changeBusy} onBack={() => setStage("select")} />}
     </div>
   </Dialog>;
 }

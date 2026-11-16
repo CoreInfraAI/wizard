@@ -308,8 +308,8 @@ pub(crate) async fn get_desktop_running_apps(
 }
 
 /// `confirmed` approves the change that the selected release asks to confirm. `close` approves
-/// closing the applications that the user was told run now. Onboarding defers the first
-/// launch until configuration; other callers retain the default immediate first launch.
+/// closing the applications that the user was told run now. Onboarding configures a first
+/// installation before opening it; other callers retain immediate first launch.
 #[tauri::command]
 pub(crate) fn install_desktop_release(
     app: tauri::AppHandle,

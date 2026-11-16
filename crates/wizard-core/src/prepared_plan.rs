@@ -4,7 +4,11 @@
 //! External commands have no rollback; `@latest` does not pin a package version.
 
 use crate::{
-    agents::{claude, claude_desktop, codex, opencode, pi},
+    agents::{
+        claude, claude_desktop, codex,
+        desktop_install::{self, DesktopApp},
+        opencode, pi,
+    },
     config_files::{
         backups::{AgentKind, BackupManager},
         changes::{FileChange, FileSnapshot},
@@ -12,7 +16,10 @@ use crate::{
 };
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::MutexGuard};
+use std::{
+    path::{Path, PathBuf},
+    sync::MutexGuard,
+};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,17 +46,43 @@ impl PreparedAgent {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopRestart {
+    app: DesktopApp,
+    last_path: Option<PathBuf>,
+}
+
 // No Debug: the original and prepared contents may contain credentials.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedPlan {
     agent: PreparedAgent,
     pub(crate) steps: Vec<PreparedStep>,
+    #[serde(default)]
+    desktop: Option<DesktopRestart>,
 }
 
 impl PreparedPlan {
     pub(crate) fn new(agent: PreparedAgent, steps: Vec<PreparedStep>) -> Self {
-        Self { agent, steps }
+        Self {
+            agent,
+            steps,
+            desktop: None,
+        }
+    }
+
+    /// GUI configuration closes the desktop app before writing and opens it afterwards.
+    pub fn restart_desktop(&mut self, app: DesktopApp, last_path: Option<&Path>) {
+        self.desktop = Some(DesktopRestart {
+            app,
+            last_path: last_path.map(Path::to_owned),
+        });
+    }
+
+    #[must_use]
+    pub fn restarts_desktop(&self) -> bool {
+        self.desktop.is_some()
     }
 
     #[must_use]
@@ -62,6 +95,14 @@ impl PreparedPlan {
     #[must_use]
     pub fn info(&self) -> Vec<PreparedStepInfo> {
         let mut info = Vec::new();
+        if let Some(desktop) = &self.desktop {
+            info.push(PreparedStepInfo {
+                description: format!(
+                    "Применит настройки при закрытом {} и откроет приложение.",
+                    desktop.app.product()
+                ),
+            });
+        }
 
         for step in &self.steps {
             let item = match step {
@@ -103,6 +144,13 @@ impl PreparedPlan {
                 PreparedStep::OpenCodeRemoveCredential { .. } => PreparedStepInfo {
                     description: "Удалит ключ CoreInfra от Wizard из OpenCode. Другие ключи CoreInfra сохранятся.".to_owned(),
                 },
+                PreparedStep::SetChatGptProxy { enabled, .. } => PreparedStepInfo {
+                    description: if *enabled {
+                        "Настроит подключение ChatGPT через локальный прокси Wizard."
+                    } else {
+                        "Удалит настройки прокси Wizard из ChatGPT."
+                    }.to_owned(),
+                },
                 PreparedStep::SetCodexProxyEnabled { enabled } => PreparedStepInfo {
                     description: if *enabled {
                         "Включит локальный прокси ChatGPT в Wizard."
@@ -137,11 +185,13 @@ impl PreparedPlan {
     /// Agent backups cover the entire plan; there is no rollback on failure.
     pub fn apply(self) -> Result<()> {
         anyhow::ensure!(
-            !self.steps.iter().any(|step| matches!(
-                step,
-                PreparedStep::SetClaudeProxyEnabled { .. }
-                    | PreparedStep::SetCodexProxyEnabled { .. }
-            )),
+            self.desktop.is_none()
+                && !self.steps.iter().any(|step| matches!(
+                    step,
+                    PreparedStep::SetClaudeProxyEnabled { .. }
+                        | PreparedStep::SetCodexProxyEnabled { .. }
+                        | PreparedStep::SetChatGptProxy { .. }
+                )),
             "Desktop proxy plans can only be applied in the GUI"
         );
         self.apply_with_proxies(
@@ -173,12 +223,37 @@ impl PreparedPlan {
     }
 
     pub(crate) fn apply_with_backup(
-        self,
+        mut self,
+        manager: Option<BackupManager>,
+        set_claude_enabled: impl FnMut(bool) -> Result<()>,
+        set_codex_enabled: impl FnMut(bool) -> Result<()>,
+    ) -> Result<()> {
+        let _guard = self.agent.lock()?;
+
+        if let Some(desktop) = self.desktop.take() {
+            desktop_install::with_closed(desktop.app, desktop.last_path.as_deref(), || {
+                self.apply_closed(manager, set_claude_enabled, set_codex_enabled)
+            })
+        } else {
+            self.apply_closed(manager, set_claude_enabled, set_codex_enabled)
+        }
+    }
+
+    fn apply_closed(
+        mut self,
         manager: Option<BackupManager>,
         mut set_claude_enabled: impl FnMut(bool) -> Result<()>,
         mut set_codex_enabled: impl FnMut(bool) -> Result<()>,
     ) -> Result<()> {
-        let _guard = self.agent.lock()?;
+        // Only ChatGPT's app-owned Preferences are read after shutdown. CLI configuration
+        // and Claude profiles retain their original snapshots and conflict checks.
+        for step in &mut self.steps {
+            if let PreparedStep::SetChatGptProxy { path, enabled } = step {
+                *step = PreparedStep::ChangeFile {
+                    change: codex::prepare_desktop_proxy(path.clone(), *enabled)?,
+                };
+            }
+        }
 
         // Refuse a write (symlink, file changed since preparation) before an install step runs.
         // Each write checks again.
@@ -257,6 +332,12 @@ impl PreparedPlan {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreparedStep {
+    /// Read the application-owned Preferences after shutdown; preserve unrelated fields.
+    #[serde(rename = "set_chatgpt_proxy")]
+    SetChatGptProxy {
+        path: PathBuf,
+        enabled: bool,
+    },
     /// Saves `ChatGPT`'s demand for the local proxy, without an agent credential.
     SetCodexProxyEnabled {
         enabled: bool,
@@ -328,6 +409,9 @@ impl PreparedStep {
     // Use PreparedPlan::apply to retain grouped file writes and the agent mutex.
     fn apply(self) -> Result<()> {
         match self {
+            Self::SetChatGptProxy { .. } => {
+                anyhow::bail!("ChatGPT Preferences must be prepared after closing the app")
+            }
             Self::SetClaudeProxyEnabled { .. } | Self::SetCodexProxyEnabled { .. } => {
                 anyhow::bail!("Desktop proxy requires the GUI")
             }
@@ -370,5 +454,90 @@ impl PreparedStep {
                 anyhow::bail!("ChatGPT updates are managed this way only on macOS")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config_files::json;
+
+    #[test]
+    fn chatgpt_profile_is_created_or_merged_after_shutdown_before_proxy_start() -> Result<()> {
+        for initialized_during_shutdown in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("Default/Preferences");
+            let plan = PreparedPlan::new(
+                PreparedAgent::Codex,
+                vec![
+                    PreparedStep::SetChatGptProxy {
+                        path: path.clone(),
+                        enabled: true,
+                    },
+                    PreparedStep::SetCodexProxyEnabled { enabled: true },
+                ],
+            );
+            assert!(!plan.info().is_empty());
+            assert!(!path.parent().expect("profile directory").exists());
+            if initialized_during_shutdown {
+                std::fs::create_dir_all(path.parent().expect("profile directory"))?;
+                std::fs::write(&path, r#"{"profile":{"name":"saved during shutdown"}}"#)?;
+            }
+            let mut activated = false;
+            plan.apply_with_backup(
+                None,
+                |_| panic!("unexpected Claude proxy"),
+                |enabled| {
+                    assert!(enabled);
+                    let config = json::read(&path)?;
+                    assert_eq!(config["proxy"]["server"], "http://127.0.0.1:33788");
+                    if initialized_during_shutdown {
+                        assert_eq!(config["profile"]["name"], "saved during shutdown");
+                    } else {
+                        assert_eq!(config.as_object().expect("preferences object").len(), 1);
+                    }
+                    activated = true;
+                    Ok(())
+                },
+            )?;
+            assert!(activated);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn desktop_profile_does_not_bypass_existing_configuration_conflict_checks() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config = directory.path().join("config.toml");
+        std::fs::write(&config, "original")?;
+        let mut change = FileChange::read(config.clone())?;
+        change.after = FileSnapshot::new("prepared".into(), 0o600);
+        let preferences = directory.path().join("Default/Preferences");
+        let plan = PreparedPlan::new(
+            PreparedAgent::Codex,
+            vec![
+                PreparedStep::SetChatGptProxy {
+                    path: preferences.clone(),
+                    enabled: true,
+                },
+                PreparedStep::ChangeFile { change },
+                PreparedStep::SetCodexProxyEnabled { enabled: true },
+            ],
+        );
+        std::fs::write(&config, "user change after preparation")?;
+        assert!(
+            plan.apply_with_backup(
+                None,
+                |_| panic!("unexpected Claude proxy"),
+                |_| panic!("proxy must not start after failed preflight"),
+            )
+            .is_err()
+        );
+        assert!(!preferences.exists());
+        assert_eq!(
+            std::fs::read_to_string(config)?,
+            "user change after preparation"
+        );
+        Ok(())
     }
 }
