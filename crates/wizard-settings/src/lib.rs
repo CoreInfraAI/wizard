@@ -150,6 +150,17 @@ pub fn load_from_file() -> Result<Settings> {
     toml_edit::de::from_str(&text).map_err(|_| anyhow!("failed to deserialize Wizard settings"))
 }
 
+/// Separate Claude Desktop credential, written and backed up with its configuration.
+/// Missing means the agent has not been configured for its dedicated listener yet.
+pub fn load_claude_proxy_token() -> Result<Option<String>> {
+    match fs::read_to_string(paths::claude_proxy_token_path()?) {
+        Ok(token) if !token.is_empty() => Ok(Some(token)),
+        Ok(_) => bail!("Claude Desktop proxy token is empty"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => bail!("failed to read Claude Desktop proxy token"),
+    }
+}
+
 pub fn save_to_file(settings: &Settings) -> Result<()> {
     let path = settings_path()?;
     let serialized = toml_edit::ser::to_string_pretty(settings)

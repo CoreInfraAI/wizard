@@ -5,7 +5,6 @@ import { agentPaths, overviewPath, type AgentPageId, type AppPageId } from "./ag
 import { AppLogo } from "./components/AppLogo";
 import { ClaudeIcon, OpenAiIcon, OpenCodeIcon, PiIcon } from "./components/BrandIcons";
 import { Button } from "./components/catalyst/button";
-import { Divider } from "./components/catalyst/divider";
 import { Sidebar, SidebarBody, SidebarFooter, SidebarHeader, SidebarHeading, SidebarItem, SidebarLabel, SidebarSection, SidebarSpacer } from "./components/catalyst/sidebar";
 import { type HubAccountControl, HubAccountMenu } from "./settings/HubAccount";
 import type { UpdateObservation } from "./updates/update";
@@ -47,9 +46,6 @@ export function AppSidebar({ page, account, update }: {
           <SidebarHeading className="text-zinc-700 dark:text-zinc-200!">Агенты</SidebarHeading>
           {item("claude_desktop", "Claude Desktop", ClaudeIcon)}
           {item("codex", "ChatGPT / Codex", OpenAiIcon)}
-          <div className="my-1.5 mr-10 ml-2">
-            <Divider />
-          </div>
           {item("claude", "Claude Code", ClaudeIcon)}
           {item("opencode", "OpenCode", OpenCodeIcon)}
           {item("pi", "Pi", PiIcon)}

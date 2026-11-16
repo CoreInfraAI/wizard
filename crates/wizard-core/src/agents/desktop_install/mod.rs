@@ -3,6 +3,7 @@
 mod chatgpt;
 mod claude;
 mod download;
+mod requests;
 mod running;
 
 pub use download::{DownloadProgress, SavedDownload, download_release, saved_download};
@@ -298,14 +299,7 @@ fn client(token: &str) -> Result<Client> {
 
 /// Fetches a small update feed, refusing responses over `limit` bytes.
 async fn fetch_feed(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>> {
-    let mut response = client
-        .get(url)
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|_| {
-            anyhow!("Не удалось проверить обновления через прокси; проверьте токен и соединение")
-        })?;
+    let mut response = requests::feed_response(client, url).await?;
     ensure!(
         response.status().is_success(),
         "Сервер проверки обновлений вернул HTTP {}",

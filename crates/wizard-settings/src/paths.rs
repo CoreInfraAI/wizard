@@ -1,4 +1,4 @@
-//! Shared locations of Wizard's own configuration and log files.
+//! Shared configuration and log locations used by Wizard and its proxy.
 
 use anyhow::{Context as _, Result};
 use std::path::PathBuf;
@@ -21,6 +21,26 @@ pub fn cache_dir() -> Result<PathBuf> {
 
 pub fn settings_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))
+}
+
+/// Claude's local profile library and the adjacent Wizard-owned proxy credential.
+pub fn claude_config_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let directory = dirs::home_dir().map(|home| home.join("Library/Application Support"));
+    #[cfg(target_os = "windows")]
+    let directory = dirs::data_local_dir();
+    #[cfg(target_os = "linux")]
+    let directory = dirs::config_dir();
+    std::path::absolute(
+        directory
+            .context("failed to resolve Claude Desktop configuration directory")?
+            .join("Claude-3p"),
+    )
+    .context("failed to resolve Claude Desktop configuration path")
+}
+
+pub fn claude_proxy_token_path() -> Result<PathBuf> {
+    Ok(claude_config_dir()?.join("coreinfra-proxy-token"))
 }
 
 /// Matches Tauri's `app_log_dir`; does not create the directory.

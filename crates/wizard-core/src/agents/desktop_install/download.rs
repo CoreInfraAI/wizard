@@ -2,6 +2,7 @@
 //! across pauses and restarts, until installation, another release or failed verification
 //! discards them.
 
+use super::requests::proxy_rejected_token;
 use super::{
     ArchiveVerifier, DOWNLOAD_NAME, DesktopApp, DownloadedRelease, Integrity, MAX_DOWNLOAD,
     Release, client,
@@ -346,12 +347,13 @@ impl Transfer<'_> {
             }
         }
         let mut response = request.send().await.map_err(|error| {
-            let message =
-                format!("Не удалось скачать {name} через прокси; проверьте токен и соединение");
             if proxy_rejected_token(&error) {
-                anyhow!(message)
+                anyhow!(super::requests::TOKEN_REJECTED)
             } else {
-                interrupted(message)
+                wizard_proxy::diagnostics::error("desktop archive request", &error);
+                interrupted(format!(
+                    "Не удалось скачать {name}: соединение с CoreInfra AI Hub прервано"
+                ))
             }
         })?;
 
@@ -478,16 +480,6 @@ impl Transfer<'_> {
         self.record = Some(record);
         Ok(())
     }
-}
-
-/// Whether the proxy refused the token, which reconnecting cannot fix. hyper-util's error type is
-/// private, so only its message identifies the refusal.
-fn proxy_rejected_token(error: &reqwest::Error) -> bool {
-    core::iter::successors(
-        Some(error as &(dyn core::error::Error + 'static)),
-        |error| error.source(),
-    )
-    .any(|error| error.to_string() == "tunnel error: proxy authorization required")
 }
 
 /// The archive's `ETag`, if it can validate a range request.
@@ -801,10 +793,7 @@ mod tests {
         );
         let error = result.err().unwrap();
         assert!(!error.is::<Interrupted>());
-        assert_eq!(
-            error.to_string(),
-            "Не удалось скачать Claude через прокси; проверьте токен и соединение"
-        );
+        assert_eq!(error.to_string(), super::super::requests::TOKEN_REJECTED);
         assert_eq!(proxy.requests().len(), 1);
     }
 

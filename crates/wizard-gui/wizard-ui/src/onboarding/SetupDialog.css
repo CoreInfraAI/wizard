@@ -17,18 +17,20 @@
 .onboarding-install-grid[data-confirming="true"] { margin-top: 0; }
 .onboarding-install-confirmation { animation: setup-enter 180ms ease-out; }
 .setup-dialog-compact .onboarding-install-grid:not([data-confirming="true"]) { margin-top: 16px; }
-.setup-dialog-compact .onboarding-install-main { padding: 16px 18px; }
+.setup-dialog-compact .onboarding-install-main { --install-padding-inline: 18px; padding-block: 16px; }
 .setup-dialog-compact .onboarding-install-copy { min-height: 128px; gap: 16px; }
 .onboarding-install-card { --install-ink: var(--brand-claude); position: relative; isolation: isolate; overflow: hidden; border: 1px solid #e4e4e7; border-radius: 14px; background: #f5f5f5; }
 .onboarding-install-card[data-app="chatgpt"] { --install-ink: var(--brand-openai); }
 .onboarding-install-card[data-app] p { color: #71717a; }
-.onboarding-install-main { position: relative; padding: 20px 22px; }
+.onboarding-install-main { --install-padding-inline: 22px; position: relative; padding: 20px var(--install-padding-inline); }
 .onboarding-install-copy { position: relative; z-index: 1; display: flex; min-height: 156px; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 18px; }
-.onboarding-install-copy > div:first-child { max-width: calc(100% - 90px); }
+.onboarding-install-header { position: relative; display: flex; align-items: center; width: 100%; min-height: 56px; }
+.onboarding-install-details { max-width: calc(100% - 90px); }
 .onboarding-install-actions { min-height: 36px; }
 .onboarding-install-actions > button { white-space: nowrap; background: #fafafa; }
 .onboarding-install-note { position: relative; padding: 0 22px 20px; overflow-wrap: anywhere; }
-.onboarding-install-logo { position: absolute; right: 20px; top: 0; bottom: 0; display: flex; align-items: center; pointer-events: none; }
+.onboarding-install-logo { position: absolute; right: var(--install-padding-inline); top: 0; bottom: 0; display: flex; align-items: center; pointer-events: none; }
+.onboarding-install-header > .onboarding-install-logo { right: 0; }
 .onboarding-install-mark { display: grid; place-items: center; width: 76px; height: 84px; rotate: -6deg; transition: rotate 220ms ease, translate 220ms ease; }
 .onboarding-install-logo svg { width: 48px; height: 48px; color: #71717a; transition: color 220ms ease; }
 .onboarding-install-card[data-app="chatgpt"] .onboarding-install-mark { rotate: 6deg; }
@@ -40,6 +42,7 @@
 .onboarding-download-fill,
 .onboarding-install-color { position: absolute; inset: 0; pointer-events: none; clip-path: inset(0 calc(100% - var(--install-progress, 0%)) 0 0); transition: clip-path 800ms linear; }
 .onboarding-download-fill { background: #dedee3; }
+.onboarding-install-header > .onboarding-install-color { inset: 0 calc(-1 * var(--install-padding-inline)); }
 .onboarding-install-card[data-active="true"] .onboarding-install-mark { rotate: 0deg; translate: none; }
 
 :root[data-theme="dark"] .onboarding-agent-row { border-color: #3f3f46; }
@@ -55,8 +58,7 @@
 @media (max-width: 639px) {
   .setup-dialog { padding: 24px; }
   .onboarding-install-grid { grid-template-columns: minmax(0, 1fr); }
-  .onboarding-install-copy > div:first-child { max-width: calc(100% - 84px); }
-  .onboarding-install-logo { right: 16px; }
+  .onboarding-install-details { max-width: calc(100% - 84px); }
   .onboarding-install-mark { width: 68px; height: 76px; }
   .onboarding-install-logo svg { width: 44px; height: 44px; }
 }

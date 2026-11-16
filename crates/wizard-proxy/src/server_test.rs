@@ -159,6 +159,7 @@ async fn disabling_reload_replies_before_exit() -> io::Result<()> {
         state,
         claude,
         chatgpt,
+        TcpListener::bind("127.0.0.1:0").await?,
         core::future::pending(),
     ));
 
@@ -188,6 +189,7 @@ async fn shutdown_replies_before_exit_and_preserves_settings() -> io::Result<()>
         state,
         claude,
         chatgpt,
+        TcpListener::bind("127.0.0.1:0").await?,
         core::future::pending(),
     ));
 
@@ -248,9 +250,15 @@ async fn accepted_reload_survives_disconnect_and_shutdown() -> io::Result<()> {
     let chatgpt = TcpListener::bind("127.0.0.1:0").await?;
     let address = claude.local_addr()?;
     let (stop, shutdown) = oneshot::channel();
-    let mut task = tokio::spawn(run_listeners(Arc::clone(&state), claude, chatgpt, async {
-        let _ = shutdown.await;
-    }));
+    let mut task = tokio::spawn(run_listeners(
+        Arc::clone(&state),
+        claude,
+        chatgpt,
+        TcpListener::bind("127.0.0.1:0").await?,
+        async {
+            let _ = shutdown.await;
+        },
+    ));
 
     settings(Some("replacement"), true, false);
     let mut client = TcpStream::connect(address).await?;
@@ -297,6 +305,7 @@ async fn shared_generation_preserves_and_drains_tunnels_on_both_ports() -> io::R
         Arc::clone(&state),
         claude,
         chatgpt,
+        TcpListener::bind("127.0.0.1:0").await?,
         core::future::pending(),
     ));
 
@@ -385,9 +394,15 @@ async fn failed_reload_keeps_working_configuration() -> io::Result<()> {
     let chatgpt = TcpListener::bind("127.0.0.1:0").await?;
     let address = claude.local_addr()?.to_string();
     let (stop, shutdown) = oneshot::channel();
-    let task = tokio::spawn(run_listeners(Arc::clone(&state), claude, chatgpt, async {
-        let _ = shutdown.await;
-    }));
+    let task = tokio::spawn(run_listeners(
+        Arc::clone(&state),
+        claude,
+        chatgpt,
+        TcpListener::bind("127.0.0.1:0").await?,
+        async {
+            let _ = shutdown.await;
+        },
+    ));
     fs::write(
         wizard_settings::paths::settings_path().expect("settings path"),
         "invalid = [",
@@ -428,6 +443,118 @@ async fn failed_reload_keeps_working_configuration() -> io::Result<()> {
     Ok(())
 }
 
+async fn claude_token_changes_preserve_shared_proxy_connections() -> io::Result<()> {
+    settings(Some("shared-fixture"), true, true);
+    let token_path = wizard_settings::paths::claude_proxy_token_path().map_err(io::Error::other)?;
+    fs::create_dir_all(token_path.parent().expect("token directory"))?;
+    fs::write(&token_path, "claude-first")?;
+    let state = state();
+    assert!(state.reload_with_lock().await.error.is_none());
+    let shared = state
+        .slot
+        .current
+        .read()
+        .await
+        .clone()
+        .expect("shared generation");
+    let claude = state
+        .claude_slot
+        .current
+        .read()
+        .await
+        .clone()
+        .expect("Claude generation");
+    assert_eq!(
+        claude.upstream.authorization,
+        upstream::authorization("claude-first")?
+    );
+    assert_eq!(
+        shared.upstream.authorization,
+        upstream::authorization("shared-fixture")?
+    );
+
+    let listeners = [
+        TcpListener::bind("127.0.0.1:0").await?,
+        TcpListener::bind("127.0.0.1:0").await?,
+        TcpListener::bind("127.0.0.1:0").await?,
+    ];
+    let addresses = [
+        listeners[0].local_addr()?,
+        listeners[1].local_addr()?,
+        listeners[2].local_addr()?,
+    ];
+    let [current, legacy, dedicated] = listeners;
+    let (stop, shutdown) = oneshot::channel();
+    let task = tokio::spawn(run_listeners(
+        Arc::clone(&state),
+        current,
+        legacy,
+        dedicated,
+        async {
+            let _ = shutdown.await;
+        },
+    ));
+    let destination = TcpListener::bind("127.0.0.1:0").await?;
+    let target = destination.local_addr()?;
+    let mut tunnels = Vec::new();
+    for address in addresses {
+        let mut client = TcpStream::connect(address).await?;
+        client
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await?;
+        let (remote, _) = destination.accept().await?;
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            header.push(client.read_u8().await?);
+            assert!(header.len() < 8192);
+        }
+        assert!(header.starts_with(b"HTTP/1.1 200"));
+        tunnels.push((client, remote));
+    }
+
+    // Invalid Claude credentials must not partially replace the shared generation.
+    fs::write(&token_path, "")?;
+    settings(Some("new-shared-fixture"), true, true);
+    assert!(state.reload_with_lock().await.error.is_some());
+    assert!(!*shared.cancelled.borrow() && !*claude.cancelled.borrow());
+    settings(Some("shared-fixture"), true, true);
+    fs::write(&token_path, "claude-second")?;
+    let response: control::ReloadResponse =
+        control::request(&addresses[2].to_string(), control::Command::Reload).await?;
+    assert!(response.error.is_none() && response.status.enabled);
+    assert!(*claude.cancelled.borrow());
+    assert!(!*shared.cancelled.borrow());
+    assert_eq!(
+        state
+            .claude_slot
+            .current
+            .read()
+            .await
+            .as_ref()
+            .expect("Claude generation")
+            .upstream
+            .authorization,
+        upstream::authorization("claude-second")?
+    );
+    for (client, remote) in &mut tunnels[..2] {
+        client.write_all(b"live").await?;
+        let mut bytes = [0; 4];
+        remote.read_exact(&mut bytes).await?;
+        assert_eq!(&bytes, b"live");
+    }
+    assert_eq!(tunnels[2].0.read(&mut [0; 1]).await?, 0);
+    assert_eq!(tunnels[2].1.read(&mut [0; 1]).await?, 0);
+
+    settings(Some("shared-fixture"), false, true);
+    assert!(state.reload_with_lock().await.error.is_none());
+    assert!(state.claude_slot.current.read().await.is_none());
+    assert!(!*shared.cancelled.borrow());
+    let _ = stop.send(());
+    task.await.map_err(io::Error::other)??;
+    fs::remove_file(token_path)?;
+    Ok(())
+}
+
 // Windows Known Folder resolution ignores HOME; never use a real user profile.
 // The test and all shared protocol code still compile on Windows.
 #[test]
@@ -450,6 +577,9 @@ fn isolated_http_management() {
             .expect("test runtime")
             .block_on(async {
                 timeout(Duration::from_secs(30), async {
+                    claude_token_changes_preserve_shared_proxy_connections()
+                        .await
+                        .expect("Claude Desktop uses its own token and preserves shared sessions");
                     shared_generation_preserves_and_drains_tunnels_on_both_ports()
                         .await
                         .expect("shared Wizard token with aggregate proxy demand");

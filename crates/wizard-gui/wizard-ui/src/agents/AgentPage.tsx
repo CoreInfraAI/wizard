@@ -1,12 +1,12 @@
 import { Fragment, type ReactNode, useState } from "react";
 import { type AgentChange, type AgentDetection, type AgentId, type AgentStates, type BackupAgent, type PreparedAgentChange, type RoutingMode, type TokenChoice, prepareAgentChange } from "./agents_state";
-import { currentModeLabels, routingModes, hubModes, getAgentToken, TokenNote, RoutingFieldset, type Hub } from "./AgentConfiguration";
+import { currentModeLabels, routingModes, hubModes, useAgentToken, TokenNote, RoutingFieldset, type Hub } from "./AgentConfiguration";
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { DesktopInstall, useDesktopInstall } from "./DesktopInstall";
 import { tokenLabel, useHubTokens } from "../settings/hub_tokens";
 import type { HubAccountControl } from "../settings/HubAccount";
-import { useProxy } from "./proxy";
+import { useAgentProxyStartup, useProxy } from "./proxy";
 import { reportError } from "../logs/log";
 import { Badge } from "../components/catalyst/badge";
 import { Button } from "../components/catalyst/button";
@@ -55,12 +55,21 @@ function RoutingRows({ mode, agentToken, hub }: {
 }
 
 // Shared daemon state; each page decides what it means for its app.
-function ProxyStatus({ proxy: { proxy, error } }: { proxy: ReturnType<typeof useProxy> }) {
+function ProxyStatus({ proxy: { proxy, error }, startup }: {
+  proxy: ReturnType<typeof useProxy>;
+  startup: ReturnType<typeof useAgentProxyStartup>;
+}) {
+  // Apply or the system-proxy action can recover after an earlier startup failure.
+  if (error === undefined && proxy?.enabled) return <Badge color="green">Работает</Badge>;
+  if (startup.starting) return <Badge color="zinc">Запускается…</Badge>;
+  if (startup.error) return <div className="space-y-2">
+    <ErrorText>{startup.error}</ErrorText>
+    <Button plain onClick={startup.retry}>Повторить запуск</Button>
+  </div>;
   if (error !== undefined) return <Badge color="amber" title={error}>Состояние недоступно</Badge>;
   if (proxy === undefined) return <Badge color="zinc">Загрузка…</Badge>;
 
-  const running = proxy.enabled;
-  return <Badge color={running ? "green" : "zinc"}>{running ? "Работает" : "Остановлен"}</Badge>;
+  return <Badge color="zinc">Остановлен</Badge>;
 }
 
 function BackupButton({ agent, disabled }: { agent: BackupAgent; disabled: boolean }) {
@@ -91,11 +100,14 @@ export function AgentPage({ agents, page, proxy, account }: {
     ...useHubTokens(account.account?.active_hub_id),
     signedIn: account.signedIn,
   };
-  const claudeDesktopToken = getAgentToken("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
+  const claudeDesktopToken = useAgentToken("claude_desktop", agents.claude_desktop.status === "found" ? agents.claude_desktop.data.token : null, hub);
   const claudeInstall = useDesktopInstall("claude");
   // ChatGPT downloads use the token of the shared ChatGPT / Codex routing.
-  const codexToken = getAgentToken("codex", agents.codex.status === "found" ? agents.codex.data.token : null, hub);
+  const codexToken = useAgentToken("codex", agents.codex.status === "found" ? agents.codex.data.token : null, hub);
   const chatGptInstall = useDesktopInstall("chatgpt");
+  const proxyAgent = page === "codex" || page === "claude_desktop" ? page : null;
+  const proxyDetection = proxyAgent ? agents[proxyAgent] : undefined;
+  const proxyStartup = useAgentProxyStartup(proxyDetection?.status === "found" && proxyDetection.data.routing_mode !== "disabled" ? proxyAgent : null);
 
   async function prepare(change: AgentChange, token: TokenChoice | null) {
     if (isChangeInProgress) return;
@@ -123,7 +135,7 @@ export function AgentPage({ agents, page, proxy, account }: {
     case "codex": {
       const codex = agents.codex;
       const chatGptFound = codex.status === "found" && codex.data.desktop.status === "found";
-      const chatGptProxyStopped = proxy.proxy?.enabled === false && chatGptFound
+      const chatGptProxyStopped = !proxyStartup.starting && proxy.proxy?.enabled === false && chatGptFound
         && codex.status === "found" && codex.data.routing_mode !== "disabled";
       content = (
         <>
@@ -138,8 +150,7 @@ export function AgentPage({ agents, page, proxy, account }: {
               <DescriptionDetails><Version detection={codex.status === "found" ? codex.data.cli : codex} /></DescriptionDetails>
               <DescriptionTerm>Прокси для ChatGPT</DescriptionTerm>
               <DescriptionDetails>
-                <ProxyStatus proxy={proxy} />
-                {chatGptProxyStopped && <ErrorText>Прокси для ChatGPT не запущен, нажмите «Завершить настройку».</ErrorText>}
+                <ProxyStatus proxy={proxy} startup={proxyStartup} />
               </DescriptionDetails>
               {codex.status === "found" && (
                 <RoutingRows mode={codex.data.routing_mode} agentToken={codex.data.token} hub={hub} />
@@ -147,7 +158,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             </DescriptionList>
           )}
           {codex.status === "found" && (
-            <RoutingFieldset agent="codex" token={chatGptInstall.hidden ? undefined : codexToken} modes={routingModes("Codex")} mode={codex.data.routing_mode}
+            <RoutingFieldset editing needsApply={chatGptProxyStopped} agent="codex" token={chatGptInstall.hidden ? undefined : codexToken} modes={routingModes("Codex")} mode={codex.data.routing_mode}
               toChange={(mode) => ({ CodexSetRouting: mode })} agentToken={codex.data.token} hub={hub}
               note="Настройка общая для ChatGPT и Codex." disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
@@ -178,7 +189,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             )}
           </DescriptionList>
           {claude.status === "found" && (
-            <RoutingFieldset agent="claude" modes={routingModes("Claude")} mode={claude.data.routing_mode}
+            <RoutingFieldset editing agent="claude" modes={routingModes("Claude")} mode={claude.data.routing_mode}
               toChange={(mode) => ({ ClaudeSetRouting: mode })} agentToken={claude.data.token} hub={hub}
               disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
@@ -197,13 +208,13 @@ export function AgentPage({ agents, page, proxy, account }: {
             {desktop.status === "found" && (
               <>
                 <DescriptionTerm>Прокси</DescriptionTerm>
-                <DescriptionDetails><ProxyStatus proxy={proxy} /></DescriptionDetails>
+                <DescriptionDetails><ProxyStatus proxy={proxy} startup={proxyStartup} /></DescriptionDetails>
                 <RoutingRows mode={desktop.data.routing_mode} agentToken={desktop.data.token} hub={hub} />
               </>
             )}
           </DescriptionList>
           {desktop.status === "found" && (
-            <RoutingFieldset agent="claude_desktop" token={claudeDesktopToken} modes={routingModes("Claude")} mode={desktop.data.routing_mode}
+            <RoutingFieldset editing needsApply={!proxyStartup.starting && proxy.proxy?.enabled === false} agent="claude_desktop" token={claudeDesktopToken} modes={routingModes("Claude")} mode={desktop.data.routing_mode}
               toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })} agentToken={desktop.data.token} hub={hub}
               disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
@@ -234,7 +245,7 @@ export function AgentPage({ agents, page, proxy, account }: {
             )}
           </DescriptionList>
           {detection.status === "found" && (
-            <RoutingFieldset agent={page} modes={hubModes} mode={detection.data.routing_mode}
+            <RoutingFieldset editing agent={page} modes={hubModes} mode={detection.data.routing_mode}
               toChange={(mode) => (page === "opencode" ? { SetOpenCodeHub: mode } : { SetPiHub: mode })}
               agentToken={detection.data.token} hub={hub} disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
@@ -248,7 +259,7 @@ export function AgentPage({ agents, page, proxy, account }: {
     <>
       {/* Keyed so that drafts of one agent's form never carry over to another agent. */}
       <Fragment key={page}>{content}</Fragment>
-      {preparedChange && <PreparedPlanDialog prepared={preparedChange} onReprepared={setPreparedChange} onClose={() => setPreparedChange(undefined)} />}
+      {preparedChange && <PreparedPlanDialog prepared={preparedChange} onReprepared={setPreparedChange} onClose={() => setPreparedChange(undefined)} applyLabel="Применить" />}
     </>
   );
 }

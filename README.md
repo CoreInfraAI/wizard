@@ -103,11 +103,15 @@ and plan confirmation; multiple installed agents always show a selection first.
 The final action launches the configured desktop app or CLI.
 
 Connection options are ordered API access, subscription, then without CoreInfra.
-Token selection is automatic: reuse the configured token if it belongs to the
+The default token is selected automatically: reuse the configured token if it belongs to the
 selected Hub, otherwise reuse the oldest token named for the agent, or create one
-on confirmation. A note shows its name instead of a selector. Claude Desktop's
-subscription uses the existing Wizard proxy-token flow. «Завершить настройку»
-opens the change plan and confirms it before the launch step.
+on confirmation. The note's «Изменить» link opens a menu of tokens in the selected
+Hub. The choice is shared by configuration and downloads. Claude Desktop also uses
+its own token in subscription mode, through a dedicated local listener; its
+credential is stored with mode 0600 and backed up alongside the agent profile.
+Legacy profiles keep working through the shared listener until configured again.
+«Завершить настройку» opens the change plan before the launch step. Regular agent
+pages use «Применить», enabled for pending mode/token changes or a stopped proxy.
 
 Downloads run in the backend and preserve explicit pauses across dialog closes.
 Installing requires a separate «Установить» confirmation; «Отмена» retains the

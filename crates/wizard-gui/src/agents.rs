@@ -61,6 +61,7 @@ pub(crate) async fn launch_agent(
     app: tauri::AppHandle,
     agent: wizard_core::agents::launch::LaunchAgent,
 ) -> Result<(), String> {
+    ensure_agent_proxy(app.clone(), agent).await?;
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
     tauri::async_runtime::spawn_blocking(move || {
         wizard_core::agents::launch::launch(agent, &settings)
@@ -69,6 +70,50 @@ pub(crate) async fn launch_agent(
     .context("Не удалось выполнить запуск агента")
     .flatten()
     .map_err(|error| format!("{error:#}"))
+}
+
+fn needs_proxy(
+    agent: wizard_core::agents::launch::LaunchAgent,
+    settings: &wizard_settings::Settings,
+) -> bool {
+    use wizard_core::agents::launch::LaunchAgent;
+    match agent {
+        LaunchAgent::ClaudeDesktop => settings.claude_proxy_enabled,
+        LaunchAgent::ChatGpt | LaunchAgent::Codex => settings.codex_proxy_enabled,
+        LaunchAgent::Claude | LaunchAgent::OpenCode | LaunchAgent::Pi => false,
+    }
+}
+
+/// Opening an agent restores only its saved proxy configuration, never its routing mode.
+#[tauri::command]
+pub(crate) async fn ensure_agent_proxy(
+    app: tauri::AppHandle,
+    agent: wizard_core::agents::launch::LaunchAgent,
+) -> Result<(), String> {
+    let settings =
+        settings::get_state(&app).map_err(|_| "Не удалось прочитать настройки Wizard")?;
+    if !needs_proxy(agent, &settings) {
+        return Ok(());
+    }
+    proxy::observe(&app).await;
+    if proxy::running(&app) {
+        return Ok(());
+    }
+    let result = async {
+        proxy::prepare_token(&app).await?;
+        proxy::sync(&app).await?;
+        let settings = settings::get_state(&app)?;
+        anyhow::ensure!(
+            !needs_proxy(agent, &settings) || proxy::running(&app),
+            "Локальный прокси не подтвердил готовность"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    result.map_err(|error| {
+        log::error!("proxy startup on agent open failed: {error:#}");
+        format!("Не удалось запустить локальный прокси: {error:#}")
+    })
 }
 
 #[tauri::command]
@@ -157,13 +202,7 @@ pub(crate) async fn prepare_agent_change(
 
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
 
-    // Claude Desktop Sub needs only Wizard's upstream token, obtained on apply.
-    // Hub mode and the other agents still need their own direct API credential.
-    let token = if change.enabled()
-        && !matches!(
-            change,
-            AgentChange::ClaudeDesktopSetRouting(RoutingMode::Sub)
-        ) {
+    let token = if change.enabled() {
         match token {
             Some(TokenChoice::Existing { token }) if !token.is_empty() => token,
             Some(TokenChoice::Create) => {

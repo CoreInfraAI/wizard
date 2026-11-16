@@ -6,6 +6,7 @@
 use std::io;
 
 pub(super) use super::unix::shutdown_signal;
+pub(super) use create_daemon as ensure_daemon;
 
 // No platform service is installed on Linux yet. Cleanup is a successful no-op.
 pub(super) async fn uninstall() -> io::Result<bool> {

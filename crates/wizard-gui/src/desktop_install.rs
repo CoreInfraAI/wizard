@@ -79,11 +79,12 @@ enum Package {
 }
 
 const CHECK_INTERVAL: Duration = Duration::from_hours(24);
+const FAILED_CHECK_INTERVAL: Duration = Duration::from_mins(5);
 
 #[derive(Default)]
 struct Session {
     package: Option<Package>,
-    last_check: Option<Instant>,
+    next_check: Option<Instant>,
 }
 
 pub(crate) struct InstallManager {
@@ -183,7 +184,7 @@ pub(crate) fn start_background_checks(app: tauri::AppHandle) {
         let tokens = app.state::<RevisionSignal<hub_tokens::HubTokens>>();
         // The timer's immediate first tick covers startup; wake only on later token changes.
         let mut revision = Some(tokens.current().revision);
-        // Only inspect the deadline here; network checks are limited by last_check.
+        // Only inspect the deadline here; network checks are limited by next_check.
         // This also retries a due check skipped while another operation held the lock.
         let mut timer = tokio::time::interval(Duration::from_mins(5));
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -369,9 +370,7 @@ fn start(
     };
     if automatic
         && (matches!(session.package, Some(Package::Downloaded(_)))
-            || session
-                .last_check
-                .is_some_and(|last| last.elapsed() < CHECK_INTERVAL))
+            || session.next_check.is_some_and(|next| Instant::now() < next))
     {
         return Ok(());
     }
@@ -382,8 +381,7 @@ fn start(
         Operation::Check => {
             // Checking again keeps a saved download only if the same release is found.
             session.package = None;
-            // Failed checks also count, so a bad token or offline network cannot cause a retry loop.
-            session.last_check = Some(Instant::now());
+            session.next_check = Some(Instant::now() + CHECK_INTERVAL);
             manager.signal.notify(State::Checking);
         }
         Operation::Download => {
@@ -432,8 +430,10 @@ fn start(
                 .notify(AgentRevisionState);
         }
         if let Err(message) = result {
-            if automatic {
-                session.last_check = Some(Instant::now());
+            if matches!(operation, Operation::Check) {
+                // A startup network failure must not hide updates for the next day.
+                // Keep a cooldown so rejected credentials cannot cause a retry loop.
+                session.next_check = Some(Instant::now() + FAILED_CHECK_INTERVAL);
             }
             match operation {
                 Operation::Install => {
@@ -479,7 +479,7 @@ async fn resolve_token(
 }
 
 /// The token in the application's routing configuration, else the Hub token Wizard created
-/// for it, else Wizard's proxy token (Sub mode configures no agent token).
+/// for it, else Wizard's proxy token for legacy configurations.
 async fn background_token(
     app: &tauri::AppHandle,
     desktop: DesktopApp,
@@ -555,7 +555,7 @@ async fn run(
                 };
                 log::info!("Starting {} background check", desktop.product());
                 session.package = None;
-                session.last_check = Some(Instant::now());
+                session.next_check = Some(Instant::now() + CHECK_INTERVAL);
                 manager.signal.notify(State::Checking);
                 token
             } else {
@@ -689,7 +689,7 @@ async fn run(
             })?;
             session.package = None;
             // Count the installation as the day's check, so its notices stay visible.
-            session.last_check = Some(Instant::now());
+            session.next_check = Some(Instant::now() + CHECK_INTERVAL);
 
             if desktop == DesktopApp::ChatGpt {
                 // A daemon started from the replaced bundle keeps running the old executable.

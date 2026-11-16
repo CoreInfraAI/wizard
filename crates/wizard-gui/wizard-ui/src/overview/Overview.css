@@ -56,7 +56,7 @@ body:has(.overview) #headlessui-portal-root :where(h1, h2, h3, p, span, button, 
   flex-shrink: 0;
   width: calc(100% - var(--hero-gutter) * 2);
   max-width: 330px;
-  margin: 8px var(--hero-gutter);
+  margin: 8px 8px 8px var(--hero-gutter);
   border: 0;
   border-radius: 12px;
   background: transparent;
@@ -196,7 +196,7 @@ body:has(.overview) #headlessui-portal-root :where(h1, h2, h3, p, span, button, 
 }
 @container overview (max-width: 470px) {
   .overview-hero { min-height: 220px; }
-  .overview-video { max-width: 290px; margin-block: 8px 12px; }
+  .overview-video { max-width: 290px; }
   .overview-actions { margin-top: 20px; }
   .overview-actions-header { align-items: flex-start; flex-direction: column; gap: 0; }
   .overview-skip { margin-left: -8px; margin-right: 0; }

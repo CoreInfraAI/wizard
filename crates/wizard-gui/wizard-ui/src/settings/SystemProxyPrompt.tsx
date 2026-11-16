@@ -42,7 +42,7 @@ export function SystemProxyPrompt({ observation: { state, error: loadError }, on
   return <Dialog open onClose={() => { if (!busy) onClose(); }} className="system-proxy-prompt [&_:is(h2,p,span,button,a)]:text-sm/6!">
     <DialogTitle className="font-semibold!">Включить системный прокси?</DialogTitle>
     <DialogBody className="space-y-4">
-      <Text>Системный прокси направляет запросы к Anthropic и OpenAI через Wizard для входа и работы со своей подпиской. Остальные сайты работают как обычно.</Text>
+      <Text>Системный прокси направляет запросы к OpenAI и Anthropic через выходные узлы CoreInfra AI Hub для входа и работы со своей подпиской. Все остальные ресурсы доступны напрямую.</Text>
       <Text>Прокси работает и после закрытия окна. Отключить его можно в Wizard: «Настройки» → «Системный прокси».</Text>
       {busy && <Text role="status">Включаем системный прокси… На macOS может потребоваться подтверждение администратора.</Text>}
       {!busy && (!state || state.status === "unknown") && !failure && <Text role="status">Проверяем состояние системного прокси…</Text>}
