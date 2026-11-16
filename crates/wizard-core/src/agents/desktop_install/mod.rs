@@ -7,6 +7,7 @@ mod requests;
 mod running;
 
 pub use download::{DownloadProgress, SavedDownload, download_release, saved_download};
+pub(crate) use running::with_closed;
 pub use running::{open_existing, open_first_install, running_apps};
 
 use super::TokenAgent;
@@ -1056,9 +1057,9 @@ fn install_release_inner(
     }
 
     #[cfg(target_os = "macos")]
-    let mut notices = install_macos(download, confirmed, close, reopen)?;
+    let notices = install_macos(download, confirmed, close, reopen)?;
     #[cfg(not(target_os = "macos"))]
-    let mut notices = {
+    let notices = {
         ensure!(
             download.release.target.rename.is_none() || confirmed,
             "Подтвердите переименование приложения"
@@ -1091,15 +1092,6 @@ fn install_release_inner(
         download.release.target.app.product()
     );
 
-    let target = &download.release.target;
-    // A new ChatGPT creates its profile on first launch; routing can be applied only then. It is
-    // applied with ChatGPT closed: a running ChatGPT may write its profile back over the change.
-    if target.app == DesktopApp::ChatGpt && target.first_install() {
-        notices.push(
-            "Чтобы подключить ChatGPT к CoreInfra, после его первого запуска закройте ChatGPT, нажмите «Применить» в разделе «Подключение» и откройте его снова."
-                .to_owned(),
-        );
-    }
     Ok(Installed { notices })
 }
 

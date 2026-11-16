@@ -33,6 +33,7 @@ pub(crate) struct Codex {
     pub desktop: AgentDetection<AgentInfo>,
     pub routing_mode: RoutingMode,
     pub token: Option<AgentToken>,
+    pub proxy_needs_apply: bool,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
@@ -59,11 +60,16 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
         Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
+    let proxy_needs_apply = !cfg!(target_os = "linux")
+        && routing_mode != RoutingMode::Disabled
+        && matches!(desktop, AgentDetection::Found(_))
+        && (!settings.codex_proxy_enabled || desktop_proxy_needs_apply());
     AgentDetection::Found(Codex {
         cli,
         desktop,
         routing_mode,
         token,
+        proxy_needs_apply,
     })
 }
 
@@ -258,26 +264,34 @@ pub fn prepare_routing_for_gui(
 ) -> Result<PreparedPlan> {
     let mut plan = prepare_routing(mode, token, settings)?;
     // Linux cannot start the local proxy yet: route only the CLI there.
-    let enabled = if mode == RoutingMode::Disabled || cfg!(target_os = "linux") {
-        false
+    let desktop = if cfg!(target_os = "linux") {
+        AgentDetection::NotFound
     } else {
-        match detection::detect_desktop(
+        detection::detect_desktop(
             DesktopAgent::Codex,
             settings.last_paths.codex_desktop.as_deref(),
-        ) {
-            AgentDetection::Found(_) => true,
-            // Clean up a configuration left from before ChatGPT was removed.
-            AgentDetection::NotFound => false,
-            AgentDetection::Error(error) => {
-                anyhow::bail!("failed to detect ChatGPT for local proxy: {error}")
-            }
-        }
+        )
     };
+    if mode != RoutingMode::Disabled
+        && let AgentDetection::Error(error) = &desktop
+    {
+        anyhow::bail!("failed to detect ChatGPT for local proxy: {error}");
+    }
+    let installed = matches!(desktop, AgentDetection::Found(_));
+    let enabled = mode != RoutingMode::Disabled && installed;
+    if let AgentDetection::Found(info) = desktop {
+        plan.restart_desktop(
+            super::desktop_install::DesktopApp::ChatGpt,
+            Some(&info.path),
+        );
+    }
     // Without ChatGPT installed (Windows), there is no profile to clean up when disabling.
     match desktop_preferences_path()? {
         Some(path) => {
-            let change = prepare_desktop_proxy(path, enabled)?;
-            plan.steps.insert(0, PreparedStep::ChangeFile { change });
+            // Read after shutdown to preserve the app's final writes. A first installation
+            // needs only the proxy preference; Chromium initializes the rest on first launch.
+            plan.steps
+                .insert(0, PreparedStep::SetChatGptProxy { path, enabled });
         }
         None => ensure!(!enabled, "ChatGPT profile location is unavailable"),
     }
@@ -329,19 +343,30 @@ Join-Path $root 'LocalCache\Roaming\Codex\web\Codex\Default\Preferences' | Conve
     }
 }
 
-fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
+fn desktop_proxy_needs_apply() -> bool {
+    let current = desktop_preferences_path().and_then(|path| {
+        let path = path.context("ChatGPT profile location is unavailable")?;
+        desktop_proxy_needs_apply_at(path)
+    });
+    current.unwrap_or_else(|error| {
+        // A desktop profile problem must not hide an otherwise usable Codex CLI.
+        log::warn!("ChatGPT proxy configuration needs checking: {error:#}");
+        true
+    })
+}
+
+fn desktop_proxy_needs_apply_at(path: PathBuf) -> Result<bool> {
+    Ok(prepare_desktop_proxy(path, true)?.is_changed())
+}
+
+pub(crate) fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
     use crate::config_files::{changes::FileSnapshot, json};
     use serde_json::json;
 
     let mut change = FileChange::read(std::path::absolute(path)?)?;
-    // ChatGPT creates its profile on first launch; until then there is nothing to clean up.
-    if matches!(change.after, FileSnapshot::Missing) {
-        // Linux detection accepts any `chatgpt` executable, which may be another program.
-        ensure!(
-            !enabled || cfg!(target_os = "linux"),
-            "ChatGPT ещё не запускался: откройте его один раз и повторите."
-        );
-        log::info!("ChatGPT proxy configuration skipped: profile Preferences file is missing");
+    // Disabling an absent profile is a no-op. Enabling creates only the standard Chromium
+    // proxy preference; no cookies, database, Local State or first-run markers are needed.
+    if !enabled && matches!(change.after, FileSnapshot::Missing) {
         return Ok(change);
     }
 
@@ -600,6 +625,77 @@ fn write_routing_env(after: &mut FileSnapshot, mode: RoutingMode, token: &str) -
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn chatgpt_can_be_configured_before_its_first_launch() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("Codex/Default/Preferences");
+        let change = prepare_desktop_proxy(path.clone(), true)?;
+        assert!(
+            !directory.path().join("Codex").exists(),
+            "preparation must not write"
+        );
+        FileChange::apply_all(&[change])?;
+        assert_eq!(
+            config_files::json::read(&path)?,
+            json!({
+                "proxy": { "mode": "fixed_servers", "server": "http://127.0.0.1:33788" },
+            })
+        );
+        assert!(!prepare_desktop_proxy(path, true)?.is_changed());
+        Ok(())
+    }
+
+    #[test]
+    fn chatgpt_disabling_before_first_launch_creates_nothing() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("Codex/Default/Preferences");
+        let change = prepare_desktop_proxy(path, false)?;
+        assert!(!change.is_changed());
+        FileChange::apply_all(&[change])?;
+        assert!(!directory.path().join("Codex").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn chatgpt_first_launch_cannot_be_overwritten_by_a_stale_plan() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("Preferences");
+        let change = prepare_desktop_proxy(path.clone(), true)?;
+        let initialized = r#"{"profile":{"name":"First launch"},"unrelated":true}"#;
+        std::fs::write(&path, initialized)?;
+        assert!(FileChange::apply_all(&[change]).is_err());
+        assert_eq!(std::fs::read_to_string(&path)?, initialized);
+        FileChange::apply_all(&[prepare_desktop_proxy(path.clone(), true)?])?;
+        let config = config_files::json::read(&path)?;
+        assert_eq!(config["profile"]["name"], "First launch");
+        assert_eq!(config["unrelated"], true);
+        assert_eq!(config["proxy"]["server"], "http://127.0.0.1:33788");
+        Ok(())
+    }
+
+    #[test]
+    fn chatgpt_proxy_pending_tracks_profile_not_shared_daemon() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("Preferences");
+        assert!(desktop_proxy_needs_apply_at(path.clone())?);
+        assert!(!path.exists());
+        for (proxy, pending) in [
+            (serde_json::Value::Null, true),
+            (
+                json!({ "mode": "fixed_servers", "server": "http://127.0.0.1:33787" }),
+                true,
+            ),
+            (
+                json!({ "mode": "fixed_servers", "server": "http://127.0.0.1:33788" }),
+                false,
+            ),
+        ] {
+            std::fs::write(&path, json!({ "proxy": proxy }).to_string())?;
+            assert_eq!(desktop_proxy_needs_apply_at(path.clone())?, pending);
+        }
+        Ok(())
+    }
 
     #[test]
     fn chatgpt_uses_its_port_and_recognizes_both_wizard_endpoints() -> Result<()> {

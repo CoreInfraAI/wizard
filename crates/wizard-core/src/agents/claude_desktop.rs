@@ -317,6 +317,57 @@ mod tests {
     use super::*;
     use crate::config_files::changes::FileSnapshot;
 
+    #[test]
+    fn first_launch_needs_only_precreated_configuration() -> Result<()> {
+        for mode in [RoutingMode::Hub, RoutingMode::Sub] {
+            let root = tempfile::tempdir()?;
+            let dir = root.path().join("Claude-3p/configLibrary");
+            let plan = prepare_routing_at(&dir, mode, "test-agent-token")?;
+            assert!(!dir.parent().expect("profile directory").exists());
+            let mut activated = false;
+            plan.apply_with_backup(
+                None,
+                |enabled| {
+                    assert!(enabled);
+                    // All files must be present before starting the proxy or the desktop app.
+                    let meta = json::read(&dir.join("_meta.json"))?;
+                    let id = applied_id(&meta)?.expect("selected profile");
+                    assert_eq!(meta["entries"], json!([{ "id": id, "name": "CoreInfra" }]));
+                    let profile = json::read(&dir.join(format!("{id}.json")))?;
+                    assert_eq!(profile["egressProxyUrl"], "http://127.0.0.1:33787");
+                    let preferences =
+                        json::read(&dir.with_file_name("claude_desktop_config.json"))?;
+                    assert_eq!(
+                        preferences["deploymentMode"],
+                        if mode == RoutingMode::Hub { "3p" } else { "1p" }
+                    );
+                    if mode == RoutingMode::Sub {
+                        assert!(profile.get("inferenceGatewayApiKey").is_none());
+                    }
+                    activated = true;
+                    Ok(())
+                },
+                |_| panic!("unexpected ChatGPT proxy"),
+            )?;
+            assert!(activated);
+            let (detected, token, needs_apply) = read_routing_at(&dir)?;
+            assert_eq!(detected, mode);
+            assert!(!needs_apply);
+            assert_eq!(
+                token.map(AgentToken::into_secret).as_deref(),
+                (mode == RoutingMode::Hub).then_some("test-agent-token")
+            );
+
+            let repeated = prepare_routing_at(&dir, mode, "test-agent-token")?;
+            assert!(repeated.steps().iter().all(|step| match step {
+                PreparedStep::ChangeFile { change } => !change.is_changed(),
+                _ => true,
+            }));
+            assert_eq!(std::fs::read_dir(&dir)?.count(), 2);
+        }
+        Ok(())
+    }
+
     struct Fixture {
         root: tempfile::TempDir,
         dir: PathBuf,
