@@ -74,11 +74,9 @@ function SystemProxySettings() {
   const [submitting, setSubmitting] = useState(false);
   const [commandError, setCommandError] = useState<string>();
   const hasOurs = state?.status === "on" || state?.status === "partial";
-  const requested = state?.requested === true;
-  const checked = requested || hasOurs;
   const busy = submitting || state?.busy === true;
   const disabled = busy || Boolean(loadError) || !state || state.status === "unsupported"
-    || (!checked && (state.status !== "off" || state.conflict));
+    || (!hasOurs && (state.status !== "off" || state.conflict));
 
   const forceDisabled = busy || Boolean(loadError) || !(hasOurs || state?.status === "off");
 
@@ -101,8 +99,8 @@ function SystemProxySettings() {
     <div className="mt-8 max-w-2xl">
       <SwitchField disabled={disabled}>
         <Label>Системный прокси (Для логина в аккаунты Anthropic и OpenAI)</Label>
-        <Description>Wizard будет проксировать сайты OpenAI и Claude, остальной интернет будет работать как раньше.</Description>
-        <Switch checked={checked} onChange={(enabled) => { void change(enabled); }} />
+        <Description>Запросы к OpenAI и Anthropic идут через выходные узлы CoreInfra AI Hub. Все остальные ресурсы доступны напрямую.</Description>
+        <Switch checked={hasOurs} onChange={(enabled) => { void change(enabled); }} />
       </SwitchField>
       <div className="mt-3 space-y-2" aria-live="polite">
         {busy && <Text>Применение системных настроек… На macOS может потребоваться авторизация.</Text>}
@@ -116,11 +114,10 @@ function SystemProxySettings() {
         {(state?.conflict || state?.status === "partial") && (
           <Button outline disabled={forceDisabled} onClick={() => { void change(true, true); }}>Применить принудительно</Button>
         )}
-        {requested && state?.status === "off" && <Text>Спрос на локальный прокси сохранён, но в ОС он выключен. Выключите переключатель, чтобы снять спрос.</Text>}
         {hasOurs && !state?.listener_running && (
           <Text className="text-amber-700! dark:text-amber-400!">ОС использует Wizard, но локальный прокси недоступен. Приложения могут потерять доступ к сети.</Text>
         )}
-        {checked && <Text>Прокси продолжит работать после выхода из GUI Wizard.</Text>}
+        {hasOurs && <Text>Прокси продолжит работать после выхода из GUI Wizard.</Text>}
         {loadError && <ErrorText>{loadError}</ErrorText>}
         {state?.read_error && <ErrorText>{state.read_error}</ErrorText>}
         {(state?.operation_error || commandError) && <ErrorText>{state?.operation_error || commandError}</ErrorText>}

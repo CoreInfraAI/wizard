@@ -31,8 +31,8 @@ mod linux;
 use linux as platform;
 
 /// Prepare the service once at GUI startup, before synchronizing settings.
-/// In release builds, a running daemon with the same workspace crate version is
-/// left untouched. Debug builds ignore version matches to pick up local rebuilds.
+/// In release builds, a running daemon with the same workspace crate version and
+/// dedicated Claude listener is left untouched. Debug builds pick up local rebuilds.
 /// Otherwise a valid Status or refused connection triggers platform registration.
 /// Other HTTP errors leave registration unchanged.
 /// Await this operation to completion: cancellation can leave native registration
@@ -41,8 +41,24 @@ pub async fn create_daemon() -> io::Result<()> {
     let _guard = SYNC_LOCK.lock().await;
     match wizard_proxy::control::status().await {
         Ok(status) if !cfg!(debug_assertions) && status.version == env!("CARGO_PKG_VERSION") => {
-            log::info!("proxy daemon version matches; keeping current service");
-            return Ok(());
+            match wizard_proxy::control::claude_status().await {
+                Ok(claude) if claude.version == status.version => {
+                    log::info!("proxy daemon version and listeners match; keeping current service");
+                    return Ok(());
+                }
+                Ok(_) => {
+                    return Err(io::Error::other(
+                        "proxy listeners report different versions",
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                    log::info!("updating proxy service: dedicated Claude listener is missing");
+                }
+                Err(error) => {
+                    diagnostics::error("Claude proxy compatibility lookup", &error);
+                    return Err(error);
+                }
+            }
         }
         Ok(_) => log::info!("preparing proxy service registration: version differs or debug build"),
         Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
@@ -140,7 +156,7 @@ impl UpdateGuard {
 /// Only a refused connection permits starting a process: a timeout or failed
 /// Reload may already have applied changes and must not trigger a second launch.
 /// A single platform start request is followed by bounded Status polling.
-/// This never registers the service; call `create_daemon` at GUI startup first.
+/// If a needed daemon is absent, repair its registration before requesting a start.
 /// Neither a launch nor a mutating Reload is automatically retried.
 pub async fn sync_proxy() -> io::Result<()> {
     let _guard = SYNC_LOCK.lock().await;
@@ -170,6 +186,11 @@ async fn sync_with_settings() -> io::Result<()> {
                 .map_err(|_| io::Error::other("failed to load Wizard settings"))?
                 .local_proxy_enabled();
             if enabled {
+                // Startup may have failed before registration (for example, while
+                // obtaining a token offline). A later explicit operation must recover.
+                platform::ensure_daemon()
+                    .await
+                    .inspect_err(|error| diagnostics::error("proxy service registration", error))?;
                 log::info!("requesting proxy service start");
                 platform::start_daemon()
                     .await

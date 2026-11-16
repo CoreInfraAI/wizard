@@ -40,13 +40,25 @@ fn aggregates_os_settings_without_treating_a_stopped_listener_as_a_conflict() {
     observe(&mut state, Ok(SystemProxyStatus { services: vec![] }), true);
     assert_eq!(state.status, Status::Unavailable);
     assert!(!state.can_toggle());
+}
 
-    // External OS changes must not erase saved demand or prevent cancelling it.
-    state.requested = true;
-    observe(&mut state, Ok(snapshot(Foreign, Foreign, true)), false);
+#[test]
+fn external_disable_allows_enabling_again_while_the_listener_keeps_running() {
+    use ProxyState::{Disabled, Foreign, Wizard};
+    let mut state = State::default();
+    observe(&mut state, Ok(snapshot(Wizard, Wizard, false)), true);
+    assert!(state.has_ours());
+
+    observe(&mut state, Ok(snapshot(Disabled, Disabled, false)), true);
     assert_eq!(state.status, Status::Off);
-    assert!(state.requested);
+    assert!(!state.has_ours());
+    assert!(state.listener_running);
     assert!(state.can_toggle());
+
+    observe(&mut state, Ok(snapshot(Foreign, Foreign, true)), true);
+    assert_eq!(state.status, Status::Off);
+    assert!(!state.has_ours());
+    assert!(!state.can_toggle());
 }
 
 #[test]

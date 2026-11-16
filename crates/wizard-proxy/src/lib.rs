@@ -30,10 +30,12 @@ mod server_tests;
 
 pub use upstream::{HOST as UPSTREAM_HOST, PORT as UPSTREAM_PORT, USERNAME as UPSTREAM_USERNAME};
 
-/// Listener used by Claude Desktop; shares configuration with the other managed port.
+/// Shared listener used by the system proxy, `ChatGPT`, and legacy Claude profiles.
 pub const ADDRESS: &str = "127.0.0.1:33787";
 /// Listener used by `ChatGPT`; shares configuration with the other managed port.
 pub const OLD_ADDRESS: &str = "127.0.0.1:33788";
+/// Claude Desktop's listener, authenticated with its selected agent token.
+pub const CLAUDE_ADDRESS: &str = "127.0.0.1:33789";
 
 // Idle WebSocket and streaming connections remain valid; detect vanished peers
 // with TCP keepalive instead of applying an application-level idle timeout.
@@ -72,6 +74,7 @@ struct ServerState {
     reload_lock: Mutex<()>,
     tls: ClientConfig,
     slot: Arc<ProxySlot>,
+    claude_slot: Arc<ProxySlot>,
     // Shutdown waits for accepted commands and their bounded reply attempts.
     management: RwLock<()>,
     stopping: watch::Sender<bool>,
@@ -83,6 +86,7 @@ impl ServerState {
             reload_lock: Mutex::new(()),
             tls,
             slot: Arc::new(ProxySlot::default()),
+            claude_slot: Arc::new(ProxySlot::default()),
             management: RwLock::new(()),
             stopping: watch::channel(false).0,
         }
@@ -134,11 +138,27 @@ impl ServerState {
                 None
             };
 
+            let claude_token = if settings.claude_proxy_enabled {
+                wizard_settings::load_claude_proxy_token()
+                    .map_err(|_| "failed to load Claude Desktop proxy token")?
+            } else {
+                None
+            };
+            // Validate every credential before replacing either running generation.
+            for value in [token, claude_token.as_deref()].into_iter().flatten() {
+                validate_token(value).map_err(|_| "invalid proxy token")?;
+                upstream::authorization(value).map_err(|_| "invalid proxy authorization")?;
+            }
             self.slot
                 .set_token(token, &self.tls)
                 .await
                 .inspect_err(|error| diagnostics::error("proxy generation update", error))
-                .map_err(|_| "failed to update proxy")
+                .map_err(|_| "failed to update proxy")?;
+            self.claude_slot
+                .set_token(claude_token.as_deref(), &self.tls)
+                .await
+                .inspect_err(|error| diagnostics::error("Claude proxy generation update", error))
+                .map_err(|_| "failed to update Claude Desktop proxy")
         }
         .await;
         let status = self.current_status().await;
@@ -256,10 +276,11 @@ impl Proxy {
     }
 }
 
-/// Read Wizard settings and run both fixed-address listeners with unauthenticated
+/// Read Wizard settings and run the fixed-address listeners with unauthenticated
 /// GET /status, POST /reload and POST /shutdown. With no proxy demand,
-/// return without binding. Both ports use the same configuration and generation.
-/// TLS roots load once for the pair; disabled proxy traffic receives HTTP 503.
+/// return without binding. The legacy ports share a generation; Claude Desktop
+/// has its own credential and generation. TLS roots load once for all listeners.
+/// Disabled proxy traffic receives HTTP 503.
 /// Accepted management commands and bounded reply attempts finish before shutdown.
 /// This function does not register OS services or change saved settings.
 pub async fn run_managed(shutdown: impl Future<Output = ()>) -> io::Result<()> {
@@ -286,22 +307,29 @@ pub async fn run_managed(shutdown: impl Future<Output = ()>) -> io::Result<()> {
         return Ok(());
     }
 
-    // Bind both before starting tasks. If the second bind fails, the first
-    // listener is dropped too: both ports must be available.
+    // Bind all ports before starting tasks; a bind failure drops the others too.
     let listener = TcpListener::bind(ADDRESS).await.inspect_err(|error| {
         diagnostics::error("Claude Desktop listener bind", error);
     })?;
     let listener_old = TcpListener::bind(OLD_ADDRESS).await.inspect_err(|error| {
         diagnostics::error("ChatGPT listener bind", error);
     })?;
-    log::info!("proxy listeners bound: claude_desktop={ADDRESS}, chatgpt={OLD_ADDRESS}");
-    run_listeners(state, listener, listener_old, shutdown).await
+    let listener_claude = TcpListener::bind(CLAUDE_ADDRESS)
+        .await
+        .inspect_err(|error| {
+            diagnostics::error("dedicated Claude Desktop listener bind", error);
+        })?;
+    log::info!(
+        "proxy listeners bound: shared={ADDRESS}, legacy={OLD_ADDRESS}, claude_desktop={CLAUDE_ADDRESS}"
+    );
+    run_listeners(state, listener, listener_old, listener_claude, shutdown).await
 }
 
 async fn run_listeners(
     state: Arc<ServerState>,
     listener: TcpListener,
     listener_old: TcpListener,
+    listener_claude: TcpListener,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     // Handles stay private. Only ServerState::reload changes managed tokens.
@@ -314,6 +342,12 @@ async fn run_listeners(
     let listener_old = spawn(
         listener_old,
         Arc::clone(&state.slot),
+        state.tls.clone(),
+        Some(Arc::clone(&state)),
+    );
+    let listener_claude = spawn(
+        listener_claude,
+        Arc::clone(&state.claude_slot),
         state.tls.clone(),
         Some(Arc::clone(&state)),
     );
@@ -338,6 +372,10 @@ async fn run_listeners(
             log::error!("Old listener stopped unexpectedly");
             Err(io::Error::other("Old listener stopped unexpectedly"))
         },
+        () = listener_claude.stopped() => {
+            log::error!("Claude Desktop listener stopped unexpectedly");
+            Err(io::Error::other("Claude Desktop listener stopped unexpectedly"))
+        },
     };
 
     state.stopping.send_replace(true);
@@ -346,9 +384,10 @@ async fn run_listeners(
     log::info!("waiting for accepted management commands before shutdown");
     drop(state.management.write().await);
     log::info!("stopping proxy listeners and draining connections");
-    let (claude, chatgpt) = tokio::join!(listener.stop(), listener_old.stop());
+    let (shared, legacy, claude) =
+        tokio::join!(listener.stop(), listener_old.stop(), listener_claude.stop());
     // Prefer the original listener failure to a synthetic stopped notification.
-    let result = claude.and(chatgpt).and(result);
+    let result = shared.and(legacy).and(claude).and(result);
     match &result {
         Ok(()) => log::info!("proxy listeners stopped"),
         Err(error) => diagnostics::error("proxy listeners shutdown", error),

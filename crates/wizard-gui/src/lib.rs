@@ -134,6 +134,7 @@ pub fn run_application() -> Result<()> {
             proxy::get_proxy_state,
             agents::get_agent_state,
             agents::launch_agent,
+            agents::ensure_agent_proxy,
             agents::get_agent_backups,
             agents::prepare_agent_change,
             agents::apply_agent_plan,

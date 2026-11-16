@@ -171,7 +171,15 @@ fn unregister_service(service: &SMAppService) -> io::Result<()> {
 }
 
 pub async fn create_daemon() -> io::Result<()> {
-    tokio::task::spawn_blocking(register_daemon)
+    tokio::task::spawn_blocking(|| register_daemon(true))
+        .await
+        .inspect_err(|error| wizard_proxy::diagnostics::error("proxy registration worker", error))
+        .map_err(|_| io::Error::other("proxy service registration worker failed"))?
+}
+
+/// Preserve an existing registration and any process it is still starting.
+pub async fn ensure_daemon() -> io::Result<()> {
+    tokio::task::spawn_blocking(|| register_daemon(false))
         .await
         .inspect_err(|error| wizard_proxy::diagnostics::error("proxy registration worker", error))
         .map_err(|_| io::Error::other("proxy service registration worker failed"))?
@@ -181,7 +189,7 @@ pub async fn create_daemon() -> io::Result<()> {
     unsafe_code,
     reason = "SMAppService bindings require checked native calls"
 )]
-fn register_daemon() -> io::Result<()> {
+fn register_daemon(replace_existing: bool) -> io::Result<()> {
     if !objc2::available!(macos = 13.0) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -198,7 +206,7 @@ fn register_daemon() -> io::Result<()> {
         // SAFETY: service is a live SMAppService on a supported OS.
         let mut status = unsafe { service.status() };
         log::info!("proxy service status before registration: {}", status.0);
-        if status == SMAppServiceStatus::Enabled {
+        if status == SMAppServiceStatus::Enabled && replace_existing {
             // Never register before successful completion, including on timeout:
             // the native unregistration may still finish after we return an error.
             unregister_service(&service)?;

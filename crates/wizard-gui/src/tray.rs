@@ -105,9 +105,6 @@ fn system_proxy_label(state: &crate::system_proxy::State) -> &'static str {
     if state.busy {
         return "Системный прокси — применение…";
     }
-    if state.requested {
-        return "Выключить системный прокси";
-    }
     match state.status {
         Status::Unknown => "Системный прокси — состояние неизвестно",
         Status::Unavailable => "Системный прокси — нет сетевых сервисов",

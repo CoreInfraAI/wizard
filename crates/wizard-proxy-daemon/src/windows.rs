@@ -18,6 +18,35 @@ use windows_sys::Win32::{
     },
 };
 
+/// Keep an existing task, including its disabled state, when restoring a stopped proxy.
+pub(super) async fn ensure_daemon() -> io::Result<()> {
+    let sid = current_user_sid().await?;
+    // schtasks uses the same failure code for a missing task and access errors.
+    // Only a confirmed missing task permits registration; never replace one
+    // after a timeout, access denial, or Task Scheduler failure.
+    let status = tokio::time::timeout(
+        Duration::from_secs(15),
+        Command::new(system_executable(r"WindowsPowerShell\v1.0\powershell.exe")?)
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+            .arg(include_str!("windows-task-exists.ps1"))
+            .env_remove("PSModulePath")
+            .env("WIZARD_PROXY_TASK", task_name(&sid))
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status(),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "proxy task lookup timed out"))??;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(10) => create_daemon().await,
+        _ => Err(io::Error::other("proxy task lookup failed")),
+    }
+}
+
 pub(super) async fn create_daemon() -> io::Result<()> {
     log::info!("requesting graceful proxy shutdown before task update");
     match wizard_proxy::control::shutdown().await {

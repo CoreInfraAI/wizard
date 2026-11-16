@@ -130,8 +130,8 @@ export function InstallCard({ choice, observation, token, tokenReady, found, ver
   }
 
   if (active && downloaded) return <div className="onboarding-install-confirmation" hidden={hidden}>
-    <div className="flex items-start gap-3">
-      <AgentIcon choice={choice} className="mt-0.5" />
+    <div className="flex items-center gap-3">
+      <AgentIcon choice={choice} />
       <Heading level={2} className="font-semibold!" tabIndex={-1}>{choice.name} версии {state.version} скачан.</Heading>
     </div>
     {state.notes.length > 0 && <div className="mt-4 space-y-2">{state.notes.map((note) => <Text key={note}>{note}</Text>)}</div>}
@@ -163,11 +163,16 @@ export function InstallCard({ choice, observation, token, tokenReady, found, ver
     <div aria-hidden="true" className="onboarding-download-fill" />
     <div className="onboarding-install-main">
       <div className="onboarding-install-copy">
-        <div>
-          <Heading level={3} className="font-semibold!">{choice.name}</Heading>
-          {(found || installed) && <Text className="mt-1 tabular-nums">{installedVersion ? `Версия ${installedVersion}` : "Версия не определена"}</Text>}
-          <Text className={found || completed ? "" : "mt-1"} role="status" aria-live="polite">{title}</Text>
-          {detail && <Text className="tabular-nums">{detail}</Text>}
+        <div className="onboarding-install-header">
+          <div className="onboarding-install-details">
+            <Heading level={3} className="font-semibold!">{choice.name}</Heading>
+            {(found || installed) && <Text className="mt-1 tabular-nums">{installedVersion ? `Версия ${installedVersion}` : "Версия не определена"}</Text>}
+            <Text className={found || completed ? "" : "mt-1"} role="status" aria-live="polite">{title}</Text>
+            {detail && <Text className="tabular-nums">{detail}</Text>}
+          </div>
+          <div className="onboarding-install-logo" aria-hidden="true"><div className="onboarding-install-mark"><AgentIcon choice={choice} /></div></div>
+          {/* Extend across the card so logo color follows the download fill exactly. */}
+          <div className="onboarding-install-color" aria-hidden="true"><div className="onboarding-install-logo"><div className="onboarding-install-mark"><AgentIcon choice={choice} /></div></div></div>
         </div>
         <div className="onboarding-install-actions">
           {failedMessage ? <Button outline disabled={requesting || networkBlocked} aria-label="Попробовать снова" onClick={retry}>Повторить</Button>
@@ -177,9 +182,6 @@ export function InstallCard({ choice, observation, token, tokenReady, found, ver
                     : !active && <Button outline disabled={requesting || !state || unsupported || (downloaded ? Boolean(observation.error) : networkBlocked)} onClick={start}>{unsupported ? "Недоступно" : downloaded ? "Установить" : found || installed ? "Проверить обновления" : "Скачать"}</Button>}
         </div>
       </div>
-      <div className="onboarding-install-logo" aria-hidden="true"><div className="onboarding-install-mark"><AgentIcon choice={choice} /></div></div>
-      {/* This layer shares the fill's coordinate space: color appears only where progress has reached. */}
-      <div className="onboarding-install-color" aria-hidden="true"><div className="onboarding-install-logo"><div className="onboarding-install-mark"><AgentIcon choice={choice} /></div></div></div>
     </div>
     {(downloading || paused) && <progress className="sr-only" aria-label={`Скачивание ${choice.name}`} max={100} value={displayProgress} />}
     {failedMessage && <div className="onboarding-install-note" role="alert"><ErrorText>{failedMessage}</ErrorText></div>}

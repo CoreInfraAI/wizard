@@ -1,9 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { reportError } from "../logs/log";
+import type { AgentId } from "./agents_state";
 
 export type Proxy = { enabled: boolean };
 type ProxySnapshot = Proxy & { revision: number };
+
+export function useAgentProxyStartup(agent: AgentId | null) {
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{ agent: AgentId; attempt: number; error?: string }>();
+  useEffect(() => {
+    setResult(undefined);
+    if (!agent) return;
+    let stopped = false;
+    void invoke("ensure_agent_proxy", { agent }).then(() => {
+      if (!stopped) setResult({ agent, attempt });
+    }).catch((cause: unknown) => {
+      if (stopped) return;
+      const error = typeof cause === "string" ? cause : "Не удалось запустить локальный прокси";
+      reportError("Не удалось запустить прокси при открытии агента", cause);
+      setResult({ agent, attempt, error });
+    });
+    return () => { stopped = true; };
+  }, [agent, attempt]);
+  const current = result?.agent === agent && result?.attempt === attempt ? result : undefined;
+  return { starting: Boolean(agent) && !current, error: current?.error, retry: () => setAttempt(value => value + 1) };
+}
 
 export function useProxy(): { proxy: Proxy | undefined; error: string | undefined } {
   const [proxy, setProxy] = useState<Proxy>();

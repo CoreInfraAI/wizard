@@ -6,13 +6,12 @@ type SystemProxyState = {
   busy: boolean;
   conflict: boolean;
   listener_running: boolean;
-  requested: boolean;
   read_error: string | null;
   operation_error: string | null;
 };
 type SystemProxySnapshot = SystemProxyState & { revision: number };
 
-// Observes persisted demand and OS state without automatically changing either.
+// Observes OS state without automatically changing it.
 // Tray actions remain visible after reopening the window.
 export function useSystemProxy() {
   const [state, setState] = useState<SystemProxyState>();

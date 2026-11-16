@@ -212,14 +212,7 @@ pub(super) async fn check_release(token: &str, target: Target) -> Result<Option<
         return check_linux_release(token, target).await;
     }
     let url = feed_url(&target)?;
-    let mut response = client(token)?
-        .get(url)
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|_| {
-            anyhow!("Не удалось проверить обновления через прокси; проверьте токен и соединение")
-        })?;
+    let mut response = super::requests::feed_response(&client(token)?, url.as_str()).await?;
     if matches!(response.status().as_u16(), 204 | 404) {
         ensure!(
             target.version.is_some(),

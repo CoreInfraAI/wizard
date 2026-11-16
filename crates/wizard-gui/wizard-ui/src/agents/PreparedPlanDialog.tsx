@@ -14,11 +14,12 @@ const agentNames: Record<AgentId, string> = {
   claude_desktop: "Claude Desktop",
 };
 
-export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied }: {
+export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied, applyLabel = "Завершить настройку" }: {
   prepared: PreparedAgentChange;
   onReprepared: (prepared: PreparedAgentChange) => void;
   onClose: () => void;
   onApplied?: () => void;
+  applyLabel?: "Применить" | "Завершить настройку";
 }) {
   const { agent, info } = prepared;
   const hasChanges = info.length > 0;
@@ -95,7 +96,7 @@ export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied 
           {repreparing ? "Пересоздание…" : "Пересоздать"}
         </Button>}
         {hasChanges && <Button disabled={busy} onClick={() => void apply()}>
-          {applying ? "Сохраняем…" : "Завершить настройку"}
+          {applying ? "Сохраняем…" : applyLabel}
         </Button>}
       </DialogActions>
     </Dialog>

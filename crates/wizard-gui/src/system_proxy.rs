@@ -1,4 +1,4 @@
-//! Persisted daemon demand and independently observed OS state, shared by settings and tray.
+//! Observed OS state, shared by settings and tray.
 //! Only explicit user operations change OS settings; observers never reconcile them.
 
 use crate::revision_signal::{RevisionSignal, RevisionSnapshot};
@@ -24,16 +24,11 @@ pub(crate) enum Status {
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent observed facts and persisted demand, not mutually exclusive states"
-)]
 pub(crate) struct State {
     pub(crate) status: Status,
     pub(crate) busy: bool,
     pub(crate) conflict: bool,
     pub(crate) listener_running: bool,
-    pub(crate) requested: bool,
     read_error: Option<String>,
     operation_error: Option<String>,
 }
@@ -50,7 +45,7 @@ impl State {
     pub(crate) fn can_toggle(&self) -> bool {
         !self.busy
             && self.status != Status::Unsupported
-            && (self.requested || self.has_ours() || (self.status == Status::Off && !self.conflict))
+            && (self.has_ours() || (self.status == Status::Off && !self.conflict))
     }
 }
 
@@ -129,14 +124,12 @@ fn sync_tray(app: &tauri::AppHandle) {
     let _ = app;
 }
 
-fn observe_current(app: &tauri::AppHandle) -> Result<State> {
-    let requested = crate::settings::get_state(app)?.system_proxy_enabled;
+fn observe_current(app: &tauri::AppHandle) -> State {
     let status = os::status();
     update(&app.state::<RevisionSignal<State>>(), |state| {
-        state.requested = requested;
         observe(state, status, crate::proxy::running(app));
     });
-    Ok(current(app))
+    current(app)
 }
 
 fn os_errors(write: Result<()>, observed: &State, enabled: bool) -> Vec<String> {
@@ -202,7 +195,7 @@ fn apply(app: &tauri::AppHandle, enabled: bool, forced: bool) -> Result<()> {
         if let Err(error) = started {
             // Startup can time out after taking effect. Restore demand, but never
             // shut down a listener that the OS may already be using.
-            let observed = observe_current(app)?;
+            let observed = observe_current(app);
             let keep = previous.system_proxy_enabled || observed.status != Status::Off;
             crate::settings::update_state_locked(app, &guard, |settings| {
                 settings.system_proxy_enabled = keep;
@@ -225,7 +218,7 @@ fn apply(app: &tauri::AppHandle, enabled: bool, forced: bool) -> Result<()> {
     } else {
         os::disable()
     };
-    let observed = observe_current(app)?; // Also after partial writes or failed verification.
+    let observed = observe_current(app); // Also after partial writes or failed verification.
     let mut errors = os_errors(write, &observed, enabled);
     let demand = if observed.status == Status::Off {
         enabled && previous.system_proxy_enabled
@@ -290,7 +283,7 @@ async fn run(app: tauri::AppHandle, enabled: Option<bool>, forced: bool) -> Resu
             if let Some(enabled) = enabled {
                 apply(&worker_app, enabled, forced).map_err(|error| format!("{error:#}"))
             } else {
-                let state = observe_current(&worker_app).map_err(|error| format!("{error:#}"))?;
+                let state = observe_current(&worker_app);
                 state.read_error.map_or(Ok(()), Err)
             }
         })();
@@ -300,9 +293,6 @@ async fn run(app: tauri::AppHandle, enabled: Option<bool>, forced: bool) -> Resu
             update(&signal, |state| {
                 state.busy = false;
                 state.listener_running = crate::proxy::running(&worker_app);
-                if let Ok(settings) = crate::settings::get_state(&worker_app) {
-                    state.requested = settings.system_proxy_enabled;
-                }
                 if let Err(error) = &result {
                     state.operation_error = Some(error.clone());
                 }
@@ -371,7 +361,7 @@ pub(crate) async fn get_system_proxy_state(
                 "Операции системного прокси недоступны; перезапустите Wizard".to_owned()
             })?;
             tauri::async_runtime::block_on(crate::proxy::observe(&app));
-            observe_current(&app).map_err(|error| format!("{error:#}"))?;
+            observe_current(&app);
             sync_tray(&app);
             Ok::<(), String>(())
         })
@@ -404,7 +394,7 @@ pub(crate) fn toggle_from_tray(app: &tauri::AppHandle) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if set_system_proxy(app.clone(), !(state.requested || state.has_ours()), false)
+        if set_system_proxy(app.clone(), !state.has_ours(), false)
             .await
             .is_err()
         {
