@@ -30,19 +30,18 @@ export function InstallCard({ choice, observation, signedIn, found, version, hid
   const [confirmed, setConfirmed] = useState(false);
   const [requesting, setRequesting] = useState(false);
   const attempted = useRef<number | undefined>(undefined);
-  const restored = useRef(false);
   const inFlight = useRef(false);
   const lastProgress = useRef(0);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
-  // Reopening restores the operation without resuming an explicit pause.
+  // Restore real downloads, including partial files found by a background check.
+  // A check alone must never select an app or grant permission to download it.
   useEffect(() => {
-    if (!state || restored.current) return;
-    restored.current = true;
-    if (observation.busy || state.status === "failed") setStarted(true);
-    if (state.status === "available" && state.saved) { setStarted(true); setPaused(true); }
-  }, [state, observation.busy]);
+    if (started || !observation.resumable) return;
+    setStarted(true);
+    if (state?.status === "available" && state.saved) setPaused(true);
+  }, [state, started, observation.resumable]);
 
   async function request(command: string, args: Record<string, unknown> = {}) {
     if (inFlight.current) return;
@@ -60,7 +59,7 @@ export function InstallCard({ choice, observation, signedIn, found, version, hid
   }
 
   useEffect(() => {
-    if (!started || !state || paused || requesting || inFlight.current || error || observation.error) return;
+    if (hidden || !started || !state || paused || requesting || inFlight.current || error || observation.error) return;
     if ((state.status === "idle" || state.status === "available") && !signedIn) return;
     if (attempted.current === state.revision) return;
     attempted.current = state.revision;
@@ -99,7 +98,7 @@ export function InstallCard({ choice, observation, signedIn, found, version, hid
   const saved = state?.status === "available" ? state.saved : null;
   const displayProgress = progress ?? (saved && saved.total > 0 ? Math.min(100, Math.floor(saved.received / saved.total * 100)) : undefined);
   useEffect(() => { if (displayProgress !== undefined) lastProgress.current = displayProgress; }, [displayProgress]);
-  const active = started || observation.busy;
+  const active = started || observation.resumable;
   const fill = !active ? 0 : completed || installing || state?.status === "ready_to_install" ? 100 : displayProgress ?? lastProgress.current;
   const unsupported = state?.status === "unsupported";
   const networkBlocked = !signedIn || Boolean(observation.error);
@@ -123,6 +122,8 @@ export function InstallCard({ choice, observation, signedIn, found, version, hid
     attempted.current = downloaded ? undefined : state?.revision;
     lastProgress.current = 0;
     if (downloaded) return;
+    // Adopt an in-flight background check instead of starting a duplicate operation.
+    if (state?.status === "checking") return;
     // An installed app follows the same entry point; the backend compares versions.
     void request("check_desktop_release");
   }

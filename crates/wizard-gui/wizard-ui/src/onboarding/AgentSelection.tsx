@@ -25,9 +25,7 @@ export function AgentSelection({ mode, agents, signedIn, selected, onSelect, onC
   const claude = useDesktopInstall("claude");
   const chatgpt = useDesktopInstall("chatgpt");
   const [focusedDesktop, setFocusedDesktop] = useState<DesktopApp>();
-  const resumedDesktop = [claude, chatgpt].find(({ state, busy }) => busy
-    || state?.status === "failed"
-    || (state?.status === "available" && state.saved))?.desktop;
+  const resumedDesktop = [claude, chatgpt].find(({ resumable }) => resumable)?.desktop;
   const activeDesktop = focusedDesktop ?? resumedDesktop;
   const activeInstaller = activeDesktop === "claude" ? claude : activeDesktop === "chatgpt" ? chatgpt : undefined;
   const confirming = activeInstaller?.state?.status === "ready_to_install";
