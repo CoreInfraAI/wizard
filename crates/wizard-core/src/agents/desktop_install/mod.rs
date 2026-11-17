@@ -10,7 +10,6 @@ pub use download::{DownloadProgress, SavedDownload, download_release, saved_down
 pub(crate) use running::with_closed;
 pub use running::{open_existing, open_first_install, running_apps};
 
-use super::TokenAgent;
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{app_is_running, read_app_version};
 #[cfg(not(target_os = "windows"))]
@@ -64,15 +63,6 @@ impl DesktopApp {
     #[must_use]
     pub const fn product(self) -> &'static str {
         self.spec().product
-    }
-
-    /// Hub token that authorizes this application's downloads through `CoreInfra`.
-    #[must_use]
-    pub const fn token_agent(self) -> TokenAgent {
-        match self {
-            Self::Claude => TokenAgent::ClaudeDesktop,
-            Self::ChatGpt => TokenAgent::Codex,
-        }
     }
 
     /// Why Wizard cannot install this application on this computer, if it cannot.
@@ -277,7 +267,7 @@ pub async fn check_release(token: &str, target: Target) -> Result<Option<Release
 }
 
 fn client(token: &str) -> Result<Client> {
-    ensure!(!token.is_empty(), "Выберите токен CoreInfra Hub");
+    ensure!(!token.is_empty(), "Не удалось получить токен Wizard");
     let proxy = reqwest::Proxy::all(format!(
         "https://{}:{}",
         wizard_proxy::UPSTREAM_HOST,

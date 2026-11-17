@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import { useDesktopInstall, type DesktopApp } from "../agents/DesktopInstall";
-import { getAgentToken, type Hub } from "../agents/AgentConfiguration";
 import type { useAgentState } from "../agents/agents_state";
-import { refreshHubTokens } from "../settings/hub_tokens";
 import { Button } from "../components/catalyst/button";
 import { Heading } from "../components/catalyst/heading";
 import { Label } from "../components/catalyst/fieldset";
@@ -14,10 +12,10 @@ import { InstallCard } from "./InstallCard";
 
 export type InstallView = "choose" | "progress" | "confirm";
 
-export function AgentSelection({ mode, agents, hub, selected, onSelect, onContinue, onClose, onInstallViewChange }: {
+export function AgentSelection({ mode, agents, signedIn, selected, onSelect, onContinue, onClose, onInstallViewChange }: {
   mode: "install" | "select";
   agents: ReturnType<typeof useAgentState>;
-  hub: Hub;
+  signedIn: boolean;
   selected?: ChoiceId;
   onSelect: (id: ChoiceId) => void;
   onContinue: (id: ChoiceId) => void;
@@ -43,8 +41,6 @@ export function AgentSelection({ mode, agents, hub, selected, onSelect, onContin
   }, [resumedDesktop]);
   const claudeState = agents.status === "ready" ? agents.data.claude_desktop : undefined;
   const codexState = agents.status === "ready" ? agents.data.codex : undefined;
-  const claudeToken = getAgentToken("claude_desktop", claudeState?.status === "found" ? claudeState.data.token : null, hub);
-  const codexToken = getAgentToken("codex", codexState?.status === "found" ? codexState.data.token : null, hub);
   const installed = agents.status === "ready" ? choices.filter((choice) => isFound(choice, agents.data)) : [];
   const selectionReady = installed.some((choice) => choice.id === selected);
   const detectionErrors = agents.status === "ready" && Object.values(agents.data).some((value) => typeof value === "object" && value.status === "error");
@@ -67,19 +63,17 @@ export function AgentSelection({ mode, agents, hub, selected, onSelect, onContin
       {mode === "install" && <section aria-label="Установить агента" className="onboarding-install-grid" data-focused={Boolean(activeDesktop)} data-confirming={confirming}>
         {choices.filter((choice) => choice.desktop).map((choice) => {
           const installer = choice.desktop === "claude" ? claude : chatgpt;
-          const access = choice.desktop === "claude" ? claudeToken : codexToken;
           const found = installed.some((item) => item.id === choice.id);
           const version = choice.desktop === "claude"
             ? claudeState?.status === "found" ? claudeState.data.version : null
             : codexState?.status === "found" && codexState.data.desktop.status === "found" ? codexState.data.desktop.data.version : null;
-          return <InstallCard key={choice.id} choice={choice} observation={installer} token={access.selected}
-            tokenReady={access.ready} found={found} version={version}
+          return <InstallCard key={choice.id} choice={choice} observation={installer} signedIn={signedIn}
+            found={found} version={version}
             hidden={Boolean(activeDesktop && activeDesktop !== choice.desktop)}
             onStart={() => setFocusedDesktop(choice.desktop)} onDone={onClose} />;
         })}
       </section>}
-      {mode === "install" && hub.status === "error" && <div className="mt-4 space-y-2" role="alert"><ErrorText>{hub.error}</ErrorText><Button plain onClick={() => void refreshHubTokens().catch(() => undefined)}>Повторить загрузку токенов</Button></div>}
-      {mode === "install" && hub.status === "loading" && <Text className="mt-3">Загружаем токены хаба…</Text>}
+      {mode === "install" && !signedIn && <Text className="mt-3">Войдите в CoreInfra Hub, чтобы скачать приложение.</Text>}
     </div>}
     {mode === "select" && <div className="onboarding-footer flex justify-end"><Button disabled={!selectionReady} onClick={() => { if (selected && selectionReady) onContinue(selected); }}>Настроить агента</Button></div>}
   </div>;

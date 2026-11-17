@@ -157,7 +157,7 @@ export function SetupDialog({ initialStage, account, agents, onClose, onFinished
     <DialogTitle className="sr-only">{viewStage === "install" ? installView === "confirm" ? "Подтверждение установки" : "Установка агентов" : "Настройка агентов"}</DialogTitle>
     <Button plain className="absolute! top-5 right-5" disabled={busy} aria-label="Закрыть настройку" onClick={onClose}><XMarkIcon /></Button>
     <div ref={content} key={viewStage} className="onboarding-stage">
-      {(viewStage === "install" || viewStage === "select") && <AgentSelection mode={viewStage} agents={agents} hub={hub} selected={selected} onSelect={choose} onContinue={configure} onClose={onClose} onInstallViewChange={setInstallView} />}
+      {(viewStage === "install" || viewStage === "select") && <AgentSelection mode={viewStage} agents={agents} signedIn={account.signedIn} selected={selected} onSelect={choose} onContinue={configure} onClose={onClose} onInstallViewChange={setInstallView} />}
       {viewStage === "configure" && selectedChoice && <Configure choice={selectedChoice} agents={agents} hub={hub} account={account} onBusy={changeBusy} onComplete={(restarted) => { setSelected(selectedChoice.id); setRestarted(restarted && Boolean(selectedChoice.desktop)); changeBusy(false); setStage("complete"); }} onBack={() => setStage("select")} />}
       {viewStage === "complete" && selectedChoice && <Completed choice={selectedChoice} restarted={restarted} onFinish={finish} onBusy={changeBusy} onBack={() => setStage("select")} />}
     </div>

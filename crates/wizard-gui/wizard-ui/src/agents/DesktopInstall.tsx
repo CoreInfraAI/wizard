@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { type TokenChoice } from "./agents_state";
 import { Button } from "../components/catalyst/button";
 import { Checkbox, CheckboxField } from "../components/catalyst/checkbox";
 import { Label } from "../components/catalyst/fieldset";
@@ -94,10 +93,9 @@ export function useDesktopInstall(desktop: DesktopApp) {
   return { desktop, state, error, busy, hidden };
 }
 
-export function DesktopInstall({ observation, token, tokenReady, disabled, installed }: {
+export function DesktopInstall({ observation, signedIn, disabled, installed }: {
   observation: ReturnType<typeof useDesktopInstall>;
-  token: TokenChoice | undefined;
-  tokenReady: boolean;
+  signedIn: boolean;
   disabled: boolean;
   installed: boolean;
 }) {
@@ -119,7 +117,7 @@ export function DesktopInstall({ observation, token, tokenReady, disabled, insta
   // Installation closes these and opens them again afterwards.
   const closing = installable && running.length > 0 ? running.join(", ") : undefined;
   const blocked = disabled || busy || observation.error !== undefined;
-  const networkBlocked = blocked || !tokenReady || !token;
+  const networkBlocked = blocked || !signedIn;
   const unconfirmed = confirmation !== null && !confirmed;
   const progress = state.status === "downloading" && state.total > 0
     ? Math.min(100, Math.floor(state.received / state.total * 100)) : undefined;
@@ -154,7 +152,7 @@ export function DesktopInstall({ observation, token, tokenReady, disabled, insta
   }
 
   async function request(operation: Operation) {
-    if (blocked || (operation !== "install" && (!token || !tokenReady))) return;
+    if (blocked || (operation !== "install" && !signedIn)) return;
     if (operation === "install" && unconfirmed) return;
     setError(undefined);
     try {
@@ -163,10 +161,9 @@ export function DesktopInstall({ observation, token, tokenReady, disabled, insta
           desktop, confirmed: confirmation !== null && confirmed, close: closing !== undefined,
         });
       } else {
-        await invoke(operation === "check" ? "check_desktop_release" : "download_desktop_release", { desktop, token });
+        await invoke(operation === "check" ? "check_desktop_release" : "download_desktop_release", { desktop });
       }
     } catch {
-      // Never log IPC arguments: they carry the selected token for network operations.
       setError("Не удалось начать операцию. Проверьте её состояние и повторите попытку.");
     }
   }
@@ -183,6 +180,7 @@ export function DesktopInstall({ observation, token, tokenReady, disabled, insta
   const release = state.status === "available" || state.status === "ready_to_install" ? state : undefined;
   return (
     <div className="space-y-2">
+      {!signedIn && <Text>Войдите в CoreInfra Hub, чтобы проверить обновления и скачать приложение.</Text>}
       <div className="flex flex-wrap items-center gap-2">
         {state.status === "downloading" ? (
           <>

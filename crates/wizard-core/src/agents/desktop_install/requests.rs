@@ -5,7 +5,7 @@ use core::{error::Error, time::Duration};
 use reqwest::{Client, Response, StatusCode};
 
 pub(super) const TOKEN_REJECTED: &str =
-    "Прокси CoreInfra AI Hub отклонил токен. Выберите действующий токен агента.";
+    "Прокси CoreInfra AI Hub отклонил токен Wizard. Повторите вход в хаб и проверку обновлений.";
 
 /// CONNECT failures have no HTTP response in reqwest. The dependency's tunnel error
 /// is private; compare its fixed message without exposing arbitrary error contents.

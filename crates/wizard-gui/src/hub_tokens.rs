@@ -24,16 +24,6 @@ pub(crate) struct HubTokens {
     generation: u64,
 }
 
-impl HubTokens {
-    /// Use only a successfully loaded list; never issue a token for a background operation.
-    pub(crate) fn named_token(&self, name: &str) -> Option<String> {
-        if self.loading || self.error.is_some() {
-            return None;
-        }
-        self.tokens.named(name).map(|token| token.token.clone())
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 enum TokensError {
     /// Hub returned a profile without `personal_hub_id`.
@@ -244,7 +234,7 @@ impl HubTokensManager {
     }
 }
 
-// Serializes Wizard token lookup/creation across startup and explicit user operations.
+// Serializes Wizard token lookup/creation across proxy setup and desktop update operations.
 static PROXY_TOKEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // No Debug/Serialize: this credential never belongs in a prepared frontend plan.
@@ -253,7 +243,8 @@ pub(crate) struct ProxyToken {
     pub(crate) session: String,
 }
 
-/// Called by explicit proxy operations or startup with saved demand but no shared token.
+/// Wizard's own credential for local proxy routing and desktop checks/downloads.
+/// Always resolves it in the current account's personal Hub, independently of agent tokens.
 /// A failed list request must not be mistaken for a missing token and create a duplicate.
 pub(crate) async fn proxy_token(app: &tauri::AppHandle) -> Result<ProxyToken, String> {
     let _guard = PROXY_TOKEN_LOCK.lock().await;
@@ -271,19 +262,29 @@ pub(crate) async fn proxy_token(app: &tauri::AppHandle) -> Result<ProxyToken, St
     let hub_id = &profile.personal_hub_id;
     let response = hub::list_agent_tokens(&client, &session, hub_id).await;
     let tokens = accept_proxy_response(app, &mut session, response).await?;
-    let value = if let Some(token) = tokens.named(PROXY_TOKEN_NAME) {
-        token.token.clone()
-    } else {
+    let value = resolve_proxy_token(&tokens, async {
         let response = hub::issue_agent_token(&client, &session, hub_id, PROXY_TOKEN_NAME).await;
         let token = accept_proxy_response(app, &mut session, response).await?;
         log::info!("Wizard proxy token issued in personal Hub");
-        token
-    };
+        Ok(token)
+    })
+    .await?;
     Ok(ProxyToken { value, session })
 }
 
+async fn resolve_proxy_token(
+    tokens: &AgentTokens,
+    issue: impl Future<Output = Result<String, String>>,
+) -> Result<String, String> {
+    if let Some(token) = tokens.named(PROXY_TOKEN_NAME) {
+        Ok(token.token.clone())
+    } else {
+        issue.await
+    }
+}
+
 // Preserve refreshes even on response errors, but never adopt an unrelated session
-// from settings. All callers recheck the returned session under the settings lock.
+// from settings. Callers saving the token recheck its session under the settings lock.
 async fn accept_proxy_response<T>(
     app: &tauri::AppHandle,
     session: &mut String,
@@ -421,6 +422,39 @@ mod tests {
             { "token": token, "name": "Agent", "issued_at": 1 }
         ]))
         .expect("test token list should deserialize")
+    }
+
+    #[test]
+    fn wizard_operations_reuse_only_the_common_token() {
+        let tokens = serde_json::from_value(serde_json::json!([
+            { "token": "claude-key", "name": "agent-claude-desktop", "issued_at": 1 },
+            { "token": "codex-key", "name": "agent-codex", "issued_at": 2 },
+            { "token": "wizard-key", "name": "coreinfra-ai-wizard", "issued_at": 3 }
+        ]))
+        .expect("test tokens");
+        let result = tauri::async_runtime::block_on(resolve_proxy_token(&tokens, async {
+            panic!("an existing Wizard token must not be duplicated")
+        }));
+        assert_eq!(result.as_deref(), Ok("wizard-key"));
+    }
+
+    #[test]
+    fn missing_wizard_token_never_falls_back_to_agent_credentials() {
+        let tokens = serde_json::from_value(serde_json::json!([
+            { "token": "claude-key", "name": "agent-claude-desktop", "issued_at": 1 },
+            { "token": "codex-key", "name": "agent-codex", "issued_at": 2 }
+        ]))
+        .expect("test tokens");
+        let issued = tauri::async_runtime::block_on(resolve_proxy_token(
+            &tokens,
+            ready(Ok("new-wizard-key".into())),
+        ));
+        assert_eq!(issued.as_deref(), Ok("new-wizard-key"));
+        let failed = tauri::async_runtime::block_on(resolve_proxy_token(
+            &tokens,
+            ready(Err("Hub unavailable".into())),
+        ));
+        assert_eq!(failed, Err("Hub unavailable".into()));
     }
 
     #[test]

@@ -7,17 +7,15 @@ import { Heading } from "../components/catalyst/heading";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 import { useDesktopInstall } from "../agents/DesktopInstall";
-import type { TokenChoice } from "../agents/agents_state";
 import { AgentIcon, type AgentChoice } from "./agents";
 
 type Observation = ReturnType<typeof useDesktopInstall>;
 
 /** Downloading ends at a separate confirmation; installation is always explicit. */
-export function InstallCard({ choice, observation, token, tokenReady, found, version, hidden, onStart, onDone }: {
+export function InstallCard({ choice, observation, signedIn, found, version, hidden, onStart, onDone }: {
   choice: AgentChoice;
   observation: Observation;
-  token: TokenChoice | undefined;
-  tokenReady: boolean;
+  signedIn: boolean;
   found: boolean;
   version: string | null;
   hidden: boolean;
@@ -63,11 +61,11 @@ export function InstallCard({ choice, observation, token, tokenReady, found, ver
 
   useEffect(() => {
     if (!started || !state || paused || requesting || inFlight.current || error || observation.error) return;
-    if ((state.status === "idle" || state.status === "available") && (!tokenReady || !token)) return;
+    if ((state.status === "idle" || state.status === "available") && !signedIn) return;
     if (attempted.current === state.revision) return;
     attempted.current = state.revision;
-    if (state.status === "idle") void request("check_desktop_release", { token });
-    if (state.status === "available") void request("download_desktop_release", { token });
+    if (state.status === "idle") void request("check_desktop_release");
+    if (state.status === "available") void request("download_desktop_release");
     if (state.status === "ready_to_install") {
       // Prepare the confirmation, but never install as a side effect of downloading.
       inFlight.current = true;
@@ -104,7 +102,7 @@ export function InstallCard({ choice, observation, token, tokenReady, found, ver
   const active = started || observation.busy;
   const fill = !active ? 0 : completed || installing || state?.status === "ready_to_install" ? 100 : displayProgress ?? lastProgress.current;
   const unsupported = state?.status === "unsupported";
-  const networkBlocked = !tokenReady || !token || Boolean(observation.error);
+  const networkBlocked = !signedIn || Boolean(observation.error);
   const description = desktop === "claude" ? "Приложение Anthropic с Cowork и Claude\u00a0Code." : "Приложение OpenAI с ChatGPT\u00a0Work и Codex.";
   const title = failedMessage ? "Установка прервана" : !active ? downloaded ? `Скачана версия ${state.version}` : found || installed ? "" : description : upToDate ? "Версия актуальна" : installed ? "Установлен"
     : paused ? `На паузе${displayProgress === undefined ? "" : ` · ${displayProgress}%`}` : installing ? "Устанавливается…" : gate ? "Подтвердите установку" : downloading ? `Скачивается${progress === undefined ? "…" : ` ${progress}%`}` : state?.status === "ready_to_install" ? "Подготавливаем установку…" : "Проверяем обновления…";
@@ -126,7 +124,7 @@ export function InstallCard({ choice, observation, token, tokenReady, found, ver
     lastProgress.current = 0;
     if (downloaded) return;
     // An installed app follows the same entry point; the backend compares versions.
-    void request("check_desktop_release", { token });
+    void request("check_desktop_release");
   }
 
   if (active && downloaded) return <div className="onboarding-install-confirmation" hidden={hidden}>
@@ -154,7 +152,7 @@ export function InstallCard({ choice, observation, token, tokenReady, found, ver
     if (failed) {
       // A new release check also recovers an archive rejected by the installer.
       setGate(undefined);
-      void request("check_desktop_release", { token });
+      void request("check_desktop_release");
     }
   }
 

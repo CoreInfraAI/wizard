@@ -1,7 +1,7 @@
 //! GUI ownership of desktop application installation and UI-independent daily checks.
 
 use crate::{
-    agents::{AgentRevisionState, TokenChoice},
+    agents::AgentRevisionState,
     hub_tokens,
     revision_signal::{RevisionSignal, RevisionSnapshot},
     settings,
@@ -16,7 +16,7 @@ use std::{
 use tauri::Manager as _;
 use tokio::sync::oneshot;
 use wizard_core::agents::{
-    claude_desktop, codex,
+    codex,
     desktop_install::{self as installer, DesktopApp, SavedDownload},
 };
 
@@ -181,9 +181,9 @@ async fn saved_download(
 
 pub(crate) fn start_background_checks(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let tokens = app.state::<RevisionSignal<hub_tokens::HubTokens>>();
-        // The timer's immediate first tick covers startup; wake only on later token changes.
-        let mut revision = Some(tokens.current().revision);
+        let settings = app.state::<RevisionSignal<wizard_settings::Settings>>();
+        // The timer covers startup; signing in wakes checks independently of agent tokens.
+        let mut revision = Some(settings.current().revision);
         // Only inspect the deadline here; network checks are limited by next_check.
         // This also retries a due check skipped while another operation held the lock.
         let mut timer = tokio::time::interval(Duration::from_mins(5));
@@ -191,7 +191,7 @@ pub(crate) fn start_background_checks(app: tauri::AppHandle) {
         loop {
             tokio::select! {
                 _ = timer.tick() => {}
-                snapshot = tokens.wait(revision) => {
+                snapshot = settings.wait(revision) => {
                     let Ok(snapshot) = snapshot else { break };
                     revision = Some(snapshot.revision);
                 }
@@ -203,7 +203,6 @@ pub(crate) fn start_background_checks(app: tauri::AppHandle) {
                 if start(
                     app.clone(),
                     desktop,
-                    None,
                     Operation::Check,
                     true,
                     InstallOptions::default(),
@@ -235,12 +234,10 @@ pub(crate) async fn get_desktop_install_state(
 pub(crate) fn check_desktop_release(
     app: tauri::AppHandle,
     desktop: DesktopApp,
-    token: TokenChoice,
 ) -> Result<(), String> {
     start(
         app,
         desktop,
-        Some(token),
         Operation::Check,
         false,
         InstallOptions::default(),
@@ -251,12 +248,10 @@ pub(crate) fn check_desktop_release(
 pub(crate) fn download_desktop_release(
     app: tauri::AppHandle,
     desktop: DesktopApp,
-    token: TokenChoice,
 ) -> Result<(), String> {
     start(
         app,
         desktop,
-        Some(token),
         Operation::Download,
         false,
         InstallOptions::default(),
@@ -321,7 +316,6 @@ pub(crate) fn install_desktop_release(
     start(
         app,
         desktop,
-        None,
         Operation::Install,
         false,
         InstallOptions {
@@ -348,7 +342,6 @@ struct InstallOptions {
 fn start(
     app: tauri::AppHandle,
     desktop: DesktopApp,
-    token: Option<TokenChoice>,
     operation: Operation,
     automatic: bool,
     install: InstallOptions,
@@ -369,7 +362,8 @@ fn start(
         Err(_) => return Err(format!("Операция с {name} уже выполняется")),
     };
     if automatic
-        && (matches!(session.package, Some(Package::Downloaded(_)))
+        && (!settings::get_state(&app).is_ok_and(|settings| !settings.hub_session.is_empty())
+            || matches!(session.package, Some(Package::Downloaded(_)))
             || session.next_check.is_some_and(|next| Instant::now() < next))
     {
         return Ok(());
@@ -377,7 +371,6 @@ fn start(
 
     let mut pause = None;
     match operation {
-        Operation::Check if automatic => {} // Wait for an existing token before publishing Checking.
         Operation::Check => {
             // Checking again keeps a saved download only if the same release is found.
             session.package = None;
@@ -408,17 +401,7 @@ fn start(
     }
 
     tauri::async_runtime::spawn(async move {
-        let result = run(
-            &app,
-            &manager,
-            &mut session,
-            token,
-            operation,
-            automatic,
-            install,
-            pause,
-        )
-        .await;
+        let result = run(&app, &manager, &mut session, operation, install, pause).await;
         manager
             .pause
             .lock()
@@ -464,51 +447,6 @@ fn start(
     Ok(())
 }
 
-async fn resolve_token(
-    app: &tauri::AppHandle,
-    desktop: DesktopApp,
-    token: Option<TokenChoice>,
-) -> Result<String, String> {
-    match token {
-        Some(TokenChoice::Existing { token }) if !token.is_empty() => Ok(token),
-        Some(TokenChoice::Create) => {
-            hub_tokens::issue(app, desktop.token_agent().token_name()).await
-        }
-        _ => Err("Выберите токен CoreInfra Hub".into()),
-    }
-}
-
-/// The token in the application's routing configuration, else the Hub token Wizard created
-/// for it, else Wizard's proxy token for legacy configurations.
-async fn background_token(
-    app: &tauri::AppHandle,
-    desktop: DesktopApp,
-) -> Result<Option<String>, String> {
-    let settings = settings::get_state(app).map_err(|_| "Не удалось прочитать настройки Wizard")?;
-    if settings.hub_session.is_empty() {
-        return Ok(None);
-    }
-    let proxy_token = settings.proxy_token.filter(|token| !token.is_empty());
-    let configured = tauri::async_runtime::spawn_blocking(move || match desktop {
-        DesktopApp::Claude => claude_desktop::configured_token(),
-        DesktopApp::ChatGpt => codex::configured_token(),
-    })
-    .await
-    .map_err(|_| format!("Не удалось прочитать токен {}", desktop.product()))?;
-
-    let hub_token = app
-        .state::<RevisionSignal<hub_tokens::HubTokens>>()
-        .current()
-        .state
-        .named_token(desktop.token_agent().token_name());
-    if let Ok(token) = configured {
-        Ok(token.or(hub_token).or(proxy_token))
-    } else {
-        log::warn!("{} configured token could not be read", desktop.product());
-        Ok(hub_token.or(proxy_token))
-    }
-}
-
 /// What else installation affects, for the user to read before installing.
 async fn release_notes(
     app: &tauri::AppHandle,
@@ -531,17 +469,11 @@ async fn release_notes(
     Ok(notes)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one operation's complete request"
-)]
 async fn run(
     app: &tauri::AppHandle,
     manager: &InstallManager,
     session: &mut Session,
-    token: Option<TokenChoice>,
     operation: Operation,
-    automatic: bool,
     install: InstallOptions,
     pause: Option<oneshot::Receiver<()>>,
 ) -> Result<(), String> {
@@ -549,18 +481,6 @@ async fn run(
     let name = desktop.name();
     match operation {
         Operation::Check => {
-            let token = if automatic {
-                let Some(token) = background_token(app, desktop).await? else {
-                    return Ok(());
-                };
-                log::info!("Starting {} background check", desktop.product());
-                session.package = None;
-                session.next_check = Some(Instant::now() + CHECK_INTERVAL);
-                manager.signal.notify(State::Checking);
-                token
-            } else {
-                resolve_token(app, desktop, token).await?
-            };
             let settings = settings::get_state(app).map_err(|error| format!("{error:#}"))?;
             let target = tauri::async_runtime::spawn_blocking(move || {
                 let last_path = match desktop {
@@ -573,6 +493,9 @@ async fn run(
             .map_err(|_| format!("Не удалось проверить установленный {name}"))?
             .map_err(|error| format!("{error:#}"))?;
 
+            // Checking and downloading belong to Wizard, never to an agent's API identity.
+            let token = hub_tokens::proxy_token(app).await?.value;
+            log::info!("Checking {} releases with Wizard token", desktop.product());
             let release = installer::check_release(&token, target)
                 .await
                 .map_err(|error| format!("{error:#}"))?;
@@ -613,7 +536,7 @@ async fn run(
                 return Err("Сначала проверьте доступную версию".into());
             };
             let release = selected.as_ref().clone();
-            let token = resolve_token(app, desktop, token).await?;
+            let token = hub_tokens::proxy_token(app).await?.value;
             let download = installer::download_release(release.clone(), &token, |progress| {
                 manager.signal.notify(State::Downloading {
                     received: progress.received,

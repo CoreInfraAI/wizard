@@ -102,11 +102,6 @@ fn has_hub_connection(config: &Value) -> bool {
             })
 }
 
-/// Reads the token owned by the active routing mode without exposing the full profile.
-pub fn configured_token() -> Result<Option<String>> {
-    Ok(read_routing()?.1.map(AgentToken::into_secret))
-}
-
 pub fn get_backups() -> Result<Vec<super::Backup>> {
     BackupManager::new(AgentKind::ClaudeDesktop)?.get_backups()
 }

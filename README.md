@@ -106,8 +106,10 @@ Connection options are ordered API access, subscription, then without CoreInfra.
 The default token is selected automatically: reuse the configured token if it belongs to the
 selected Hub, otherwise reuse the oldest token named for the agent, or create one
 on confirmation. The note's «Изменить» link opens a menu of tokens in the selected
-Hub. The choice is shared by API configuration and downloads. Claude Desktop's
-subscription uses Wizard's shared proxy token and needs no separate agent token.
+Hub. This choice applies to the agent's API configuration. Desktop update checks
+and downloads use Wizard's own `coreinfra-ai-wizard` token from the current
+account's personal Hub, reusing it or creating it when missing. Claude Desktop's
+subscription uses the same shared proxy token and needs no separate agent token.
 The local proxy has exactly two listeners: `127.0.0.1:33787` for Claude Desktop and
 the system proxy, and `127.0.0.1:33788` for ChatGPT. Both use the same Wizard token;
 changing an agent's API token does not change either listener's credential.

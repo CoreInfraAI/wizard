@@ -47,7 +47,7 @@ const createdTokenNames: Record<AgentId, string> = {
 };
 
 // Only reuse credentials listed in the selected Hub. Wait for its list before
-// offering creation; the backend creates on an explicit configure/download action.
+// offering creation; the backend creates on an explicit configuration action.
 export function getAgentToken(agent: AgentId, agentToken: string | null, hub: Hub) {
   const createdName = createdTokenNames[agent];
   const ready = hub.signedIn && hub.status === "ready";
@@ -60,7 +60,7 @@ export function getAgentToken(agent: AgentId, agentToken: string | null, hub: Hu
   return { selected, ready, name: existing ? existing.name || "без названия" : createdName };
 }
 
-// Keep a choice local to this agent's form and reuse it for downloads. A token
+// Keep a choice local to this agent's configuration form. A token
 // must still be listed in the active Hub; saved configuration changes reset it.
 export function useAgentToken(agent: AgentId, agentToken: string | null, hub: Hub) {
   const [draft, setDraft] = useState<{ agent: AgentId; agentToken: string | null; token: string }>();
@@ -116,9 +116,8 @@ export function TokenNote({ token, hub, disabled }: {
 }
 
 // The same connection form is used by the agent page and initial setup.
-export function RoutingFieldset<M extends string>({ agent, modes, mode, toChange, agentToken, token: tokenOverride, hub, note, disabled, error, onPrepare, initialMode, actions, actionsClassName = "", editing = false, needsApply = false }: {
+export function RoutingFieldset<M extends string>({ agent, modes, mode, toChange, agentToken, hub, note, disabled, error, onPrepare, initialMode, actions, actionsClassName = "", editing = false, needsApply = false }: {
   agent: AgentId;
-  token?: ReturnType<typeof useAgentToken>;
   modes: ModeOption<M>[];
   mode: M;
   toChange: (mode: M) => AgentChange;
@@ -138,8 +137,7 @@ export function RoutingFieldset<M extends string>({ agent, modes, mode, toChange
   const selected = draft ?? mode;
   const enabled = selected !== "disabled";
   const proxyOnly = agent === "claude_desktop" && selected === "sub";
-  const localToken = useAgentToken(agent, agentToken, hub);
-  const token = tokenOverride ?? localToken;
+  const token = useAgentToken(agent, agentToken, hub);
   const tokenChanged = !proxyOnly && (token.selected?.kind === "create"
     || (token.selected?.kind === "existing" && token.selected.token !== agentToken));
   const changed = selected !== mode || (enabled && (needsApply || tokenChanged));
@@ -169,7 +167,7 @@ export function RoutingFieldset<M extends string>({ agent, modes, mode, toChange
           ))}
         </RadioGroup>
         {proxyOnly ? <Text>Подключение через общий прокси Wizard.</Text>
-          : (enabled || tokenOverride !== undefined) && <TokenNote token={token} hub={hub} disabled={disabled} />}
+          : enabled && <TokenNote token={token} hub={hub} disabled={disabled} />}
         <div className={`flex flex-wrap items-center gap-3 ${actionsClassName}`}>
           {actions}
           <Button type="button" disabled={disabled || (enabled && (proxyOnly ? !hub.signedIn : !token.ready)) || (editing && !changed)}
