@@ -88,9 +88,13 @@ export function useDesktopInstall(desktop: DesktopApp) {
   }, [desktop]);
 
   const busy = state?.status === "checking" || state?.status === "downloading" || state?.status === "installing";
+  // Checks also run in the background and do not mean the user chose this app.
+  const resumable = state?.status === "downloading" || state?.status === "installing"
+    || (state?.status === "failed" && state.operation !== "check")
+    || (state?.status === "available" && state.saved !== null);
   // Hidden until the state loads, so that an unsupported application never flashes.
   const hidden = state === undefined ? error === undefined : state.status === "unsupported";
-  return { desktop, state, error, busy, hidden };
+  return { desktop, state, error, busy, resumable, hidden };
 }
 
 export function DesktopInstall({ observation, signedIn, disabled, installed }: {
