@@ -25,7 +25,8 @@ export function AgentSelection({ mode, agents, signedIn, selected, onSelect, onC
   const claude = useDesktopInstall("claude");
   const chatgpt = useDesktopInstall("chatgpt");
   const [focusedDesktop, setFocusedDesktop] = useState<DesktopApp>();
-  const resumedDesktop = [claude, chatgpt].find(({ resumable }) => resumable)?.desktop;
+  // Cached downloads and old failures leave both choices visible on reopening.
+  const resumedDesktop = [claude, chatgpt].find(({ inProgress }) => inProgress)?.desktop;
   const activeDesktop = focusedDesktop ?? resumedDesktop;
   const activeInstaller = activeDesktop === "claude" ? claude : activeDesktop === "chatgpt" ? chatgpt : undefined;
   const confirming = activeInstaller?.state?.status === "ready_to_install";
@@ -66,7 +67,7 @@ export function AgentSelection({ mode, agents, signedIn, selected, onSelect, onC
             ? claudeState?.status === "found" ? claudeState.data.version : null
             : codexState?.status === "found" && codexState.data.desktop.status === "found" ? codexState.data.desktop.data.version : null;
           return <InstallCard key={choice.id} choice={choice} observation={installer} signedIn={signedIn}
-            found={found} version={version}
+            found={found} version={version} active={activeDesktop === choice.desktop}
             hidden={Boolean(activeDesktop && activeDesktop !== choice.desktop)}
             onStart={() => setFocusedDesktop(choice.desktop)} onDone={onClose} />;
         })}
