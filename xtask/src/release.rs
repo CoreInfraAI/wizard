@@ -175,33 +175,55 @@ fn release_version(dev: bool, version: Option<&str>) -> Result<semver::Version> 
     }
 }
 
-/// Builds and stages release assets using stable, predictable names.
-pub(crate) fn build(
-    paths: &Paths,
-    dev: bool,
-    version: Option<&str>,
-    target: &str,
-    output: &Path,
-    apple_sign: bool,
-) -> Result<()> {
+/// Returns the platform and the architecture as spelled in Tauri bundle names, which
+/// release asset names reuse.
+fn target_names(target: &str) -> Result<(&'static str, &'static str)> {
     // RELEASE_TARGETS: update when adding a release target.
-    // Architecture as spelled in Tauri bundle names, reused in release asset names.
-    let (platform, arch) = match target {
+    Ok(match target {
         "x86_64-unknown-linux-gnu" => ("linux", "amd64"),
         "aarch64-apple-darwin" => ("darwin", "aarch64"),
         "x86_64-apple-darwin" => ("darwin", "x64"),
         "x86_64-pc-windows-msvc" => ("windows", "x64"),
         "aarch64-pc-windows-msvc" => ("windows", "arm64"),
         _ => bail!("unsupported release target: {target}"),
-    };
+    })
+}
+
+/// File in the notarization directory that holds the submission ID.
+const NOTARY_SUBMISSION: &str = "notary-submission";
+
+/// Returns the release asset name of the macOS disk image.
+fn dmg_name(release_name: &str, arch: &str) -> String {
+    format!("{release_name}-darwin-{arch}.dmg")
+}
+
+/// Builds and stages release assets using stable, predictable names.
+///
+/// With `notarize_dir`, signs macOS bundles with Developer ID, submits the disk image
+/// for notarization without waiting, and stages the disk image and the submission ID
+/// in that directory for [`notarize`]. `output` then holds only files that go to the
+/// release as they are.
+pub(crate) fn build(
+    paths: &Paths,
+    dev: bool,
+    version: Option<&str>,
+    target: &str,
+    output: &Path,
+    notarize_dir: Option<&Path>,
+) -> Result<()> {
+    let (platform, arch) = target_names(target)?;
 
     // Validate this before the expensive build, but never pass it to the build process.
     drop(required_env("TAURI_SIGNING_PRIVATE_KEY")?);
-    let apple_credentials = if apple_sign {
+    let apple_credentials = if let Some(notarize_dir) = notarize_dir {
         if platform != "darwin" {
-            bail!("--apple-sign is only supported for macOS targets");
+            bail!("--notarize-dir is only supported for macOS targets");
         }
-        Some(apple::Credentials::from_env()?)
+        let signing = apple::Signing::from_env()?;
+        let notary = apple::Notary::from_env()?;
+        fs::create_dir_all(notarize_dir)
+            .with_context(|| format!("failed to create {}", notarize_dir.display()))?;
+        Some((signing, notary, notarize_dir))
     } else {
         None
     };
@@ -281,10 +303,10 @@ pub(crate) fn build(
         .args(bundles)
         .args(["--config", &build_config])
         .current_dir(&paths.wizard);
-    // Without --apple-sign, the bundle keeps the ad-hoc signature from tauri.conf.json.
+    // Without --notarize-dir, the bundle keeps the ad-hoc signature from tauri.conf.json.
     apple::remove_env(&mut bundle_command);
-    if let Some(credentials) = &apple_credentials {
-        credentials.apply(&mut bundle_command);
+    if let Some((signing, ..)) = &apple_credentials {
+        signing.apply(&mut bundle_command);
     }
     if platform == "darwin" {
         // better looking .dmg
@@ -311,20 +333,6 @@ pub(crate) fn build(
     };
     verify_updater_signature(&updater_artifact, updater_public_key)?;
 
-    if let Some(credentials) = &apple_credentials {
-        // Tauri notarizes only the app, so notarize the disk image that users download.
-        let dmg = bundle_dir
-            .join("dmg")
-            .join(format!("{product_name}_{version}_{arch}.dmg"));
-        apple::notarize(credentials, &dmg)?;
-        apple::verify(
-            credentials,
-            &dmg,
-            &updater_artifact,
-            &format!("{product_name}.app"),
-        )?;
-    }
-
     fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
     let release_name = product_name.replace(' ', "-");
     let copy =
@@ -333,10 +341,22 @@ pub(crate) fn build(
     // RELEASE_TARGETS: update when adding a release platform.
     match platform {
         "darwin" => {
-            copy(
-                format!("dmg/{product_name}_{version}_{arch}.dmg"),
-                format!("{release_name}-darwin-{arch}.dmg"),
-            )?;
+            let dmg_source = bundle_dir
+                .join("dmg")
+                .join(format!("{product_name}_{version}_{arch}.dmg"));
+            if let Some((_, notary, notarize_dir)) = &apple_credentials {
+                // The draft release gets the disk image only after `release-notarize`
+                // staples it. Notarizing the disk image also covers the app inside it and
+                // in the updater archive.
+                let dmg = notarize_dir.join(dmg_name(&release_name, arch));
+                move_artifact(&dmg_source, &dmg)?;
+                let id = notary.submit(&dmg)?;
+                let submission = notarize_dir.join(NOTARY_SUBMISSION);
+                fs::write(&submission, id)
+                    .with_context(|| format!("failed to write {}", submission.display()))?;
+            } else {
+                move_artifact(&dmg_source, &output.join(dmg_name(&release_name, arch)))?;
+            }
             copy(
                 format!("macos/{product_name}.app.tar.gz"),
                 format!("{release_name}-darwin-{arch}-update.app.tar.gz"),
@@ -370,6 +390,65 @@ pub(crate) fn build(
         }
         _ => bail!("unsupported release target: {target}"),
     }
+}
+
+/// Waits for the notarization that [`build`] submitted, staples the disk image from
+/// `notarize_dir`, verifies it together with the updater archive in the draft release,
+/// and only then uploads it to the draft release. Safe to repeat: the draft never holds
+/// an unstapled disk image, and `notarize_dir` keeps the submitted one.
+pub(crate) fn notarize(
+    paths: &Paths,
+    repository: &str,
+    release_id: u64,
+    target: &str,
+    notarize_dir: &Path,
+) -> Result<()> {
+    let (platform, arch) = target_names(target)?;
+    if platform != "darwin" {
+        bail!("notarization is only supported for macOS targets");
+    }
+    let config: Value = serde_json::from_slice(&fs::read(&paths.tauri_config)?)?;
+    let product_name = config["productName"]
+        .as_str()
+        .context("tauri.conf.json productName must be a string")?;
+    let release_name = product_name.replace(' ', "-");
+    let dmg = notarize_dir.join(dmg_name(&release_name, arch));
+    if !dmg.is_file() {
+        bail!("submitted disk image is missing: {}", dmg.display());
+    }
+    let submission = notarize_dir.join(NOTARY_SUBMISSION);
+    let id = fs::read_to_string(&submission)
+        .with_context(|| format!("failed to read {}", submission.display()))?;
+
+    let notary = apple::Notary::from_env()?;
+    notary.wait(id.trim())?;
+
+    let release = gh_api_json(&format!("repos/{repository}/releases/{release_id}"))?;
+    if release["draft"].as_bool() != Some(true) {
+        bail!("release {release_id} must still be a draft");
+    }
+    let tag = release["tag_name"]
+        .as_str()
+        .context("GitHub release has no tag_name")?;
+    let updater_name = format!("{release_name}-darwin-{arch}-update.app.tar.gz");
+    let updater_id = release["assets"]
+        .as_array()
+        .context("GitHub release assets must be an array")?
+        .iter()
+        .find(|asset| asset["name"].as_str() == Some(updater_name.as_str()))
+        .and_then(|asset| asset["id"].as_u64())
+        .with_context(|| format!("release asset was not uploaded: {updater_name}"))?;
+    let temporary = tempfile::tempdir().context("failed to create temporary directory")?;
+    let updater = temporary.path().join(&updater_name);
+    fs::write(
+        &updater,
+        gh_api_bytes(&format!("repos/{repository}/releases/assets/{updater_id}"))?,
+    )
+    .with_context(|| format!("failed to write {}", updater.display()))?;
+
+    apple::staple(&dmg)?;
+    notary.verify(&dmg, &updater, &format!("{product_name}.app"))?;
+    gh_release_upload(repository, tag, &dmg)
 }
 
 fn verify_macos_app_signature(app: &Path) -> Result<()> {

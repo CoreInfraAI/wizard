@@ -65,9 +65,27 @@ enum Commands {
         /// Directory in which to stage files for upload.
         #[arg(long)]
         output: PathBuf,
-        /// Sign and notarize macOS bundles with the Apple Developer ID certificate.
+        /// Sign macOS bundles with the Apple Developer ID certificate, submit the disk
+        /// image for notarization without waiting, and stage the disk image and the
+        /// submission ID in this directory for `release-notarize` instead of `--output`.
         #[arg(long)]
-        apple_sign: bool,
+        notarize_dir: Option<PathBuf>,
+    },
+    /// Wait for the notarization submitted by `release-build --notarize-dir`, then staple
+    /// the disk image and upload it to a GitHub draft release.
+    ReleaseNotarize {
+        /// GitHub repository in `owner/name` format.
+        #[arg(long)]
+        repository: String,
+        /// Numeric ID of the GitHub draft release containing the macOS updater archive.
+        #[arg(long)]
+        release_id: u64,
+        /// Rust target triple of the bundles.
+        #[arg(long)]
+        target: String,
+        /// Directory staged by `release-build --notarize-dir`.
+        #[arg(long)]
+        notarize_dir: PathBuf,
     },
     /// Generate and upload Tauri updater metadata for a GitHub draft release.
     LatestJson {
@@ -96,6 +114,7 @@ fn main() -> Result<()> {
         Commands::Ci
         | Commands::CreateRelease { .. }
         | Commands::ReleaseBuild { .. }
+        | Commands::ReleaseNotarize { .. }
         | Commands::LatestJson { .. }
         | Commands::Version { .. } => false,
     };
@@ -115,15 +134,21 @@ fn main() -> Result<()> {
             version,
             target,
             output,
-            apple_sign,
+            notarize_dir,
         } => release::build(
             &paths,
             dev,
             version.as_deref(),
             &target,
             &output,
-            apple_sign,
+            notarize_dir.as_deref(),
         ),
+        Commands::ReleaseNotarize {
+            repository,
+            release_id,
+            target,
+            notarize_dir,
+        } => release::notarize(&paths, &repository, release_id, &target, &notarize_dir),
         Commands::LatestJson {
             dev,
             repository,
@@ -150,6 +175,29 @@ fn version(expected: Option<&str>) -> Result<()> {
 fn verify_cli() {
     use clap::CommandFactory as _;
     Cli::command().debug_assert();
+}
+
+#[test]
+fn notarize_dir_replaces_apple_sign() {
+    let build = ["xtask", "release-build", "--target", "aarch64-apple-darwin"];
+    let parse = |extra: &[&str]| Cli::try_parse_from(build.iter().chain(extra));
+    assert!(parse(&["--output", "assets", "--notarize-dir", "notarize"]).is_ok());
+    assert!(parse(&["--output", "assets"]).is_ok());
+    assert!(parse(&["--output", "assets", "--apple-sign"]).is_err());
+    assert!(parse(&["--notarize-dir", "notarize"]).is_err());
+
+    let notarize = [
+        "xtask",
+        "release-notarize",
+        "--repository",
+        "owner/name",
+        "--release-id",
+        "1",
+        "--target",
+        "aarch64-apple-darwin",
+    ];
+    assert!(Cli::try_parse_from(notarize.iter().chain(&["--notarize-dir", "notarize"])).is_ok());
+    assert!(Cli::try_parse_from(notarize).is_err());
 }
 
 /// Runs the workspace checks used by continuous integration.

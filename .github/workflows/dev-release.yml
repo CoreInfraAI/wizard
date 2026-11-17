@@ -111,7 +111,7 @@ jobs:
           APPLE_NOTARY_API_KEY_ID: ${{ matrix.apple_sign && secrets.APPLE_NOTARY_API_KEY_ID || '' }}
         run: >-
           "${{ matrix.xtask }}" release-build --dev
-          ${{ matrix.apple_sign && '--apple-sign' || '' }}
+          ${{ matrix.apple_sign && '--notarize-dir notarize' || '' }}
           --version ${{ needs.create-release.outputs.version }}
           --target ${{ matrix.target }}
           --output release-assets
@@ -125,11 +125,74 @@ jobs:
           gh release upload "$RELEASE_TAG" release-assets/*
           --clobber
 
+      # The disk image goes to the release only after the notarize job staples it.
+      - name: Keep submitted disk image and notarization submission ID
+        if: matrix.apple_sign
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notarize-${{ matrix.target }}
+          path: notarize
+          if-no-files-found: error
+          # A re-run build submits a new disk image.
+          overwrite: true
+
+  notarize:
+    name: Notarize (${{ matrix.name }})
+    needs:
+      - create-release
+      - build
+    runs-on: macos-latest
+    # Apple usually finishes in minutes but sometimes takes hours. When this job times
+    # out, re-run it: it keeps waiting for the same submission instead of rebuilding.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      # RELEASE_TARGETS: update when adding a macOS release target.
+      matrix:
+        include:
+          - name: macOS aarch64
+            target: aarch64-apple-darwin
+          - name: macOS x86_64
+            target: x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache-key: notarize
+
+      - name: Build release tool
+        run: cargo build --locked --package xtask
+
+      - name: Download submitted disk image and notarization submission ID
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notarize-${{ matrix.target }}
+          path: notarize
+
+      - name: Wait for notarization, staple and upload the disk image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_API_ISSUER_ID: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
+          APPLE_NOTARY_API_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+          APPLE_NOTARY_API_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+        run: >-
+          ./target/debug/xtask release-notarize
+          --repository "$GITHUB_REPOSITORY"
+          --release-id "$RELEASE_ID"
+          --target ${{ matrix.target }}
+          --notarize-dir notarize
+
   generate-latest-json:
     name: Generate updater metadata
     needs:
       - create-release
       - build
+      - notarize
     runs-on: ubuntu-latest
 
     steps:
