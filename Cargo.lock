@@ -5775,7 +5775,6 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tokio",
- "uuid",
  "wizard-core",
  "wizard-proxy",
  "wizard-proxy-daemon",

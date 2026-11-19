@@ -252,7 +252,7 @@ export function AgentPage({
               onPrepare={prepare}
             />
           )}
-          <VideoConnection hub={hub} hubId={account.account?.active_hub_id} disabled={isChangeInProgress} />
+          <VideoConnection signedIn={account.signedIn} disabled={isChangeInProgress} />
           {(codex.status === "not_found" || (codex.status === "found" && codex.data.cli.status === "not_found")) && (
             <MissingAgent agent="codex" />
           )}

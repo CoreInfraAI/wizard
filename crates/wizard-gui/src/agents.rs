@@ -159,7 +159,7 @@ pub(crate) async fn get_agent_backups(agent: BackupAgent) -> Result<Vec<Backup>,
     .map_err(|error| format!("{error:#}"))
 }
 
-/// Token for an enabled mode: an existing value, or a new Hub token named after the agent.
+/// Use an existing value or provision the agent's default Hub token for an enabled mode.
 // No Debug: the value is a credential.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -211,8 +211,8 @@ impl AgentChange {
 }
 
 /// Enabled modes require `token`, except Claude Desktop subscription which uses
-/// Wizard's shared proxy credential. Never log tokens. `Create` issues the Hub token
-/// before preparation: cancelling or failed preparation keeps it in the Hub list.
+/// Wizard's shared proxy credential. Never log tokens. Newly issued defaults remain
+/// in the Hub if preparation fails or is cancelled.
 #[tauri::command]
 pub(crate) async fn prepare_agent_change(
     change: AgentChange,
@@ -237,6 +237,9 @@ pub(crate) async fn prepare_agent_change(
         ) {
         match token {
             Some(TokenChoice::Existing { token }) if !token.is_empty() => token,
+            Some(TokenChoice::Create) if matches!(change, AgentChange::CodexSetRouting(_)) => {
+                hub_tokens::codex_token(&app, None).await?.token
+            }
             Some(TokenChoice::Create) => {
                 hub_tokens::issue(&app, change.token_agent().token_name()).await?
             }

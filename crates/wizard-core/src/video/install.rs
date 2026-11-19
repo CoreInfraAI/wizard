@@ -11,7 +11,6 @@ use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, ensure};
 use std::path::Path;
 use toml_edit::DocumentMut;
-use wizard_settings::VideoConnection;
 
 const SERVER: &str = "coreinfra_video";
 const SKILL: &[(&str, &str)] = &[
@@ -25,16 +24,12 @@ const SKILL: &[(&str, &str)] = &[
     ),
 ];
 
-pub fn sync(previous: Option<&VideoConnection>, next: Option<&VideoConnection>) -> Result<()> {
+pub fn sync(previous: Option<&str>, next: Option<&str>) -> Result<()> {
     let _guard = PreparedAgent::Codex.lock()?;
     sync_at(&codex::config_path()?, previous, next)
 }
 
-pub(super) fn sync_at(
-    path: &Path,
-    previous: Option<&VideoConnection>,
-    next: Option<&VideoConnection>,
-) -> Result<()> {
+pub(super) fn sync_at(path: &Path, previous: Option<&str>, next: Option<&str>) -> Result<()> {
     let mut config = FileChange::read(path.to_owned())?;
     update_config(&mut config.after, previous, next)?;
     if next.is_none() {
@@ -102,8 +97,8 @@ pub(super) fn sync_at(
 
 pub(crate) fn update_config(
     snapshot: &mut FileSnapshot,
-    previous: Option<&VideoConnection>,
-    next: Option<&VideoConnection>,
+    previous: Option<&str>,
+    next: Option<&str>,
 ) -> Result<()> {
     toml::update(snapshot, |doc| registration(doc, previous, next))?;
     #[cfg(unix)]
@@ -115,11 +110,7 @@ pub(crate) fn update_config(
     Ok(())
 }
 
-fn registration(
-    doc: &mut DocumentMut,
-    previous: Option<&VideoConnection>,
-    next: Option<&VideoConnection>,
-) -> Result<()> {
+fn registration(doc: &mut DocumentMut, previous: Option<&str>, next: Option<&str>) -> Result<()> {
     let key = ["mcp_servers", SERVER];
     let table = doc.get("mcp_servers").and_then(|i| i.get(SERVER));
     let needs_timeout = table.and_then(|s| s.get("tool_timeout_sec")).is_none();
@@ -132,10 +123,8 @@ fn registration(
         let ours = url == Some(super::URL)
             && auth.is_some_and(|value| {
                 value.strip_prefix("Bearer ").is_some_and(|bearer| {
-                    previous
-                        .into_iter()
-                        .chain(next)
-                        .any(|c| c.local_bearer == bearer)
+                    previous == Some(bearer)
+                        || next == Some(bearer)
                         || bearer
                             .strip_prefix("wizard-video-")
                             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
@@ -149,7 +138,7 @@ fn registration(
             return Ok(());
         }
     }
-    if let Some(connection) = next {
+    if let Some(bearer) = next {
         toml::set_value(doc, &["mcp_servers", SERVER, "url"], super::URL)?;
         if needs_timeout {
             toml::set_value(doc, &["mcp_servers", SERVER, "tool_timeout_sec"], 240)?;
@@ -157,7 +146,7 @@ fn registration(
         toml::set_value(
             doc,
             &["mcp_servers", SERVER, "http_headers", "Authorization"],
-            format!("Bearer {}", connection.local_bearer),
+            format!("Bearer {bearer}"),
         )
     } else {
         toml::remove(doc, &key)

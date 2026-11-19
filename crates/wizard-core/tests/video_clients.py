@@ -26,7 +26,8 @@ def native_client(profile):
     env = {k: os.environ[k] for k in ("PATH", "HOME", "TMPDIR", "LANG", "USER") if k in os.environ}
     env.update(CODEX_HOME=str(profile), HTTP_PROXY="http://127.0.0.1:1",
                HTTPS_PROXY="http://127.0.0.1:1", ALL_PROXY="http://127.0.0.1:1",
-               NO_PROXY="127.0.0.1,localhost", WIZARD_VIDEO_TEST_FILTER="fixture")
+               NO_PROXY="127.0.0.1,localhost", WIZARD_VIDEO_TEST_FILTER="fixture",
+               COREINFRA_API_KEY="unrelated-process-fixture-key")
     binary = os.environ["WIZARD_VIDEO_TEST_CODEX"]
     server = subprocess.Popen([binary, "app-server", "--listen", "stdio://",
                                "-c", 'model_provider="fixture"', "-c", 'model="offline"'],
@@ -59,14 +60,23 @@ def native_client(profile):
         call("initialize", {"clientInfo":{"name":"wizard_fixture","version":"1"},
                             "capabilities":{"experimentalApi":True}})
         send({"jsonrpc":"2.0","method":"initialized"})
-        thread = call("thread/start", {"cwd":str(profile.parent),"ephemeral":True,"sandbox":"workspace-write"})["thread"]["id"]
-        skills = call("skills/list", {"cwds":[str(profile.parent)],"forceReload":True})
-        assert any(s["name"] == "coreinfra-video" for group in skills["data"] for s in group["skills"])
+        options = {"cwd":str(profile.parent),"ephemeral":True,"sandbox":"workspace-write"}
+        old_thread = call("thread/start", options)["thread"]["id"]
+        before = call("mcpServerStatus/list", {"threadId":old_thread})
+        assert all(s["name"] != "coreinfra_video" for s in before["data"])
+        skill_query = {"cwds":[str(profile.parent)]}
+        previous_skills = call("skills/list", skill_query)
+        assert not any(s["name"] == "coreinfra-video" for group in previous_skills["data"] for s in group["skills"])
+        print("codex-ready", flush=True)
+        assert sys.stdin.readline() == "installed\n"
+        thread = call("thread/start", options)["thread"]["id"]
+        skills = call("skills/list", skill_query)
+        assert any(s["name"] == "coreinfra-video" and s["enabled"] for group in skills["data"] for s in group["skills"])
         inventory = call("mcpServerStatus/list", {"threadId":thread,"serverName":"coreinfra_video"})
         tools = next(s["tools"] for s in inventory["data"] if s["name"] == "coreinfra_video")
         assert set(tools) == {"video_models","video_create","video_result"}
         shell = call("command/exec", {"command":[sys.executable,"-I","-c",
-                     "import os; print('WIZARD_VIDEO_TEST_FILTER' in os.environ)"],
+                     "import os; print(any(k in os.environ for k in ('WIZARD_VIDEO_TEST_FILTER', 'COREINFRA_API_KEY')))"],
                      "cwd":str(profile.parent), "sandboxPolicy":{"type":"workspaceWrite","networkAccess":False}})
         assert shell["exitCode"] == 0 and shell["stdout"].strip() == "False", shell
         result = call("mcpServer/tool/call", {"threadId":thread,"server":"coreinfra_video",
@@ -107,4 +117,4 @@ if __name__ == "__main__":
     test_profile = Path(sys.argv[1]).resolve()
     existing = native_client(test_profile)
     asyncio.run(python_client(test_profile, existing))
-    print("Native ChatGPT skill, existing shell policy, MCP tools and Python SDK round trip passed.")
+    print("Native Codex discovered the installed MCP in a new chat, applied the shell policy and shared jobs with the Python SDK.", file=sys.stderr)

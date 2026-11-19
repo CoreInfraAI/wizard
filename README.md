@@ -4,13 +4,13 @@ An application for configuring agents to use CoreInfra.
 
 ## Video in ChatGPT Work and Codex
 
-In Wizard, sign in, select a Hub, then open **ChatGPT / Codex → Видеомодели CoreInfra**. Select the API key by its Hub name and click **Подключить видеомодели**. Matching names show a short fingerprint. Keep Wizard running and ask for a video in a new chat, or invoke `$coreinfra-video`.
+Start Wizard, sign in to CoreInfra Hub and select the Hub to charge. Keep Wizard running and ask for a video in a new ChatGPT Work or Codex chat, or invoke `$coreinfra-video`. Wizard automatically installs the skill and registers its MCP server at startup.
 
-Wizard installs the bundled skill under the user's Codex skills directory and registers `coreinfra_video` at `http://127.0.0.1:33789/mcp` in the same Codex profile. Wizard refreshes its bundled files on startup. **Отключить** revokes local access and removes the managed registration and unmodified skill files. Updates preserve user edits and report file conflicts. Registration works with the profile selected by `CODEX_HOME`.
+The bundled skill and the `coreinfra_video` MCP registration live in the profile selected by `CODEX_HOME`. Wizard listens at `http://127.0.0.1:33789/mcp` and publishes a new local bearer on each start. **ChatGPT / Codex → Видеомодели CoreInfra → Отключить** revokes local access and removes the managed registration and unmodified skill files. The opt-out persists across restarts.
 
 `video_models` returns the public catalog and prices in RUB per second. `video_create` submits one paid job. Save the full returned `job` object and pass it to `video_result` to poll, including after restarting Wizard. The original Hub and key must still be available. A completed download returns a local MP4 in **Downloads/CoreInfra Video**. Use `download: false` to poll without creating a file. fal also returns its signed result URL in this mode. Repeating a submission after a network timeout can incur another charge.
 
-The local bearer in the Codex MCP registration grants access to video operations for the selected Hub key. Wizard resolves that key in the signed-in account and adds it to the outgoing Hub request's `Authorization` header. Job references contain the Hub ID, key fingerprint, provider, model and upstream job ID. Wizard keeps no job table or MCP session. A Python MCP client with permission to reach loopback can use the same URL and local `http_headers`. ChatGPT Work can use the registered tools with shell network access restricted.
+For new jobs Wizard uses the oldest active key named `agent-codex` in the selected Hub, the same default that Wizard provisions for Codex. If it is missing, Wizard issues one as part of the generation request. Only Wizard adds the Hub key to the outgoing `Authorization` header. A job records its Hub ID, key fingerprint, provider, model and upstream ID so Wizard can poll with the original key. Wizard keeps no job table or MCP session. A Python MCP client with permission to reach loopback can use the URL and current local `http_headers` from the registration.
 
 ### Custom video fields
 

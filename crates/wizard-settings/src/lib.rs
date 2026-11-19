@@ -32,9 +32,7 @@ pub struct Settings {
     /// Random id that tells Wizard installations apart in Hub update metrics. Not a secret.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub install_id: String,
-    /// One local video client grant. The upstream agent token is resolved in Hub.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub video: Option<VideoConnection>,
+    pub video: VideoSettings,
     /// Application lifecycle preferences, independent of proxy demand.
     pub application: ApplicationSettings,
     /// Kept last: it serializes as a TOML table, written after plain keys.
@@ -43,12 +41,22 @@ pub struct Settings {
 
 // No Debug: local_bearer authenticates paid video requests on loopback.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VideoConnection {
-    pub account_id: String,
-    pub hub_id: String,
-    pub key_name: String,
-    pub key_id: String,
-    pub local_bearer: String,
+#[serde(default)]
+pub struct VideoSettings {
+    /// Install the managed skill and MCP registration when Wizard starts.
+    pub enabled: bool,
+    /// Current listener's local grant, also used when restoring Codex backups.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_bearer: Option<String>,
+}
+
+impl Default for VideoSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            local_bearer: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -218,17 +226,19 @@ mod tests {
     #[test]
     fn video_connection_round_trips_in_existing_installations() -> Result<()> {
         let mut settings: Settings = toml_edit::de::from_str("install_id = 'abcdefgh27'")?;
-        assert!(settings.video.is_none());
-        settings.video = Some(VideoConnection {
-            account_id: "account".into(),
-            hub_id: "team".into(),
-            key_name: "studio".into(),
-            key_id: "fingerprint".into(),
-            local_bearer: "local-grant".into(),
-        });
+        assert!(settings.video.enabled && settings.video.local_bearer.is_none());
+        settings = toml_edit::de::from_str(
+            "[video]\naccount_id='account'\nhub_id='team'\nkey_name='studio'\nkey_id='fingerprint'\nlocal_bearer='local-grant'\n",
+        )?;
         let saved = toml_edit::ser::to_string_pretty(&settings)?;
+        assert!(settings.video.enabled);
+        assert!(saved.contains("local-grant") && !saved.contains("studio"));
         let restored: Settings = toml_edit::de::from_str(&saved)?;
         assert!(settings == restored);
+        let opted_out: Settings = toml_edit::de::from_str("[video]\nenabled = false\n")?;
+        let saved = toml_edit::ser::to_string_pretty(&opted_out)?;
+        let restored: Settings = toml_edit::de::from_str(&saved)?;
+        assert!(!restored.video.enabled && restored.video.local_bearer.is_none());
         Ok(())
     }
 

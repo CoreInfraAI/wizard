@@ -1,7 +1,7 @@
-use super::{Create, GetResult, VideoHub};
+use super::{Create, GetResult, Job, VideoHub, VideoKey};
 use alloc::sync::Arc;
 use anyhow::{Context as _, Result, bail, ensure};
-use core::{convert::Infallible, future::Future};
+use core::{convert::Infallible, future::Future, net::SocketAddr};
 use http_body_util::{BodyExt as _, Empty, combinators::BoxBody};
 use hyper::{
     Request, Response, StatusCode,
@@ -27,13 +27,17 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::{net::TcpListener, task::JoinSet};
-use wizard_settings::VideoConnection;
+use tokio::{
+    net::TcpListener,
+    task::{JoinHandle, JoinSet},
+};
 
-/// The GUI owns the grant and the signed-in Hub account. No upstream key is cached here.
+/// Wizard resolves its Codex key for each operation. Polling must never issue a key.
 pub trait VideoAccess: Send + Sync + 'static {
-    fn connection(&self) -> Option<VideoConnection>;
-    fn token(&self, connection: &VideoConnection) -> impl Future<Output = Result<String>> + Send;
+    fn token<'a>(
+        &'a self,
+        job: Option<&'a Job>,
+    ) -> impl Future<Output = Result<VideoKey>> + Send + 'a;
 }
 
 struct Tools<A> {
@@ -46,7 +50,7 @@ struct Tools<A> {
 struct NoArgs {}
 
 impl<A: VideoAccess> Tools<A> {
-    async fn call(&self, name: &str, args: Value, connection: &VideoConnection) -> Result<Value> {
+    async fn call(&self, name: &str, args: Value) -> Result<Value> {
         match name {
             "video_models" => {
                 serde_json::from_value::<NoArgs>(args)?;
@@ -56,16 +60,12 @@ impl<A: VideoAccess> Tools<A> {
             "video_create" => {
                 let input: Create =
                     serde_json::from_value(args).context("Invalid video_create arguments")?;
-                self.hub
-                    .create(input, connection, self.access.token(connection))
-                    .await
+                self.hub.create(input, self.access.as_ref()).await
             }
             "video_result" => {
                 let input: GetResult =
                     serde_json::from_value(args).context("Invalid video_result arguments")?;
-                self.hub
-                    .result(input, connection, self.access.token(connection))
-                    .await
+                self.hub.result(input, self.access.as_ref()).await
             }
             _ => bail!("Unknown video tool"),
         }
@@ -96,15 +96,10 @@ impl<A: VideoAccess> ServerHandler for Tools<A> {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        ctx: RequestContext<RoleServer>,
+        _: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let connection = ctx
-            .extensions
-            .get::<hyper::http::request::Parts>()
-            .and_then(|parts| parts.extensions.get::<VideoConnection>())
-            .ok_or_else(|| ErrorData::internal_error("Missing video grant", None))?;
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let response = match self.call(&request.name, args, connection).await {
+        let response = match self.call(&request.name, args).await {
             Ok(value) => CallToolResult::structured(value),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(format!("{error:#}"))]),
         };
@@ -121,7 +116,7 @@ fn empty(status: StatusCode) -> Response<BoxBody<Bytes, Infallible>> {
 async fn handle<A: VideoAccess>(
     mut request: Request<Incoming>,
     service: StreamableHttpService<Tools<A>, NeverSessionManager>,
-    access: Arc<A>,
+    local_bearer: Arc<str>,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, Infallible> {
     if request.uri().path() != "/mcp" || request.uri().query().is_some() {
         return Ok(empty(StatusCode::NOT_FOUND));
@@ -133,27 +128,47 @@ async fn handle<A: VideoAccess>(
         .and_then(|value| value.split_once(' '))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
         .map(|(_, token)| token);
-    let connection = access
-        .connection()
-        .filter(|c| !c.local_bearer.is_empty() && bearer == Some(c.local_bearer.as_str()));
-    let Some(connection) = connection else {
+    if bearer != Some(local_bearer.as_ref()) {
         let mut response = empty(StatusCode::UNAUTHORIZED);
         response.headers_mut().insert(
             hyper::header::WWW_AUTHENTICATE,
             hyper::header::HeaderValue::from_static("Bearer"),
         );
         return Ok(response);
-    };
+    }
     request.headers_mut().remove(AUTHORIZATION);
-    request.extensions_mut().insert(connection);
     Ok(service.handle(request).await)
 }
 
-pub async fn serve(listener: TcpListener, hub: VideoHub, access: impl VideoAccess) -> Result<()> {
+/// Publish the new listener's grant before it accepts requests. A failed registration
+/// drops the socket and leaves no running service.
+pub async fn start(
+    listener: TcpListener,
+    hub: VideoHub,
+    access: impl VideoAccess,
+    register: impl FnOnce(&str) -> Result<()> + Send + 'static,
+) -> Result<JoinHandle<()>> {
     let addr = listener.local_addr()?;
     ensure!(addr.ip().is_loopback(), "Video MCP must bind to loopback");
+    let bearer = tokio::task::spawn_blocking(move || {
+        let bearer = format!("wizard-video-{}", uuid::Uuid::new_v4());
+        register(&bearer)?;
+        anyhow::Ok(bearer)
+    })
+    .await
+    .context("Video installation task failed")??;
+    Ok(tokio::spawn(serve(listener, addr, hub, bearer, access)))
+}
+
+async fn serve(
+    listener: TcpListener,
+    addr: SocketAddr,
+    hub: VideoHub,
+    local_bearer: String,
+    access: impl VideoAccess,
+) {
+    let local_bearer: Arc<str> = local_bearer.into();
     let access = Arc::new(access);
-    let factory_access = Arc::clone(&access);
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts([addr.to_string()])
         .enforce_origin_validation()
@@ -164,7 +179,7 @@ pub async fn serve(listener: TcpListener, hub: VideoHub, access: impl VideoAcces
         move || {
             Ok(Tools {
                 hub: hub.clone(),
-                access: Arc::clone(&factory_access),
+                access: Arc::clone(&access),
             })
         },
         Arc::new(NeverSessionManager::default()),
@@ -183,9 +198,9 @@ pub async fn serve(listener: TcpListener, hub: VideoHub, access: impl VideoAcces
                     }
                 };
                 let service = service.clone();
-                let access = Arc::clone(&access);
+                let bearer = Arc::clone(&local_bearer);
                 clients.spawn(async move {
-                    let handler = service_fn(move |req| handle(req, service.clone(), Arc::clone(&access)));
+                    let handler = service_fn(move |req| handle(req, service.clone(), Arc::clone(&bearer)));
                     let _ = http1::Builder::new().serve_connection(TokioIo::new(socket), handler).await;
                 });
             }

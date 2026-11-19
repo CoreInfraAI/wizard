@@ -146,8 +146,12 @@ fn restore_video_registration(
             .file_name()
             .is_some_and(|n| n == "config.toml")
         {
-            let connection = settings.video.as_ref().filter(|_| change.path() == active);
-            crate::video::install::update_config(&mut change.after, None, connection)?;
+            let bearer = settings
+                .video
+                .local_bearer
+                .as_deref()
+                .filter(|_| settings.video.enabled && change.path() == active);
+            crate::video::install::update_config(&mut change.after, None, bearer)?;
         }
     }
     Ok(())
@@ -681,13 +685,10 @@ mod tests {
             "model_provider='coreinfra'\n[shell_environment_policy]\nexclude=['PRIVATE_SETTING']\n";
         backup.after = FileSnapshot::new(backed_up.into(), 0o644);
         let settings = Settings {
-            video: Some(wizard_settings::VideoConnection {
-                account_id: "p".into(),
-                hub_id: "h".into(),
-                key_name: "video".into(),
-                key_id: "id".into(),
-                local_bearer: "fixture-local-grant".into(),
-            }),
+            video: wizard_settings::VideoSettings {
+                local_bearer: Some("fixture-local-grant".into()),
+                ..Default::default()
+            },
             ..Settings::default()
         };
         let mut changes = vec![backup];
