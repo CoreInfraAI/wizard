@@ -146,9 +146,7 @@ pub(crate) async fn initialize(app: &tauri::AppHandle) {
     let state = app.state::<State>();
     let mut runtime = state.lock().await;
     let result = async {
-        let config = settings::get_state(app)?;
-        wizard_core::agents::codex::migrate_hub_key_filter()?;
-        if let Some(current) = config.video {
+        if let Some(current) = settings::get_state(app)?.video {
             runtime.start(app).await?;
             video::install::sync(Some(&current), Some(&current))?;
         }

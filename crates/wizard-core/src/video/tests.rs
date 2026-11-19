@@ -409,10 +409,12 @@ fn install_upgrade_disable_and_collisions() -> Result<()> {
     let config = dir.path().join("config.toml");
     let skill = dir.path().join("skills/coreinfra-video");
     let source = skill.join("SKILL.md");
-    fs::write(
-        &config,
-        "# keep this\n[mcp_servers.other]\nurl = 'https://elsewhere.example'\n",
-    )?;
+    let original = concat!(
+        "# keep this\n[shell_environment_policy.filters]\n",
+        "coreinfra_api_key = 'exclude'\n\n",
+        "[mcp_servers.other]\nurl = 'https://elsewhere.example'\n",
+    );
+    fs::write(&config, original)?;
     let c = connection();
     install::sync_at(&config, None, Some(&c))?;
     let initial = fs::read_to_string(&config)?;
@@ -421,8 +423,8 @@ fn install_upgrade_disable_and_collisions() -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(fs::metadata(&config)?.permissions().mode() & 0o077, 0);
     }
-    assert!(initial.contains("# keep this") && initial.contains("https://elsewhere.example"));
-    assert!(initial.contains("exclude") && !initial.contains(KEY));
+    assert!(initial.starts_with(original));
+    assert!(!initial.contains("COREINFRA_API_KEY") && !initial.contains(KEY));
     let bundled = fs::read_to_string(&source)?;
     fs::write(skill.join("my-notes"), "custom")?;
     install::sync_at(&config, Some(&c), Some(&c))?;
@@ -439,7 +441,7 @@ fn install_upgrade_disable_and_collisions() -> Result<()> {
     install::sync_at(&config, Some(&c), None)?;
     assert_eq!(fs::read_to_string(&source)?, "user changes");
     assert!(skill.join("my-notes").exists());
-    assert!(!fs::read_to_string(&config)?.contains(&c.local_bearer));
+    assert_eq!(fs::read_to_string(&config)?, original);
     let other_dir = tempfile::tempdir()?;
     let config = other_dir.path().join("config.toml");
     let foreign = "[mcp_servers.coreinfra_video]\nurl='https://other.example'\n";
@@ -450,6 +452,7 @@ fn install_upgrade_disable_and_collisions() -> Result<()> {
     let fresh = tempfile::tempdir()?;
     let config = fresh.path().join("config.toml");
     install::sync_at(&config, None, Some(&c))?;
+    assert!(!fs::read_to_string(&config)?.contains("shell_environment_policy"));
     fs::write(
         fresh
             .path()
@@ -524,6 +527,11 @@ async fn native_and_python_clients() -> Result<()> {
     let (url, _task) = fixture.start(connection()).await?;
     let profile = fixture.dir.path().join("profile");
     let path = profile.join("config.toml");
+    std::fs::create_dir(&profile)?;
+    std::fs::write(
+        &path,
+        "[shell_environment_policy]\nexclude = ['WIZARD_VIDEO_TEST_FILTER']\n",
+    )?;
     install::sync_at(&path, None, Some(&connection()))?;
     std::fs::write(&path, std::fs::read_to_string(&path)?.replace(URL, &url))?;
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video_clients.py");
