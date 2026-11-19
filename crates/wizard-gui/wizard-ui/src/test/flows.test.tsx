@@ -46,12 +46,14 @@ afterEach(() => {
 it("shows the automatic video connection on the Codex page and lets the user reconnect it", async () => {
   const user = userEvent.setup();
   launch("current", "/agents/codex");
-  const video = within(await screen.findByRole("group", { name: "Видеомодели CoreInfra" }));
-  expect(await video.findByText(/ключ agent-codex/)).toBeVisible();
+  const group = await screen.findByRole("group", { name: "Видеомодели" });
+  const video = within(group);
+  const disconnect = await video.findByRole("button", { name: "Отключить видеомодели" });
+  expect(group).toHaveTextContent(/^Отключить видеомодели$/);
   expect(environment.calls).not.toContain("set_video_connection");
-  await user.click(video.getByRole("button", { name: "Отключить" }));
+  await user.click(disconnect);
   await user.click(await video.findByRole("button", { name: "Включить видеомодели" }));
-  expect(await video.findByRole("button", { name: "Отключить" })).toBeVisible();
+  expect(await video.findByRole("button", { name: "Отключить видеомодели" })).toBeVisible();
 });
 
 it("offers one Apply to install video in an existing Claude Code gateway profile", async () => {
@@ -61,15 +63,13 @@ it("offers one Apply to install video in an existing Claude Code gateway profile
     if (claude.status !== "found") throw new Error("Claude Code fixture missing");
     agents.publish({ ...agents.value, claude: { ...claude, data: { ...claude.data, video_needs_apply: true } } });
   });
-  expect(await screen.findByText(/установит скилл \/coreinfra-video/)).toBeVisible();
-  expect(await screen.findByRole("group", { name: "Видеомодели CoreInfra" })).toBeVisible();
+  expect(await screen.findByRole("button", { name: "Отключить видеомодели" })).toBeVisible();
+  expect(screen.queryByText(/установит скилл/)).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Применить" }));
   const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
   await user.click(within(plan).getByRole("button", { name: "Применить" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
-  await user.click(screen.getByRole("radio", { name: "Своя подписка Claude" }));
-  expect(screen.queryByText(/установит скилл/)).not.toBeInTheDocument();
 });
 
 describe("shared installation flow", () => {
@@ -521,6 +521,7 @@ describe("application transitions", () => {
     expect(apply).toBeEnabled();
     await user.click(screen.getByRole("radio", { name: "API-доступ" }));
     expect(apply).toBeDisabled();
+    expect(screen.queryByText(/установит скилл/)).not.toBeInTheDocument();
     expect(environment.calls).not.toContain("prepare_agent_change");
     expect(environment.calls).not.toContain("apply_agent_plan");
   });

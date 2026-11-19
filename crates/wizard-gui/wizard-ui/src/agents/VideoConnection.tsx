@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { Button } from "../components/catalyst/button";
-import { Fieldset, Legend } from "../components/catalyst/fieldset";
+import { Fieldset } from "../components/catalyst/fieldset";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 
 type Status = { enabled: boolean; running: boolean; error: string | null };
 
-export function VideoConnection({ agent, signedIn, disabled }: { agent: "ChatGPT" | "Claude Code"; signedIn: boolean; disabled: boolean }) {
+export function VideoConnection({ signedIn, disabled }: { signedIn: boolean; disabled: boolean }) {
   const [status, setStatus] = useState<Status>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -33,19 +33,17 @@ export function VideoConnection({ agent, signedIn, disabled }: { agent: "ChatGPT
     }
   }
 
-  return <Fieldset className="mt-10 space-y-3" disabled={busy || disabled}>
-    <Legend>Видеомодели CoreInfra</Legend>
-    {status?.running && <Text>{signedIn
-      ? `Попросите ${agent} показать видеомодели в новом чате. Для генерации Wizard использует ключ agent-codex выбранного хаба.`
-      : "Для генерации войдите в CoreInfra Hub в Wizard."}</Text>}
+  if (!status && !error) return null;
+
+  return <Fieldset aria-label="Видеомодели" className="mt-10 space-y-3" disabled={busy || disabled}>
+    {status?.running && !signedIn && <Text>Для генерации войдите в CoreInfra Hub в Wizard.</Text>}
     {status && !status.enabled && <Text>Видеомодели отключены.</Text>}
     {(error || status?.error) && <ErrorText>{error || status?.error}</ErrorText>}
-    {status && <Text>Подключение общее для ChatGPT, Codex и Claude Code.</Text>}
     {status && <div className="flex flex-wrap gap-2">
       {!status.running && <Button onClick={() => void apply(true)}>
-        {status.enabled ? "Повторить подключение" : "Включить видеомодели"}
+        {status.enabled ? "Переподключить видеомодели" : "Включить видеомодели"}
       </Button>}
-      {status.enabled && <Button outline onClick={() => void apply(false)}>Отключить</Button>}
+      {status.enabled && <Button outline onClick={() => void apply(false)}>Отключить видеомодели</Button>}
     </div>}
   </Fieldset>;
 }

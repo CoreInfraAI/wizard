@@ -252,7 +252,7 @@ export function AgentPage({
               onPrepare={prepare}
             />
           )}
-          <VideoConnection agent="ChatGPT" signedIn={account.signedIn} disabled={isChangeInProgress} />
+          <VideoConnection signedIn={account.signedIn} disabled={isChangeInProgress} />
           {(codex.status === "not_found" || (codex.status === "found" && codex.data.cli.status === "not_found")) && (
             <MissingAgent agent="codex" />
           )}
@@ -293,7 +293,7 @@ export function AgentPage({
             />
           )}
           {claude.status === "found" && claude.data.routing_mode === "hub" && (
-            <VideoConnection agent="Claude Code" signedIn={account.signedIn} disabled={isChangeInProgress} />
+            <VideoConnection signedIn={account.signedIn} disabled={isChangeInProgress} />
           )}
         </>
       );
