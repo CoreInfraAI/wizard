@@ -183,26 +183,21 @@ pub(super) fn detect_desktop(
             Ok(None) => return AgentDetection::NotFound,
             Err(error) => return AgentDetection::Error(format!("{error:#}")),
         };
-        // TODO: get ChatGPT version
-        let version = if matches!(agent, DesktopAgent::Claude) {
-            let mut command = tokio::process::Command::new("dpkg-query");
-            command
-                .args(["-W", "-f=${Status} ${Version}", "claude-desktop"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
-            // The version is optional: without dpkg-query (non-Debian systems) it is unknown.
-            command_output(command, Duration::from_secs(5))
-                .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| String::from_utf8(output.stdout).ok())
-                .and_then(|text| {
-                    text.strip_prefix("install ok installed ")
-                        .map(|version| version.trim().to_owned())
-                })
-        } else {
-            None
-        };
+        // Both DEB package names match their launchers.
+        let mut query = tokio::process::Command::new("dpkg-query");
+        query
+            .args(["-W", "-f=${Status} ${Version}", command])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let version = command_output(query, Duration::from_secs(5))
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|text| {
+                text.strip_prefix("install ok installed ")
+                    .map(|version| version.trim().to_owned())
+            });
 
         AgentDetection::Found(AgentInfo { path, version })
     }
