@@ -23,7 +23,7 @@ dirs.workspace = true
 ed25519-dalek.workspace = true
 log.workspace = true
 regex.workspace = true
-rmcp.workspace = true
+rmcp = { workspace = true, features = ["transport-io"] }
 quick-xml.workspace = true
 reqwest.workspace = true
 serde.workspace = true

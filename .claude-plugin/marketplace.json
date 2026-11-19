@@ -1,0 +1,12 @@
+{
+  "name": "coreinfra-wizard",
+  "metadata": { "description": "Skills for Claude connected through CoreInfra Wizard." },
+  "owner": { "name": "CoreInfra" },
+  "plugins": [
+    {
+      "name": "coreinfra-video",
+      "source": "./plugins/coreinfra-video",
+      "description": "Generate and retrieve videos through CoreInfra Wizard."
+    }
+  ]
+}

@@ -164,11 +164,6 @@ impl BackupManager {
         state.save(self)
     }
 
-    pub fn load_backup(&self, id: u32) -> Result<()> {
-        self.apply_changes(&self.restore_changes(id)?)
-            .context("failed to restore backup")
-    }
-
     pub(crate) fn restore_changes(&self, id: u32) -> Result<Vec<FileChange>> {
         let backup = Backup::load(&self.directory, id)?;
 

@@ -54,6 +54,24 @@ it("shows the automatic video connection on the Codex page and lets the user rec
   expect(await video.findByRole("button", { name: "Отключить" })).toBeVisible();
 });
 
+it("offers one Apply to install video in an existing Claude Code gateway profile", async () => {
+  const user = userEvent.setup();
+  launch("all_agents", "/agents/claude", ({ agents }) => {
+    const claude = agents.value.claude;
+    if (claude.status !== "found") throw new Error("Claude Code fixture missing");
+    agents.publish({ ...agents.value, claude: { ...claude, data: { ...claude.data, video_needs_apply: true } } });
+  });
+  expect(await screen.findByText(/установит скилл \/coreinfra-video/)).toBeVisible();
+  expect(await screen.findByRole("group", { name: "Видеомодели CoreInfra" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Применить" }));
+  const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
+  await user.click(within(plan).getByRole("button", { name: "Применить" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
+  await user.click(screen.getByRole("radio", { name: "Своя подписка Claude" }));
+  expect(screen.queryByText(/установит скилл/)).not.toBeInTheDocument();
+});
+
 describe("shared installation flow", () => {
   it("keeps a download through Back and Escape, then cancels and starts again from zero", async () => {
     const user = userEvent.setup();

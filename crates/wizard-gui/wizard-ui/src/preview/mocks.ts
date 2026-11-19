@@ -144,6 +144,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
             status: "found",
             data: {
               ...routing,
+              video_needs_apply: false,
               path: "/usr/local/bin/claude",
               version: "2.1.0",
             },
@@ -658,7 +659,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
                 ...agents.value,
                 [plan.agent]: {
                   ...detection,
-                  data: { ...detection.data, routing_mode: plan.mode, token: plan.token, proxy_needs_apply: false },
+                  data: { ...detection.data, routing_mode: plan.mode, token: plan.token, proxy_needs_apply: false, ...(plan.agent === "claude" && { video_needs_apply: false }) },
                 },
               });
             return;

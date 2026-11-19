@@ -79,6 +79,7 @@ export type Codex = {
 };
 
 export type Claude = {
+  video_needs_apply: boolean;
   path: string;
   version: string;
   routing_mode: RoutingMode;

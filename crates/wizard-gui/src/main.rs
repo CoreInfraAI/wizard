@@ -4,6 +4,26 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() == Some(wizard_core::video::stdio::ARG.as_ref()) {
+        let port = args
+            .next()
+            .and_then(|arg| arg.to_str()?.parse::<u16>().ok());
+        let (Some(port), Some(path), None) = (port, args.next(), args.next()) else {
+            eprintln!("Expected the Wizard port and video headers file");
+            return ExitCode::FAILURE;
+        };
+        return match tauri::async_runtime::block_on(wizard_core::video::stdio::run(
+            port,
+            path.into(),
+        )) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Video MCP: {error:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let Some(arg1) = std::env::args_os().nth(1)
         && arg1 == "--proxy"
     {

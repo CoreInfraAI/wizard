@@ -36,7 +36,7 @@ export function AgentConnectionPanel({ agent, agents, account, onBack }: {
   const choice = choices.find(choice => choice.id === agent)!;
   const proxyAgent = agent === "claude_desktop" || (agent === "codex" && agents.codex.status === "found" && agents.codex.data.desktop.status === "found");
   const needsApply = detection.status === "found" && detection.data.routing_mode !== "disabled" &&
-    (("proxy_needs_apply" in detection.data && detection.data.proxy_needs_apply) || (proxyAgent && proxy.proxy?.enabled === false));
+    (("video_needs_apply" in detection.data && detection.data.video_needs_apply) || ("proxy_needs_apply" in detection.data && detection.data.proxy_needs_apply) || (proxyAgent && proxy.proxy?.enabled === false));
   const errors = detection.status === "error" ? [detection.data]
     : agent === "codex" && agents.codex.status === "found" ? [agents.codex.data.cli, agents.codex.data.desktop].flatMap(part => part.status === "error" ? [part.data] : []) : [];
 

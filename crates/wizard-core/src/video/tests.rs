@@ -456,6 +456,35 @@ async fn validates_before_billing_and_confines_credentials() -> Result<()> {
 }
 
 #[test]
+fn claude_headers_rotate_with_the_listener_and_are_revoked_on_disable() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let config = temp.path().join("codex/config.toml");
+    let headers = temp.path().join("wizard/video-mcp-headers.json");
+    let sync = |previous, next| install::sync_with_headers(&config, &headers, previous, next);
+    let mut previous = None;
+    for grant in ["first-test-grant", "second-test-grant"] {
+        sync(previous, Some(grant))?;
+        let published: Value = serde_json::from_slice(&std::fs::read(&headers)?)?;
+        assert_eq!(
+            published,
+            json!({"Authorization": format!("Bearer {grant}")})
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&headers)?.permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        previous = Some(grant);
+    }
+    sync(previous, None)?;
+    assert!(!headers.exists());
+    Ok(())
+}
+
+#[test]
 fn install_upgrade_disable_and_collisions() -> Result<()> {
     use std::fs;
     let dir = tempfile::tempdir()?;
@@ -608,11 +637,20 @@ async fn codex_skill_lists_public_video_models() -> Result<()> {
     let profile = dir.path().join("codex");
     let config = profile.join("config.toml");
     let access = SignedOut::default();
-    let listener = TcpListener::bind(ADDRESS)
-        .await
-        .with_context(|| format!("bind the Wizard video MCP port at {ADDRESS}"))?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/mcp", listener.local_addr()?);
     let server = server::start(listener, VideoHub::new()?, access.clone(), move |bearer| {
-        install::sync_at(&config, None, Some(bearer))
+        install::sync_at(&config, None, Some(bearer))?;
+        // Verify the production registration, then point this isolated profile at its own listener.
+        let mut doc = toml::read(&config)?;
+        let key = ["mcp_servers", "coreinfra_video", "url"];
+        ensure!(
+            toml::get_string(&doc, &key) == Some(URL),
+            "Wrong installed video endpoint"
+        );
+        toml::set_value(&mut doc, &key, url)?;
+        std::fs::write(config, doc.to_string())?;
+        Ok(())
     })
     .await?;
     let python = std::env::var_os("WIZARD_VIDEO_TEST_PYTHON")

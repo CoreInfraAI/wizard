@@ -72,11 +72,15 @@ impl<A: VideoAccess> Tools<A> {
     }
 }
 
+pub(super) fn server_info() -> ServerConfig {
+    ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
+        Implementation::new("CoreInfra Wizard Video", env!("CARGO_PKG_VERSION")),
+    )
+}
+
 impl<A: VideoAccess> ServerHandler for Tools<A> {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
-            Implementation::new("CoreInfra Wizard Video", env!("CARGO_PKG_VERSION")),
-        )
+        server_info()
     }
 
     fn list_tools(
@@ -174,7 +178,7 @@ async fn serve(
         .enforce_origin_validation()
         .with_legacy_session_mode(false)
         .with_json_response(true)
-        .with_max_request_body_bytes(32 * 1024 * 1024);
+        .with_max_request_body_bytes(super::MAX_REQUEST_BYTES);
     let service = StreamableHttpService::new(
         move || {
             Ok(Tools {
