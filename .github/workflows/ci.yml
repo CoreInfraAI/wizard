@@ -62,12 +62,22 @@ jobs:
       - name: Install Codex for the video skill E2E
         run: npm install --prefix "${{ runner.temp }}/video-codex" --no-save --no-package-lock --no-audit --no-fund "@openai/codex@0.160.0"
 
-      - name: Verify the installed skill can list live video models
+      - name: Verify the installed Codex skill can list live video models
         timeout-minutes: 5
         env:
           WIZARD_VIDEO_TEST_CODEX: ${{ runner.temp }}/video-codex/node_modules/@openai/codex/bin/codex.js
           WIZARD_VIDEO_TEST_PYTHON: python
         run: cargo test --locked -p wizard-core --lib video::tests::codex_skill_lists_public_video_models -- --exact --ignored --nocapture
+
+      - name: Install Claude Code for the video skill E2E
+        run: npm install --prefix "${{ runner.temp }}/video-claude" --no-save --no-package-lock --no-audit --no-fund "@anthropic-ai/claude-code@2.1.259"
+
+      - name: Verify the installed Claude Code skill can list live video models
+        timeout-minutes: 5
+        env:
+          WIZARD_VIDEO_TEST_CLAUDE: ${{ runner.temp }}/video-claude/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+          WIZARD_VIDEO_TEST_PYTHON: python
+        run: cargo test --locked -p wizard-core --lib agents::claude::video_e2e::claude_code_skill_lists_public_video_models -- --exact --ignored --nocapture
 
   frontend:
     name: Frontend

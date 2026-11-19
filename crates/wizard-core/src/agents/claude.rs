@@ -1,3 +1,7 @@
+mod video;
+#[cfg(test)]
+mod video_e2e;
+
 use super::{
     AgentDetection, AgentToken, RoutingMode,
     detection::{self, Agent, AgentInfo},
@@ -32,6 +36,7 @@ pub(crate) struct Claude {
     pub info: AgentInfo,
     pub routing_mode: RoutingMode,
     pub token: Option<AgentToken>,
+    pub video_needs_apply: bool,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
@@ -40,7 +45,7 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let (routing_mode, token) = match read_routing() {
+    let (routing_mode, token, video_needs_apply) = match read_routing() {
         Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
@@ -48,6 +53,7 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
         info,
         routing_mode,
         token,
+        video_needs_apply,
     })
 }
 
@@ -75,11 +81,20 @@ pub fn configured_token() -> Result<Option<String>> {
     Ok(read_routing()?.1.map(AgentToken::into_secret))
 }
 
-fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
+fn read_routing() -> Result<(RoutingMode, Option<AgentToken>, bool)> {
     let _guard = PreparedAgent::Claude.lock()?;
-    let settings = config_files::json::read(&config_dir()?.join("settings.json"))?;
+    let dir = config_dir()?;
+    let settings = config_files::json::read(&dir.join("settings.json"))?;
     let mode = mode_from_config(&settings);
-    Ok((mode, token_from_config(&settings, mode)))
+    let video_needs_apply = if mode == RoutingMode::Hub {
+        let mut global = FileChange::read(global_config_path()?)?;
+        video::configure(&dir, &mut global, &video_server()?, true).map_or(true, |files| {
+            global.is_changed() || files.iter().any(FileChange::is_changed)
+        })
+    } else {
+        false
+    };
+    Ok((mode, token_from_config(&settings, mode), video_needs_apply))
 }
 
 /// Reads only keys owned by the active mode: a disabled API key may belong to the user.
@@ -109,19 +124,77 @@ pub fn get_backups() -> Result<Vec<super::Backup>> {
 }
 
 pub fn restore_backup(id: u32) -> Result<()> {
-    let _guard = PreparedAgent::Claude.lock()?;
-    BackupManager::new(AgentKind::Claude)?.load_backup(id)
+    let manager = BackupManager::new(AgentKind::Claude)?;
+    let plan = {
+        let _guard = PreparedAgent::Claude.lock()?;
+        prepare_restore_at(
+            &config_dir()?,
+            &global_config_path()?,
+            &video_server()?,
+            &manager,
+            id,
+        )?
+    };
+    plan.apply_with_backup(
+        Some(manager),
+        |_| bail!("Unexpected desktop proxy"),
+        |_| bail!("Unexpected Codex proxy"),
+    )
+}
+
+fn prepare_restore_at(
+    dir: &Path,
+    global_path: &Path,
+    server: &Value,
+    manager: &BackupManager,
+    id: u32,
+) -> Result<PreparedPlan> {
+    let mut changes = manager.restore_changes(id)?;
+    let path = dir.join("settings.json");
+    let settings = if let Some(change) = changes.iter().find(|change| change.path() == &path) {
+        config_files::json::parse(&change.after)?
+    } else {
+        config_files::json::read(&path)?
+    };
+    let mut global = FileChange::read(global_path.to_owned())?;
+    changes.extend(video::configure(
+        dir,
+        &mut global,
+        server,
+        mode_from_config(&settings) == RoutingMode::Hub,
+    )?);
+    changes.push(global);
+    Ok(prepare_plan(changes))
 }
 
 /// `token` is ignored when disabled.
 pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Claude.lock()?;
 
-    let dir = config_dir()?;
+    prepare_routing_at(
+        &config_dir()?,
+        &global_config_path()?,
+        &video_server()?,
+        mode,
+        token,
+    )
+}
+
+fn video_server() -> Result<Value> {
+    video::server(crate::video::URL, &crate::video::install::headers_path()?)
+}
+
+fn prepare_routing_at(
+    dir: &Path,
+    global_path: &Path,
+    server: &Value,
+    mode: RoutingMode,
+    token: &str,
+) -> Result<PreparedPlan> {
     let script_path = dir.join("no-proxy.sh");
 
     let mut settings = FileChange::read(dir.join("settings.json"))?;
-    let mut global = FileChange::read(global_config_path()?)?;
+    let mut global = FileChange::read(global_path.to_owned())?;
     let mut script = FileChange::read(script_path.clone())?;
 
     let current_mode = mode_from_config(&config_files::json::parse(&settings.after)?);
@@ -158,12 +231,13 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
     }
 
     // Keep preparation files before activation, and script deletion after it.
-    let changes = if mode == RoutingMode::Sub {
+    let mut changes = video::configure(dir, &mut global, server, mode == RoutingMode::Hub)?;
+    changes.extend(if mode == RoutingMode::Sub {
         [global, script, settings]
     } else {
         [global, settings, script]
-    };
-    Ok(prepare_plan(changes.into()))
+    });
+    Ok(prepare_plan(changes))
 }
 
 fn prepare_plan(changes: Vec<FileChange>) -> PreparedPlan {
@@ -318,6 +392,90 @@ fn approve_key(after: &mut FileSnapshot, suffix: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_follows_gateway_mode_and_backup_restores_preserve_other_servers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let dir = temp.path().join(".claude");
+        let global = temp.path().join(".claude.json");
+        let skill = dir.join("skills/coreinfra-video/SKILL.md");
+        let registration =
+            video::server(crate::video::URL, &temp.path().join("video headers.json"))?;
+        let manager =
+            || BackupManager::in_directory(AgentKind::Claude, temp.path().join("backups"));
+        let apply = |plan: PreparedPlan| {
+            plan.apply_with_backup(
+                Some(manager()),
+                |_| bail!("Unexpected desktop proxy"),
+                |_| bail!("Unexpected Codex proxy"),
+            )
+        };
+        let prepare =
+            |mode| prepare_routing_at(&dir, &global, &registration, mode, "inference-key");
+        let read_global = || config_files::json::read(&global);
+        let foreign = json!({"type":"http","url":"https://example.org/mcp"});
+        std::fs::write(
+            &global,
+            json!({"mcpServers":{"other":foreign},"theme":"dark"}).to_string(),
+        )?;
+
+        let first = prepare(RoutingMode::Hub)?;
+        assert!(!skill.exists());
+        apply(first)?;
+        assert!(skill.is_file());
+        assert_eq!(
+            read_global()?["mcpServers"]["coreinfra_video"],
+            registration
+        );
+        assert!(!registration.to_string().contains("inference-key"));
+        assert!(prepare(RoutingMode::Hub)?.steps().iter().all(
+            |step| matches!(step, PreparedStep::ChangeFile { change } if !change.is_changed())
+        ));
+        assert_eq!(manager().get_backups()?.len(), 1);
+
+        // Claude itself can change its global state between configuration and restore.
+        let mut updated = read_global()?;
+        updated["theme"] = json!("light");
+        std::fs::write(&global, updated.to_string())?;
+        apply(prepare_restore_at(
+            &dir,
+            &global,
+            &registration,
+            &manager(),
+            1,
+        )?)?;
+        assert!(!skill.exists());
+        assert_eq!(read_global()?["theme"], "light");
+        assert_eq!(read_global()?["mcpServers"], json!({"other":foreign}));
+
+        apply(prepare(RoutingMode::Hub)?)?;
+        std::fs::write(&skill, "my edited skill")?;
+        assert!(prepare(RoutingMode::Hub).is_err());
+        for mode in [RoutingMode::Sub, RoutingMode::Disabled] {
+            apply(prepare(mode)?)?;
+            assert_eq!(std::fs::read_to_string(&skill)?, "my edited skill");
+            assert_eq!(read_global()?["mcpServers"], json!({"other":foreign}));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_video_entries_block_install_without_changing_any_files() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let dir = temp.path().join("claude");
+        let global = temp.path().join("global.json");
+        let server = video::server(crate::video::URL, &temp.path().join("headers.json"))?;
+        let existing = json!({"mcpServers":{"coreinfra_video":{"type":"http","url":crate::video::URL,"headersHelper":"user-helper"}}});
+        std::fs::write(&global, existing.to_string())?;
+        assert!(prepare_routing_at(&dir, &global, &server, RoutingMode::Hub, "key").is_err());
+        assert!(!dir.exists());
+        assert_eq!(config_files::json::read(&global)?, existing);
+        let plan = prepare_routing_at(&dir, &global, &server, RoutingMode::Disabled, "")?;
+        assert!(plan.steps().iter().all(
+            |step| matches!(step, PreparedStep::ChangeFile { change } if !change.is_changed())
+        ));
+        Ok(())
+    }
 
     #[test]
     fn user_credentials_that_override_a_mode_are_rejected() {

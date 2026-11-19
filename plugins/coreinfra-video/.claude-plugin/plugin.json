@@ -1,0 +1,6 @@
+{
+  "name": "coreinfra-video",
+  "version": "1.0.1",
+  "author": { "name": "CoreInfra" },
+  "description": "Video generation through the CoreInfra Wizard desktop connector."
+}

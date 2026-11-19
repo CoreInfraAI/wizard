@@ -1,10 +1,14 @@
 //! Stateless video tools. Job references are carried by the caller and contain no credential.
 pub mod install;
 pub mod server;
+pub mod stdio;
 
 use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
-use core::time::Duration;
+use core::{
+    net::{Ipv4Addr, SocketAddrV4},
+    time::Duration,
+};
 use reqwest::{Client, RequestBuilder, Response, Url};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,7 +18,8 @@ use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt as _;
 
-pub const ADDRESS: &str = "127.0.0.1:33789";
+pub const ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33789);
+const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 pub const URL: &str = "http://127.0.0.1:33789/mcp";
 const OPENROUTER: &str = "/openrouter/api/v1/videos";
 const FAL: &str = "/fal/api";

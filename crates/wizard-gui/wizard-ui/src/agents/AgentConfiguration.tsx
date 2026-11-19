@@ -339,6 +339,12 @@ export function RoutingFieldset<M extends string>({
                 <TokenNote token={token} hub={hub} disabled={disabled} />
               )
             )}
+            {agent === "claude" && selected === "hub" && (
+              <Text>При применении настроек Wizard установит скилл /coreinfra-video и подключит видеомодели через MCP.</Text>
+            )}
+            {agent === "claude_desktop" && selected === "hub" && (
+              <Text>После применения настроек Claude Desktop автоматически установит скилл CoreInfra Video. Для работы с видеомоделями оставьте Wizard открытым.</Text>
+            )}
             <ActionBar leading={actions} className={actionsClassName}>
               <Button
                 type="button"

@@ -1,3 +1,5 @@
+mod video;
+
 use super::{
     AgentDetection, AgentToken, RoutingMode,
     detection::{self, AgentInfo, DesktopAgent},
@@ -199,7 +201,18 @@ fn read_routing_at(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)
         let token = config["inferenceGatewayApiKey"]
             .as_str()
             .and_then(|token| AgentToken::new(token.to_owned()));
-        Ok((RoutingMode::Hub, token, proxy_needs_apply))
+        let mut updated = config.clone();
+        let registration = video::Registration::for_wizard()?;
+        let needs_video = registration
+            .update(
+                updated
+                    .as_object_mut()
+                    .context("Invalid Claude Desktop profile")?,
+                true,
+            )
+            .is_err()
+            || updated != config;
+        Ok((RoutingMode::Hub, token, proxy_needs_apply || needs_video))
     } else {
         Ok((RoutingMode::Disabled, None, false))
     }
@@ -214,6 +227,15 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
 }
 
 fn prepare_routing_at(dir: &Path, mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
+    prepare_with_video(dir, mode, token, &video::Registration::for_wizard()?)
+}
+
+fn prepare_with_video(
+    dir: &Path,
+    mode: RoutingMode,
+    token: &str,
+    video: &video::Registration,
+) -> Result<PreparedPlan> {
     let mut meta = FileChange::read(dir.join("_meta.json"))?;
     let metadata = json::parse(&meta.after)?;
     let selected = applied_id(&metadata)?;
@@ -254,6 +276,7 @@ fn prepare_routing_at(dir: &Path, mode: RoutingMode, token: &str) -> Result<Prep
                 .as_object_mut()
                 .context("Claude Desktop configuration must be an object")?;
 
+            video.update(object, mode == RoutingMode::Hub)?;
             // The complete previous profile is backed up before applying this plan.
             // Clear provider-specific credentials and proxy overrides before setting the mode.
             object
@@ -387,7 +410,7 @@ mod tests {
                     "egressProxyPacUrl": "https://corp/proxy.pac",
                     "egressProxyAuth": "old-proxy-auth",
                     "disableAutoUpdates": true,
-                    "managedMcpServers": {"example": {"url": "https://mcp.example"}},
+                    "managedMcpServers": [{"name":"example", "transport":"http", "url":"https://mcp.example"}],
                     "autoModeEnabled": true,
                 }),
                 json!({"appliedId": id, "entries": [{"id": id, "name": "Manual"}]}),
@@ -450,8 +473,8 @@ mod tests {
                 }
                 let config = json::read(&fixture.files[0])?;
                 assert_eq!(
-                    config["managedMcpServers"],
-                    json!({"example": {"url": "https://mcp.example"}})
+                    config["managedMcpServers"][0],
+                    json!({"name":"example", "transport":"http", "url":"https://mcp.example"})
                 );
                 assert_eq!(config["autoModeEnabled"], true);
                 assert!(config.get("inferenceCredentialCommand").is_none());
@@ -698,7 +721,7 @@ mod tests {
                         "inferenceGatewayBaseUrl": format!("{url}{suffix}"),
                         "inferenceGatewayApiKey": "manual-token",
                         "inferenceGatewayAuthScheme": "x-api-key",
-                        "managedMcpServers": {"example": {"url": "https://mcp.example"}},
+                        "managedMcpServers": [{"name":"example", "transport":"http", "url":"https://mcp.example"}],
                         "autoModeEnabled": true,
                     });
                     std::fs::write(&profile_path, original.to_string())?;
@@ -706,7 +729,7 @@ mod tests {
 
                     let (detected, token, proxy_needs_apply) = read_routing_at(&dir)?;
                     assert_eq!(detected, RoutingMode::Hub);
-                    assert!(!proxy_needs_apply);
+                    assert!(proxy_needs_apply);
                     assert_eq!(
                         token.map(AgentToken::into_secret).as_deref(),
                         Some("manual-token")
@@ -729,7 +752,10 @@ mod tests {
                     FileChange::apply_all(&changes)?;
 
                     let updated = json::read(&profile_path)?;
-                    assert_eq!(updated["managedMcpServers"], original["managedMcpServers"]);
+                    assert_eq!(
+                        updated["managedMcpServers"][0],
+                        original["managedMcpServers"][0]
+                    );
                     assert_eq!(updated["autoModeEnabled"], true);
                     assert_eq!(json::read(&dir.join("_meta.json"))?, meta);
                     assert_eq!(read_routing_at(&dir)?.0, mode);

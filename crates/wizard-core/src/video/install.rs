@@ -9,7 +9,7 @@ use crate::{
 };
 use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, ensure};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
 
 const SERVER: &str = "coreinfra_video";
@@ -26,26 +26,72 @@ const SKILL: &[(&str, &str)] = &[
 
 pub fn sync(previous: Option<&str>, next: Option<&str>) -> Result<()> {
     let _guard = PreparedAgent::Codex.lock()?;
-    sync_at(&codex::config_path()?, previous, next)
+    sync_with_headers(&codex::config_path()?, &headers_path()?, previous, next)
 }
 
+pub(crate) fn headers_path() -> Result<PathBuf> {
+    Ok(wizard_settings::paths::config_dir()?.join("video-mcp-headers.json"))
+}
+
+#[cfg(test)]
 pub(super) fn sync_at(path: &Path, previous: Option<&str>, next: Option<&str>) -> Result<()> {
+    sync_with_headers(
+        path,
+        &path.with_file_name("test-video-headers.json"),
+        previous,
+        next,
+    )
+}
+
+pub(crate) fn sync_with_headers(
+    path: &Path,
+    headers: &Path,
+    previous: Option<&str>,
+    next: Option<&str>,
+) -> Result<()> {
     let mut config = FileChange::read(path.to_owned())?;
     update_config(&mut config.after, previous, next)?;
-    if next.is_none() {
-        // Revoke the registration even when a user-edited skill cannot be cleaned up.
-        FileChange::apply_all(core::slice::from_ref(&config))?;
-    }
+    // Claude Code reads just these local MCP headers on connection. The Hub key stays in Wizard.
+    let mut grant = FileChange::read(headers.to_owned())?;
+    grant.after = match next {
+        Some(bearer) => FileSnapshot::new(
+            serde_json::json!({"Authorization": format!("Bearer {bearer}")}).to_string(),
+            0o600,
+        ),
+        None => FileSnapshot::Missing,
+    };
     let root = path
         .parent()
         .context("Missing Codex home")?
         .join("skills/coreinfra-video");
-    for dir in [&root, &root.join("agents")] {
-        ensure!(
-            !dir.is_symlink(),
-            "Video skill directory is a symlink: {}",
-            dir.display()
-        );
+    if next.is_none() {
+        // Revoke both clients even if a user-edited skill cannot be cleaned up.
+        FileChange::apply_all(&[grant, config])?;
+        return FileChange::apply_all(&skill_changes(&root, SKILL, false)?);
+    }
+    let mut changes = skill_changes(&root, SKILL, true)?;
+    changes.extend([config, grant]);
+    FileChange::apply_all(&changes)
+}
+
+pub(crate) fn skill_changes(
+    root: &Path,
+    files: &[(&str, &str)],
+    enable: bool,
+) -> Result<Vec<FileChange>> {
+    for &(name, _) in files {
+        let path = root.join(name);
+        for dir in path
+            .ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(root))
+        {
+            ensure!(
+                !dir.is_symlink(),
+                "Video skill directory is a symlink: {}",
+                dir.display()
+            );
+        }
     }
     let mut manifest = FileChange::read(root.join(".wizard-managed.json"))?;
     let old: BTreeMap<String, String> = manifest
@@ -57,13 +103,13 @@ pub(super) fn sync_at(path: &Path, previous: Option<&str>, next: Option<&str>) -
         .unwrap_or_default();
     let mut new = BTreeMap::new();
     let mut changes = Vec::new();
-    for &(name, text) in SKILL {
+    for &(name, text) in files {
         let mut file = FileChange::read(root.join(name))?;
         let owned = file
             .before()
             .content()
             .is_some_and(|v| old.get(name) == Some(&super::fingerprint(v)));
-        if next.is_some() {
+        if enable {
             ensure!(
                 owned
                     || file.before().content().is_none()
@@ -78,21 +124,18 @@ pub(super) fn sync_at(path: &Path, previous: Option<&str>, next: Option<&str>) -
         }
         changes.push(file);
     }
-    manifest.after = if next.is_some() {
+    manifest.after = if enable {
         FileSnapshot::new(serde_json::to_string_pretty(&new)?, 0o600)
     } else {
         FileSnapshot::Missing
     };
-    if next.is_some() && manifest.before().content().is_none() {
+    if enable && manifest.before().content().is_none() {
         // A retry can recognize documents written before a first install was interrupted.
         changes.insert(0, manifest);
     } else {
         changes.push(manifest);
     }
-    if next.is_some() {
-        changes.push(config);
-    }
-    FileChange::apply_all(&changes)
+    Ok(changes)
 }
 
 pub(crate) fn update_config(
