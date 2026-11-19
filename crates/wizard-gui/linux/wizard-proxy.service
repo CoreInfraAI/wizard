@@ -1,0 +1,6 @@
+[Unit]
+Description=CoreInfra Wizard local proxy
+
+[Service]
+ExecStart=/usr/bin/wizard --proxy
+TimeoutStopSec=10s

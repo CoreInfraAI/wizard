@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+# Upgrades replace the package in place; Wizard handles version changes.
+[ "$1" = remove ] || exit 0
+[ -d /run/systemd/system ] || exit 0
+
+for runtime in /run/user/[0-9]*; do
+    [ -S "$runtime/systemd/private" ] || continue
+    uid=${runtime##*/}
+    case "$uid" in *[!0-9]*) continue ;; esac
+    # Speak to the manager as its owner, never as root on a user's socket.
+    user=$(id -nu "$uid")
+    status=0
+    runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+        systemctl --user --no-ask-password stop wizard-proxy.service || status=$?
+    # A missing unit or a session that ended during removal needs no cleanup.
+    [ "$status" = 0 ] || [ "$status" = 5 ] || [ ! -S "$runtime/systemd/private" ] || exit "$status"
+done

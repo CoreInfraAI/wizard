@@ -58,6 +58,14 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": false,
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/systemd/user/wizard-proxy.service": "linux/wizard-proxy.service"
+        },
+        "preRemoveScript": "linux/prerm"
+      }
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
