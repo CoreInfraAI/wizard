@@ -1,7 +1,11 @@
 use super::*;
 use crate::{config_files::toml, video::server::VideoAccess};
 use alloc::sync::Arc;
-use core::{convert::Infallible, future::Future};
+use core::{
+    convert::Infallible,
+    future::Future,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use http_body_util::{BodyExt as _, Full};
 use hyper::{
     Request, Response as HttpResponse,
@@ -30,6 +34,23 @@ impl VideoAccess for Access {
             hub_id: "team".into(),
             token: self.0.into(),
         }))
+    }
+}
+
+#[derive(Default, Clone)]
+struct SignedOut {
+    lookups: Arc<AtomicUsize>,
+}
+
+impl VideoAccess for SignedOut {
+    fn token<'a>(
+        &'a self,
+        _: Option<&'a Job>,
+    ) -> impl Future<Output = Result<VideoKey>> + Send + 'a {
+        core::future::poll_fn(|_| {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+            core::task::Poll::Ready(Err(anyhow!("Sign in to Wizard")))
+        })
     }
 }
 
@@ -532,23 +553,9 @@ async fn rotated_connection_and_interrupted_download_fail_closed() -> Result<()>
 
 #[tokio::test]
 async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    struct SignedOut(Arc<AtomicUsize>);
-    impl VideoAccess for SignedOut {
-        fn token<'a>(
-            &'a self,
-            _: Option<&'a Job>,
-        ) -> impl Future<Output = Result<VideoKey>> + Send + 'a {
-            core::future::poll_fn(|_| {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                core::task::Poll::Ready(Err(anyhow!("Sign in to Wizard")))
-            })
-        }
-    }
-
     let fixture = Fixture::new().await?;
-    let lookups = Arc::new(AtomicUsize::new(0));
-    let server = fixture.start(SignedOut(Arc::clone(&lookups))).await?;
+    let access = SignedOut::default();
+    let server = fixture.start(access.clone()).await?;
     assert!(
         fixture
             .dir
@@ -572,7 +579,7 @@ async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
         )
         .await?;
     assert_eq!(missing["isError"], true);
-    assert_eq!(lookups.load(Ordering::SeqCst), 0);
+    assert_eq!(access.lookups.load(Ordering::SeqCst), 0);
     let generation = fixture
         .call(
             &server,
@@ -581,7 +588,7 @@ async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
         )
         .await?;
     assert_eq!(generation["isError"], true);
-    assert_eq!(lookups.load(Ordering::SeqCst), 1);
+    assert_eq!(access.lookups.load(Ordering::SeqCst), 1);
     assert!(
         fixture
             .requests
@@ -589,6 +596,46 @@ async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
             .expect("requests")
             .iter()
             .all(|r| r.method == "GET" && r.auth.is_none())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires WIZARD_VIDEO_TEST_CODEX, Python and access to the public Hub catalog"]
+async fn codex_skill_lists_public_video_models() -> Result<()> {
+    let _ = crate::hub::install_crypto_provider();
+    let dir = tempfile::tempdir()?;
+    let profile = dir.path().join("codex");
+    let config = profile.join("config.toml");
+    let access = SignedOut::default();
+    let listener = TcpListener::bind(ADDRESS)
+        .await
+        .with_context(|| format!("bind the Wizard video MCP port at {ADDRESS}"))?;
+    let server = server::start(listener, VideoHub::new()?, access.clone(), move |bearer| {
+        install::sync_at(&config, None, Some(bearer))
+    })
+    .await?;
+    let python = std::env::var_os("WIZARD_VIDEO_TEST_PYTHON")
+        .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video_catalog_e2e.py");
+    let mut client = tokio::process::Command::new(python)
+        .args(["-E", "-B"])
+        .arg(script)
+        .arg(&profile)
+        .current_dir(dir.path())
+        .kill_on_drop(true)
+        .spawn()?;
+    let status = tokio::time::timeout(Duration::from_secs(120), client.wait()).await??;
+    server.abort();
+    let _ = server.await;
+    ensure!(
+        status.success(),
+        "Codex skill/catalog E2E failed ({status})"
+    );
+    assert_eq!(
+        access.lookups.load(Ordering::SeqCst),
+        0,
+        "catalog requested a Hub key"
     );
     Ok(())
 }

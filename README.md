@@ -33,6 +33,8 @@ For OpenRouter, put per-provider options under `fields.provider.options` and inl
 
 The [client compatibility test](crates/wizard-core/tests/video_clients.py) includes a Python SDK 2.x example using `streamable_http_client`. To repeat the end-to-end test, set `WIZARD_VIDEO_TEST_PYTHON` to a Python with `mcp` 2.x installed and `WIZARD_VIDEO_TEST_CODEX` to a Codex executable. Run `cargo test -p wizard-core native_and_python_clients -- --ignored --nocapture`. All submissions in this test go to its temporary local Hub.
 
+CI also runs a catalog E2E on Linux, macOS and Windows. Wizard installs the bundled skill and MCP registration into a fresh profile. A native Codex turn uses the installed skill to call `video_models` and receives model IDs from the public Hub. A local Responses fixture requests that single read-only tool call. To run it locally, set `WIZARD_VIDEO_TEST_CODEX` to a Codex executable or its npm `bin/codex.js` launcher and run `cargo test -p wizard-core codex_skill_lists_public_video_models -- --ignored --nocapture` with Python 3 available and port 33789 free.
+
 ## How to build
 
 1. Install Rust and Node.js:
