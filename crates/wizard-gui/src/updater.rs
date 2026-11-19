@@ -11,7 +11,7 @@ use tauri_plugin_updater::{Update, UpdaterExt as _};
 use wizard_core::hub::{HUB_ORIGIN, Url};
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(1);
-const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(2);
 
 #[derive(Clone, Serialize, PartialEq, Eq)]
