@@ -91,8 +91,8 @@ pub(crate) struct InstallManager {
     desktop: DesktopApp,
     signal: RevisionSignal<State>,
     session: Arc<tokio::sync::Mutex<Session>>,
-    /// Pauses the running download.
-    pause: Mutex<Option<oneshot::Sender<()>>>,
+    /// Cancels the running transfer; the command then discards its archive.
+    cancel: Mutex<Option<oneshot::Sender<()>>>,
     unsupported: bool,
 }
 
@@ -106,7 +106,7 @@ impl InstallManager {
                 reason.map_or(State::Idle, |message| State::Unsupported { message }),
             ),
             session: Arc::new(tokio::sync::Mutex::new(Session::default())),
-            pause: Mutex::new(None),
+            cancel: Mutex::new(None),
         }
     }
 }
@@ -258,26 +258,59 @@ pub(crate) fn download_desktop_release(
     )
 }
 
-/// Stops the download. What it received stays saved, and downloading again continues it.
+/// Stops the transfer and discards its archive, including a completion racing the click.
 #[tauri::command]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Tauri passes managed state by value"
-)]
-pub(crate) fn pause_desktop_download(
+pub(crate) async fn cancel_desktop_download(
     desktop: DesktopApp,
     managers: tauri::State<'_, InstallManagers>,
-) {
-    let pause = managers
-        .get(desktop)
-        .pause
+) -> Result<(), String> {
+    let manager = managers.get(desktop);
+    if !matches!(
+        manager.signal.current().state,
+        State::Downloading { .. }
+            | State::ReadyToInstall { .. }
+            | State::Failed {
+                operation: Operation::Download,
+                ..
+            }
+    ) {
+        return Err("Нет скачивания, которое можно отменить".into());
+    }
+    let cancel = manager
+        .cancel
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .take();
-    // Without a sender, or when sending fails, the download has already ended or been paused.
-    if let Some(pause) = pause {
-        pause.send(()).ok();
+    if let Some(cancel) = cancel {
+        cancel.send(()).ok();
     }
+    // Wait for the transfer future and its open archive handle to be dropped (Windows too).
+    let mut session = manager.session.lock().await;
+    let release = match &session.package {
+        Some(Package::Available(release)) => release.as_ref().clone(),
+        Some(Package::Downloaded(download)) => download.release.clone(),
+        None => return Ok(()),
+    };
+    let discarded =
+        tauri::async_runtime::spawn_blocking(move || installer::discard_download(desktop))
+            .await
+            .map_err(|_| "Не удалось удалить скачанный архив".to_owned())
+            .and_then(|result| result.map_err(|error| format!("{error:#}")));
+    if let Err(message) = discarded {
+        session.package = Some(Package::Available(Box::new(release)));
+        manager.signal.notify(State::Failed {
+            operation: Operation::Download,
+            message: message.clone(),
+            confirmation: None,
+        });
+        return Err(message);
+    }
+    let notes = release.notes();
+    manager
+        .signal
+        .notify(available_state(&release, notes, None));
+    session.package = Some(Package::Available(Box::new(release)));
+    Ok(())
 }
 
 /// Products that installing the downloaded release would close because they run now. Empty
@@ -369,7 +402,7 @@ fn start(
         return Ok(());
     }
 
-    let mut pause = None;
+    let mut cancel = None;
     match operation {
         Operation::Check => {
             // Checking again keeps a saved download only if the same release is found.
@@ -382,8 +415,11 @@ fn start(
                 return Err("Сначала проверьте доступную версию".into());
             }
             let (sender, receiver) = oneshot::channel();
-            *manager.pause.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
-            pause = Some(receiver);
+            *manager
+                .cancel
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(sender);
+            cancel = Some(receiver);
             manager.signal.notify(State::Downloading {
                 received: 0,
                 total: 0,
@@ -401,9 +437,9 @@ fn start(
     }
 
     tauri::async_runtime::spawn(async move {
-        let result = run(&app, &manager, &mut session, operation, install, pause).await;
+        let result = run(&app, &manager, &mut session, operation, install, cancel).await;
         manager
-            .pause
+            .cancel
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
@@ -475,7 +511,7 @@ async fn run(
     session: &mut Session,
     operation: Operation,
     install: InstallOptions,
-    pause: Option<oneshot::Receiver<()>>,
+    cancel: Option<oneshot::Receiver<()>>,
 ) -> Result<(), String> {
     let desktop = manager.desktop;
     let name = desktop.name();
@@ -536,27 +572,31 @@ async fn run(
                 return Err("Сначала проверьте доступную версию".into());
             };
             let release = selected.as_ref().clone();
-            let token = hub_tokens::proxy_token(app).await?.value;
-            let download = installer::download_release(release.clone(), &token, |progress| {
-                manager.signal.notify(State::Downloading {
-                    received: progress.received,
-                    total: progress.total,
-                    reconnecting: progress.reconnecting,
-                });
-            });
-            // Without a pause request the sender is dropped, which disables that branch.
-            let pause = pause.unwrap_or_else(|| oneshot::channel().1);
+            let download = async {
+                let token = hub_tokens::proxy_token(app)
+                    .await
+                    .map_err(anyhow::Error::msg)?
+                    .value;
+                installer::download_release(release.clone(), &token, |progress| {
+                    manager.signal.notify(State::Downloading {
+                        received: progress.received,
+                        total: progress.total,
+                        reconnecting: progress.reconnecting,
+                    });
+                })
+                .await
+            };
+            // Cancellation also interrupts token resolution and reconnect delays.
+            let cancel = cancel.unwrap_or_else(|| oneshot::channel().1);
             let result = tokio::select! {
+                biased;
+                Ok(()) = cancel => None,
                 result = download => Some(result),
-                Ok(()) = pause => None,
             };
             let Some(result) = result else {
-                log::info!("{} download paused", desktop.product());
-                let saved = saved_download(desktop, Some(&release)).await;
-                let notes = release_notes(app, &release).await?;
-                manager
-                    .signal
-                    .notify(available_state(&release, notes, saved));
+                log::info!("{} download cancelled", desktop.product());
+                // The cancelling command owns cleanup and publishes the next state after
+                // this future releases the session lock and the archive file handle.
                 return Ok(());
             };
             let download = match result {
@@ -662,4 +702,103 @@ async fn run(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc_test;
+    use serde_json::json;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    #[test]
+    fn ipc_install_snapshots_keep_each_desktops_progress_and_release_separate() {
+        let managers = InstallManagers::default();
+        managers
+            .get(DesktopApp::Claude)
+            .signal
+            .notify(State::Downloading {
+                received: 1024,
+                total: 4096,
+                reconnecting: true,
+            });
+        managers
+            .get(DesktopApp::ChatGpt)
+            .signal
+            .notify(State::ReadyToInstall {
+                version: "9.9.9".into(),
+                path: None,
+                notes: vec!["Сохраните текущую работу".into()],
+                confirmation: Some("Подтвердить замену".into()),
+            });
+        let app = mock_builder()
+            .manage(managers)
+            .invoke_handler(tauri::generate_handler![get_desktop_install_state])
+            .build(mock_context(noop_assets()))
+            .expect("test app");
+        let window = ipc_test::window(&app);
+        assert_eq!(
+            ipc_test::invoke(
+                &window,
+                "get_desktop_install_state",
+                json!({ "desktop": "claude", "lastRevision": null })
+            ),
+            Ok(
+                json!({ "revision": 1, "status": "downloading", "received": 1024, "total": 4096, "reconnecting": true })
+            )
+        );
+        assert_eq!(
+            ipc_test::invoke(
+                &window,
+                "get_desktop_install_state",
+                json!({ "desktop": "chatgpt", "lastRevision": null })
+            ),
+            Ok(
+                json!({ "revision": 1, "status": "ready_to_install", "version": "9.9.9", "path": null,
+                "notes": ["Сохраните текущую работу"], "confirmation": "Подтвердить замену" })
+            )
+        );
+        assert!(
+            ipc_test::invoke(
+                &window,
+                "get_desktop_install_state",
+                json!({ "desktop": "unknown" })
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ipc_cancellation_cannot_discard_an_installation_in_progress() {
+        let managers = InstallManagers::default();
+        managers
+            .get(DesktopApp::Claude)
+            .signal
+            .notify(State::Installing { close: true });
+        let app = mock_builder()
+            .manage(managers)
+            .invoke_handler(tauri::generate_handler![
+                cancel_desktop_download,
+                get_desktop_install_state
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("test app");
+        let window = ipc_test::window(&app);
+        assert_eq!(
+            ipc_test::invoke(
+                &window,
+                "cancel_desktop_download",
+                json!({ "desktop": "claude" })
+            ),
+            Err(json!("Нет скачивания, которое можно отменить"))
+        );
+        assert_eq!(
+            ipc_test::invoke(
+                &window,
+                "get_desktop_install_state",
+                json!({ "desktop": "claude", "lastRevision": null })
+            ),
+            Ok(json!({ "revision": 1, "status": "installing", "close": true }))
+        );
+    }
 }

@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@import "./design-system/tokens.css";
+@import "./design-system/patterns.css";
+@source "./";
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 @custom-variant mac-window (&:where([data-mac-window], [data-mac-window] *));
 
@@ -35,5 +38,8 @@
 
   html {
     @apply bg-white lg:bg-zinc-100 dark:bg-zinc-900 dark:lg:bg-zinc-950;
+    font-size: 16px;
+    color: var(--ui-ink);
   }
+  body { font-size: 14px; line-height: 24px; }
 }

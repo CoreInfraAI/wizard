@@ -6,9 +6,18 @@
 
 import * as Headless from "@headlessui/react";
 import clsx from "clsx";
-import { useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type * as React from "react";
 import { NavbarItem } from "./navbar.js";
+
+const SidebarActionContext = createContext<(action: () => void) => void>(
+  (action) => action(),
+);
+
+/** Open overlays only after mobile navigation has released its focus trap. */
+export function useSidebarAction() {
+  return useContext(SidebarActionContext);
+}
 
 function OpenMenuIcon() {
   return (
@@ -29,28 +38,39 @@ function CloseMenuIcon() {
 function MobileSidebar({
   open,
   close,
+  afterLeave,
   children,
-}: React.PropsWithChildren<{ open: boolean; close: () => void }>) {
+}: React.PropsWithChildren<{
+  open: boolean;
+  close: () => void;
+  afterLeave: () => void;
+}>) {
   return (
-    <Headless.Dialog open={open} onClose={close} className="lg:hidden">
-      <Headless.DialogBackdrop
-        transition
-        className="fixed inset-0 bg-black/30 transition data-closed:opacity-0 data-enter:duration-300 data-enter:ease-out data-leave:duration-200 data-leave:ease-in"
-      />
-      <Headless.DialogPanel
-        transition
-        className="fixed inset-y-0 w-full max-w-80 p-2 mac-window:pt-8 transition duration-300 ease-in-out data-closed:-translate-x-full"
+    <Headless.Transition show={open} afterLeave={afterLeave}>
+      <Headless.Dialog
+        onClose={close}
+        className="lg:hidden"
+        aria-label="Навигация"
       >
-        <div className="flex h-full flex-col rounded-lg bg-white shadow-xs ring-1 ring-zinc-950/5 dark:bg-zinc-900 dark:ring-white/10">
-          <div className="-mb-3 px-4 pt-3">
-            <Headless.CloseButton as={NavbarItem} aria-label="Закрыть меню">
-              <CloseMenuIcon />
-            </Headless.CloseButton>
+        <Headless.DialogBackdrop
+          transition
+          className="fixed inset-0 bg-black/30 transition motion-reduce:transition-none data-closed:opacity-0 data-enter:duration-300 data-enter:ease-out data-leave:duration-200 data-leave:ease-in"
+        />
+        <Headless.DialogPanel
+          transition
+          className="fixed inset-y-0 w-full max-w-80 p-2 mac-window:pt-8 transition duration-300 motion-reduce:transition-none ease-in-out data-closed:-translate-x-full"
+        >
+          <div className="flex h-full flex-col rounded-lg bg-white shadow-xs ring-1 ring-zinc-950/5 dark:bg-zinc-900 dark:ring-white/10">
+            <div className="-mb-3 px-4 pt-3">
+              <Headless.CloseButton as={NavbarItem} aria-label="Закрыть меню">
+                <CloseMenuIcon />
+              </Headless.CloseButton>
+            </div>
+            {children}
           </div>
-          {children}
-        </div>
-      </Headless.DialogPanel>
-    </Headless.Dialog>
+        </Headless.DialogPanel>
+      </Headless.Dialog>
+    </Headless.Transition>
   );
 }
 
@@ -69,6 +89,27 @@ export function SidebarLayout({
   hideNavigation?: boolean;
 }>) {
   let [showSidebar, setShowSidebar] = useState(false);
+  const pendingAction = useRef<(() => void) | undefined>(undefined);
+  const actionFrame = useRef<number | undefined>(undefined);
+  useEffect(
+    () => () => {
+      if (actionFrame.current !== undefined)
+        cancelAnimationFrame(actionFrame.current);
+    },
+    [],
+  );
+
+  function runAfterClose(action: () => void) {
+    pendingAction.current = action;
+    setShowSidebar(false);
+  }
+
+  function finishClosing() {
+    const action = pendingAction.current;
+    pendingAction.current = undefined;
+    // Let the previous dialog unmount and restore focus before mounting another.
+    if (action) actionFrame.current = requestAnimationFrame(action);
+  }
 
   return (
     <div
@@ -79,27 +120,44 @@ export function SidebarLayout({
       )}
     >
       {/* Sidebar on desktop */}
-      {!hideNavigation && <div className="fixed inset-y-0 left-0 w-64 max-lg:hidden">{sidebar}</div>}
+      {!hideNavigation && (
+        <div className="fixed inset-y-0 left-0 w-64 max-lg:hidden">
+          {sidebar}
+        </div>
+      )}
 
       {/* Sidebar on mobile */}
-      {!hideNavigation && <MobileSidebar open={showSidebar} close={() => setShowSidebar(false)}>
-        {sidebar}
-      </MobileSidebar>}
+      {!hideNavigation && (
+        <MobileSidebar
+          open={showSidebar}
+          close={() => setShowSidebar(false)}
+          afterLeave={finishClosing}
+        >
+          <SidebarActionContext.Provider value={runAfterClose}>
+            {sidebar}
+          </SidebarActionContext.Provider>
+        </MobileSidebar>
+      )}
 
       {/* Navbar on mobile */}
-      {!hideNavigation && <header
-        className={clsx("flex items-center px-4 mac-window:pt-8 lg:hidden", fill && "shrink-0")}
-      >
-        <div className="py-2.5">
-          <NavbarItem
-            onClick={() => setShowSidebar(true)}
-            aria-label="Открыть меню"
-          >
-            <OpenMenuIcon />
-          </NavbarItem>
-        </div>
-        <div className="min-w-0 flex-1">{navbar}</div>
-      </header>}
+      {!hideNavigation && (
+        <header
+          className={clsx(
+            "sticky top-0 z-20 flex items-center gap-3 bg-white px-4 dark:bg-zinc-900 mac-window:pt-8 lg:hidden",
+            fill && "shrink-0",
+          )}
+        >
+          <div className="py-2.5">
+            <NavbarItem
+              onClick={() => setShowSidebar(true)}
+              aria-label="Открыть меню"
+            >
+              <OpenMenuIcon />
+            </NavbarItem>
+          </div>
+          <div className="min-w-0 flex-1">{navbar}</div>
+        </header>
+      )}
 
       {/* Content */}
       <main
@@ -112,17 +170,14 @@ export function SidebarLayout({
       >
         <div
           className={clsx(
-            !hideNavigation && "lg:rounded-lg lg:bg-white lg:shadow-xs lg:ring-1 lg:ring-zinc-950/5 dark:lg:bg-zinc-900 dark:lg:ring-white/10",
+            !hideNavigation &&
+              "lg:rounded-lg lg:bg-white lg:shadow-xs lg:ring-1 lg:ring-zinc-950/5 dark:lg:bg-zinc-900 dark:lg:ring-white/10",
             fill
               ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-              : "grow p-6 lg:p-10",
+              : "grow p-(--ui-page-gutter)",
           )}
         >
-          {fill ? (
-            children
-          ) : (
-            <div className="mx-auto max-w-6xl">{children}</div>
-          )}
+          {fill ? children : <div className="ui-page">{children}</div>}
         </div>
       </main>
     </div>

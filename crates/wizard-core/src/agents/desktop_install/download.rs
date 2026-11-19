@@ -66,6 +66,20 @@ pub fn saved_download(app: DesktopApp, release: Option<&Release>) -> Result<Opti
         }))
 }
 
+/// Explicit cancellation removes both the archive and its resume metadata. Call only after
+/// dropping the download future, so no writer can recreate them while they are being removed.
+pub fn discard_download(app: DesktopApp) -> Result<()> {
+    remove_download(&Slot::new(app)?.directory)
+}
+
+fn remove_download(directory: &Path) -> Result<()> {
+    match fs::remove_dir_all(directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("Не удалось удалить скачанную часть. Повторите отмену"),
+    }
+}
+
 /// Downloads and verifies the release archive, continuing a saved download of it. What was
 /// received stays saved when the download fails or is dropped; failed verification discards it.
 pub async fn download_release(
@@ -863,5 +877,24 @@ mod tests {
         assert!(run(&directory, &release, &[]).0.is_err());
         assert!(saved(&directory, None).is_none());
         assert!(!directory.exists());
+    }
+
+    #[test]
+    fn cancelled_download_restarts_without_a_range_request() {
+        let archive = archive();
+        let server = serve(archive.clone(), vec![Plan::CutAfter(1_000_000)]);
+        let release = release(&server.url, &archive);
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("claude");
+        assert!(run(&directory, &release, &[]).0.is_err());
+        assert!(saved(&directory, Some(&release)).is_some());
+
+        remove_download(&directory).unwrap();
+        assert!(!directory.exists());
+        remove_download(&directory).unwrap(); // A second cancellation is harmless.
+        let (_, progress) = run(&directory, &release, &[]);
+        assert_eq!(progress.first().unwrap().received, 0);
+        assert!(server.requests().last().unwrap().range.is_none());
+        assert_eq!(fs::read(directory.join(DOWNLOAD_NAME)).unwrap(), archive);
     }
 }

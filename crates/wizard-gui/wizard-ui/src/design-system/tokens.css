@@ -1,0 +1,64 @@
+/* Wizard's shared vocabulary. Catalyst controls retain their original semantics. */
+:root {
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+  --ui-space-8: 32px;
+  --ui-space-10: 40px;
+  --ui-canvas: #f4f4f5;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #fafafa;
+  --ui-surface-hover: #f4f4f5;
+  --ui-ink: #18181b;
+  --ui-ink-muted: #52525b;
+  --ui-ink-subtle: #71717a;
+  --ui-border: #e4e4e7;
+  --ui-border-strong: #a1a1aa;
+  --ui-focus: #2563eb;
+  --ui-success: #15803d;
+  --ui-warning: #a16207;
+  --ui-danger: #b91c1c;
+  --ui-progress: #18181b09;
+  --ui-radius-control: 8px;
+  --ui-radius-panel: 12px;
+  --ui-radius-dialog: 16px;
+  --ui-page-gutter: 32px;
+  --ui-panel-gutter: 24px;
+  --ui-content-width: 1040px;
+  --ui-duration-fast: 120ms;
+  --ui-duration: 180ms;
+  --ui-duration-slow: 280ms;
+  --ui-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+:root[data-theme="dark"] {
+  --ui-canvas: #09090b;
+  --ui-surface: #18181b;
+  --ui-surface-muted: #202023;
+  --ui-surface-hover: #27272a;
+  --ui-ink: #f4f4f5;
+  --ui-ink-muted: #d4d4d8;
+  --ui-ink-subtle: #a1a1aa;
+  --ui-border: #353539;
+  --ui-border-strong: #71717a;
+  --ui-focus: #60a5fa;
+  --ui-success: #4ade80;
+  --ui-warning: #fbbf24;
+  --ui-danger: #f87171;
+  --ui-progress: #ffffff0b;
+}
+@media (max-width: 639px) {
+  :root {
+    --ui-page-gutter: 20px;
+    --ui-panel-gutter: 20px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ui-duration-fast: 0ms;
+    --ui-duration: 0ms;
+    --ui-duration-slow: 0ms;
+  }
+}

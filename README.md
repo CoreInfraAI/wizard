@@ -87,6 +87,27 @@ The interface reference is the Hub in the neighboring `thinker` repository:
 `crates/ff-hub/hub-ui/src/modules/App.tsx` (agent order and divider) and
 `packages/coreinfra-ui/src/hub-sidebar-footer.tsx` (account menu and theme controls).
 
+### UI design system
+
+Wizard uses neutral Catalyst surfaces, shared typography and spacing, and
+restrained state colors. Startup, overview drawing, and download progress
+animations remain part of the interface. Navigation and dialog transitions must
+not reset ongoing operations.
+
+`src/design-system/tokens.css` owns surface, text, border, spacing, radius, and
+motion values. `src/components/ui` owns page headings, panels, action bars,
+identities, notices and transfer cards; accessible controls and focus trapping
+continue to use Catalyst / Headless UI. Connection forms use unframed panels
+inside dialogs. Version rows share column alignment; on narrow screens their
+actions move below the version and stay together.
+
+Body/control text is 14/24 px, metadata 12/20 px, section titles 16/24 px and page
+titles 22/32 px. Text inputs retain 16 px below 640 px to avoid mobile auto-zoom.
+Do not use page-wide `!important` typography overrides or make a portal inherit
+typography from the page behind it. Preserve heading order, keyboard focus,
+contrast in both themes and reduced-motion support. Download progress uses a
+labeled progressbar instead of announcing every percentage tick.
+
 ### Overview and initial setup
 
 **Обзор** is the default full-window page, above **Агенты** in the sidebar.
@@ -96,11 +117,13 @@ The three action cards use the live account and detection state:
 - **Установите агентов** becomes available after sign-in.
 - **Настройте агентов** requires sign-in and at least one detected agent.
 
-On first launch, navigation is hidden. «Пропустить быструю настройку» beside
-«Начало работы» reveals it and remembers the choice across launches. Overview
-remains accessible from the sidebar. Configuration reuses the regular agent form
-and plan confirmation; multiple installed agents always show a selection first.
-The final action launches the configured desktop app or CLI.
+First launch shows a brief Wizard logo animation, then automatically opens the
+full interface with navigation, even before sign-in or setup. The animation is
+remembered across launches and skipped for reduced motion or completed legacy
+onboarding. Update checks run in the background without blocking navigation.
+Configuration reuses the regular agent form and plan confirmation; multiple
+installed agents always show a selection first. The final action launches the
+configured desktop app or CLI.
 
 Connection options are ordered API access, subscription, then without CoreInfra.
 The default token is selected automatically: reuse the configured token if it belongs to the
@@ -116,10 +139,30 @@ changing an agent's API token does not change either listener's credential.
 «Завершить настройку» opens the change plan before the launch step. Regular agent
 pages use «Применить», enabled for pending mode/token changes or a stopped proxy.
 
-Downloads run in the backend and preserve explicit pauses across dialog closes.
-Installing requires a separate «Установить» confirmation; «Отмена» retains the
-archive. Installed apps show their version and offer an update check. Completed
-installs and checks close with «Готово».
+Downloads run in the backend independently of the current page or dialog. The
+action beside an agent's installed version is «Обновить» («Скачать» for a missing
+desktop app). It only opens that agent's installation panel. Download, install
+and cancel actions live in the expanded panel; the picker also only opens it.
+The version row keeps the installed version until installation completes, then
+animates the new number and removes the update action. Release checks run
+automatically, without a manual check button or an up-to-date message.
+Closing the dialog (outside click, Escape, or cross) keeps downloads running in
+a stack of compact widgets in the left sidebar, directly above the Hub divider,
+with a logo, percentage and downloaded/total MB. Clicking
+a widget restores that operation. «Назад» appears only after choosing an app in
+the picker and returns there without stopping downloads. Direct openings from
+a version action or sidebar widget have no Back button. «Отменить» stops the selected
+transfer and deletes its cached archive; downloading again starts from zero.
+Network interruptions still retain resumable progress. Installation always needs
+a separate confirmation, including notices about closing running applications.
+
+Wizard itself also checks for updates automatically, including at launch. Its
+sidebar update action opens a dialog without changing the installed application.
+«Скачать обновление» downloads and verifies the signed archive; «Установить» then
+replaces Wizard and restarts it. Downloads survive closing the dialog and remain
+visible in the sidebar. «Отменить» aborts the download and discards its bytes.
+The main interface stays mounted throughout; only the explicit installation step
+prepares the proxy service for replacement.
 
 Choosing a subscription offers to enable the system proxy if it is off.
 Only «Включить» changes OS settings; cancel keeps the selected mode. The prompt

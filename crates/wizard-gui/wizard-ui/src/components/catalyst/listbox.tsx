@@ -63,7 +63,7 @@ export function Listbox<T>({
             // Horizontal padding
             "pr-[calc(--spacing(7)-1px)] pl-[calc(--spacing(3.5)-1px)] sm:pl-[calc(--spacing(3)-1px)]",
             // Typography
-            "text-left text-base/6 text-zinc-950 placeholder:text-zinc-500 sm:text-sm/6 dark:text-white forced-colors:text-[CanvasText]",
+            "text-left text-sm/6 text-zinc-950 placeholder:text-zinc-500 dark:placeholder:text-zinc-400 dark:text-white forced-colors:text-[CanvasText]",
             // Border
             "border border-zinc-950/10 group-data-active:border-zinc-950/20 group-data-hover:border-zinc-950/20 dark:border-white/10 dark:group-data-active:border-white/20 dark:group-data-hover:border-white/20",
             // Background color
@@ -156,9 +156,9 @@ export function ListboxOption<T>({
               // Basic layout
               "group/option grid cursor-default grid-cols-[--spacing(5)_1fr] items-baseline gap-x-2 rounded-lg py-2.5 pr-3.5 pl-2 sm:grid-cols-[--spacing(4)_1fr] sm:py-1.5 sm:pr-3 sm:pl-1.5",
               // Typography
-              "text-base/6 text-zinc-950 sm:text-sm/6 dark:text-white forced-colors:text-[CanvasText]",
+              "text-sm/6 text-zinc-950 dark:text-white forced-colors:text-[CanvasText]",
               // Focus
-              "outline-hidden data-focus:bg-blue-500 data-focus:text-white",
+              "outline-hidden data-focus:bg-blue-600 data-focus:text-white",
               // Forced colors mode
               "forced-color-adjust-none forced-colors:data-focus:bg-[Highlight] forced-colors:data-focus:text-[HighlightText]",
               // Disabled

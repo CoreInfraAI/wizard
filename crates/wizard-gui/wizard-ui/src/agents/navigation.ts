@@ -4,6 +4,13 @@ export type AgentPageId = AgentId;
 export type AppPageId = AgentPageId | "overview" | "settings";
 export const overviewPath = "/overview";
 export const settingsPath = "/settings";
+export const agentPageNames: Record<AgentPageId, string> = {
+  claude_desktop: "Claude Desktop",
+  claude: "Claude Code",
+  codex: "ChatGPT / Codex",
+  opencode: "OpenCode",
+  pi: "Pi",
+};
 
 export const agentPaths: Record<AgentPageId, string> = {
   claude_desktop: "/agents/claude-desktop",
@@ -16,6 +23,9 @@ export const agentPaths: Record<AgentPageId, string> = {
 export function pageFromHash(hash: string): AppPageId {
   const path = hash.replace(/^#/, "").replace(/\/+$/, "");
   if (path === settingsPath) return "settings";
-  return (Object.keys(agentPaths) as AgentPageId[])
-    .find((page) => agentPaths[page] === path) ?? "overview";
+  return (
+    (Object.keys(agentPaths) as AgentPageId[]).find(
+      (page) => agentPaths[page] === path,
+    ) ?? "overview"
+  );
 }

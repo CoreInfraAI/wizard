@@ -4,6 +4,7 @@ use anyhow::{Context as _, Result, anyhow};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use serde::Serialize;
+use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Manager as _;
 use tauri::http::{HeaderValue, header::COOKIE};
@@ -18,16 +19,46 @@ const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(2);
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum UpdateState {
     Checking,
-    Installing,
+    Downloading {
+        version: String,
+        received: u64,
+        total: Option<u64>,
+    },
+    ReadyToInstall {
+        version: String,
+    },
+    Installing {
+        version: String,
+    },
     UpToDate,
-    Available { version: String },
-    Failed { message: String },
+    Available {
+        version: String,
+    },
+    Failed {
+        message: String,
+        version: Option<String>,
+    },
 }
 
 impl UpdateState {
     fn is_in_progress(&self) -> bool {
-        matches!(self, Self::Checking | Self::Installing)
+        matches!(
+            self,
+            Self::Downloading { .. } | Self::ReadyToInstall { .. } | Self::Installing { .. }
+        )
     }
+}
+
+struct DownloadedUpdate {
+    update: Update,
+    bytes: Vec<u8>,
+}
+
+#[derive(Default)]
+struct UpdateJob {
+    generation: u64,
+    task: Option<tauri::async_runtime::JoinHandle<()>>,
+    ready: Option<DownloadedUpdate>,
 }
 
 /// The updater's configured endpoints, tried in order. Hub's endpoint also receives the session
@@ -76,19 +107,18 @@ pub(crate) fn start(app: tauri::AppHandle, first_run: bool) -> Result<()> {
     let sources = UpdateSources::from_config(&app, first_run)?;
     let disabled = sources.endpoints.is_empty();
     app.manage(sources);
+    app.manage(Mutex::new(UpdateJob::default()));
     if disabled {
         log::info!("application updates disabled: no endpoints configured");
         app.state::<Arc<RevisionSignal<UpdateState>>>()
             .notify(UpdateState::UpToDate);
         return Ok(());
     }
-    start_update(app.clone());
-
     let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
             check_in_background(&app, &state).await;
+            tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
         }
     });
     Ok(())
@@ -99,10 +129,6 @@ pub(crate) async fn get_update_state(
     last_revision: Option<u32>,
     state: tauri::State<'_, Arc<RevisionSignal<UpdateState>>>,
 ) -> Result<RevisionSnapshot<UpdateState>, String> {
-    // state.update(|current| {
-    //     (!current.is_in_progress()).then(|| UpdateState::Failed { message: "test update error".to_owned() })
-    //     // (!current.is_in_progress()).then(|| UpdateState::Available { version: "0.0.0".to_owned() })
-    // });
     state
         .wait(last_revision)
         .await
@@ -110,24 +136,121 @@ pub(crate) async fn get_update_state(
 }
 
 #[tauri::command]
-pub(crate) fn request_update(app: tauri::AppHandle) {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri injects application handles by value"
+)]
+pub(crate) fn request_update(app: tauri::AppHandle) -> Result<(), String> {
     let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
-    // Claim the next update atomically to prevent concurrent installations.
-    let Some(_) = state.update(|current| {
-        if current.is_in_progress() {
-            return None;
-        }
-        Some(UpdateState::Checking)
-    }) else {
-        return;
+    let manager = app.state::<Mutex<UpdateJob>>();
+    let mut job = manager.lock().map_err(|_| "Обновление недоступно")?;
+    let (UpdateState::Available { version }
+    | UpdateState::Failed {
+        version: Some(version),
+        ..
+    }) = state.current().state
+    else {
+        return Ok(());
     };
-    start_update(app);
+    job.generation = job.generation.wrapping_add(1);
+    let generation = job.generation;
+    state.notify(UpdateState::Downloading {
+        version: version.clone(),
+        received: 0,
+        total: None,
+    });
+    let application = app.clone();
+    job.task = Some(tauri::async_runtime::spawn(async move {
+        let result = download_update(&application, &state, generation).await;
+        let manager = application.state::<Mutex<UpdateJob>>();
+        let Ok(mut job) = manager.lock() else {
+            return;
+        };
+        if job.generation != generation {
+            return;
+        }
+        job.task = None;
+        match result {
+            Ok(Some(download)) => {
+                let version = download.update.version.clone();
+                job.ready = Some(download);
+                state.notify(UpdateState::ReadyToInstall { version });
+            }
+            Ok(None) => {
+                state.notify(UpdateState::UpToDate);
+            }
+            Err(error) => {
+                log::error!("application update download failed: {error:#}");
+                state.notify(UpdateState::Failed {
+                    message: format!("{error:#}"),
+                    version: Some(version),
+                });
+            }
+        }
+    }));
+    Ok(())
+}
+
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri injects application handles by value"
+)]
+pub(crate) fn cancel_update<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    let state = app.state::<Arc<RevisionSignal<UpdateState>>>();
+    let manager = app.state::<Mutex<UpdateJob>>();
+    let mut job = manager.lock().map_err(|_| "Обновление недоступно")?;
+    let (UpdateState::Downloading { version, .. } | UpdateState::ReadyToInstall { version }) =
+        state.current().state
+    else {
+        return Ok(());
+    };
+    job.generation = job.generation.wrapping_add(1);
+    if let Some(task) = job.task.take() {
+        task.abort();
+    }
+    job.ready = None;
+    state.notify(UpdateState::Available { version });
+    Ok(())
+}
+
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri injects application handles by value"
+)]
+pub(crate) fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
+    let manager = app.state::<Mutex<UpdateJob>>();
+    let mut job = manager.lock().map_err(|_| "Обновление недоступно")?;
+    if !matches!(state.current().state, UpdateState::ReadyToInstall { .. }) {
+        return Ok(());
+    }
+    let download = job.ready.take().ok_or("Сначала скачайте обновление")?;
+    let version = download.update.version.clone();
+    state.notify(UpdateState::Installing {
+        version: version.clone(),
+    });
+    let application = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = install_downloaded_update(&application, download).await {
+            log::error!("application update installation failed: {error:#}");
+            state.notify(UpdateState::Failed {
+                message: format!("{error:#}"),
+                version: Some(version),
+            });
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn retry_update_check(app: tauri::AppHandle) {
     let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
-    if !matches!(state.current().state, UpdateState::Failed { .. }) {
+    if !matches!(
+        state.current().state,
+        UpdateState::Failed { version: None, .. }
+    ) {
         return;
     }
     tauri::async_runtime::spawn(async move {
@@ -135,39 +258,46 @@ pub(crate) fn retry_update_check(app: tauri::AppHandle) {
     });
 }
 
-fn start_update(app: tauri::AppHandle) {
-    let state = Arc::clone(&app.state::<Arc<RevisionSignal<UpdateState>>>());
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = check_and_install_update(&app, &state).await {
-            log::error!("application update failed: {error:#}");
-            state.notify(UpdateState::Failed {
-                message: format!("{error:#}"),
-            });
-        }
-    });
-}
-
-async fn check_and_install_update(
+async fn download_update(
     app: &tauri::AppHandle,
     state: &RevisionSignal<UpdateState>,
-) -> Result<()> {
-    log::info!("checking for application updates");
-
+    generation: u64,
+) -> Result<Option<DownloadedUpdate>> {
     let Some(mut update) = find_update(app).await? else {
-        log::info!("application is up to date");
-        state.notify(UpdateState::UpToDate);
-        return Ok(());
+        return Ok(None);
     };
     update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
     log::info!("downloading application update {}", update.version);
-    state.notify(UpdateState::Installing);
-
+    let mut received = 0;
     let bytes = update
-        .download(|_, _| {}, || {})
+        .download(
+            |chunk, total| {
+                received += chunk as u64;
+                let manager = app.state::<Mutex<UpdateJob>>();
+                let Ok(job) = manager.lock() else {
+                    return;
+                };
+                if job.generation == generation {
+                    state.notify(UpdateState::Downloading {
+                        version: update.version.clone(),
+                        received,
+                        total,
+                    });
+                }
+            },
+            || {},
+        )
         .await
         .context("Не удалось скачать обновление")?;
+    Ok(Some(DownloadedUpdate { update, bytes }))
+}
 
+async fn install_downloaded_update(
+    app: &tauri::AppHandle,
+    download: DownloadedUpdate,
+) -> Result<()> {
+    let DownloadedUpdate { update, bytes } = download;
     // download() verifies the update signature before service removal begins.
     let update_guard = wizard_proxy_daemon::prepare_update()
         .await
@@ -201,6 +331,9 @@ async fn check_and_install_update(
 }
 
 async fn check_in_background(app: &tauri::AppHandle, state: &RevisionSignal<UpdateState>) {
+    if state.current().state.is_in_progress() {
+        return;
+    }
     log::info!("checking for application updates in background");
     let next = match find_update(app).await {
         Ok(Some(update)) => {
@@ -212,7 +345,10 @@ async fn check_in_background(app: &tauri::AppHandle, state: &RevisionSignal<Upda
         Ok(None) => UpdateState::UpToDate,
         Err(error) => {
             log::error!("background update check failed: {error:#}");
-            return;
+            UpdateState::Failed {
+                message: "Не удалось проверить обновления. Повторим автоматически.".into(),
+                version: None,
+            }
         }
     };
     // Do not overwrite an installation request accepted during the network check.
@@ -322,6 +458,97 @@ async fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc_test;
+    use serde_json::{Value, json};
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    #[test]
+    fn ipc_cancel_stops_the_native_task_and_restores_the_available_version() {
+        struct OnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    sender.send(()).ok();
+                }
+            }
+        }
+
+        let signal = Arc::new(RevisionSignal::new(UpdateState::Downloading {
+            version: "9.9.9".into(),
+            received: 1024,
+            total: Some(4096),
+        }));
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let task = tauri::async_runtime::spawn(async move {
+            let _on_drop = OnDrop(Some(stopped));
+            started.send(()).expect("task started");
+            core::future::pending::<()>().await;
+        });
+        tauri::async_runtime::block_on(started_rx).expect("download task running");
+        let app = mock_builder()
+            .manage(Arc::clone(&signal))
+            .manage(Mutex::new(UpdateJob {
+                generation: 7,
+                task: Some(task),
+                ready: None,
+            }))
+            .invoke_handler(tauri::generate_handler![get_update_state, cancel_update])
+            .build(mock_context(noop_assets()))
+            .expect("test app");
+        let window = ipc_test::window(&app);
+        assert_eq!(
+            ipc_test::invoke(&window, "cancel_update", json!({})),
+            Ok(Value::Null)
+        );
+        assert_eq!(
+            ipc_test::invoke(&window, "get_update_state", json!({ "lastRevision": null })),
+            Ok(json!({ "revision": 1, "status": "available", "version": "9.9.9" }))
+        );
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), stopped_rx)
+                .await
+                .expect("cancel drops the running download")
+                .expect("download dropped");
+        });
+        let manager = app.state::<Mutex<UpdateJob>>();
+        let job = manager.lock().expect("job lock");
+        assert_eq!(job.generation, 8);
+        assert!(job.task.is_none());
+        assert!(job.ready.is_none());
+    }
+
+    #[test]
+    fn ipc_observation_waits_for_a_new_revision_and_installation_cannot_be_cancelled() {
+        let signal = Arc::new(RevisionSignal::new(UpdateState::Checking));
+        let app = mock_builder()
+            .manage(Arc::clone(&signal))
+            .manage(Mutex::new(UpdateJob::default()))
+            .invoke_handler(tauri::generate_handler![get_update_state, cancel_update])
+            .build(mock_context(noop_assets()))
+            .expect("test app");
+        let window = ipc_test::window(&app);
+        let next = Arc::clone(&signal);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            next.notify(UpdateState::Installing {
+                version: "9.9.9".into(),
+            });
+        });
+        assert_eq!(
+            ipc_test::invoke(&window, "get_update_state", json!({ "lastRevision": 0 })),
+            Ok(json!({ "revision": 1, "status": "installing", "version": "9.9.9" }))
+        );
+        assert_eq!(
+            ipc_test::invoke(&window, "cancel_update", json!({})),
+            Ok(Value::Null)
+        );
+        assert!(matches!(
+            signal.current().state,
+            UpdateState::Installing { .. }
+        ));
+        assert_eq!(signal.current().revision, 1);
+    }
 
     #[test]
     fn hub_endpoint_keeps_channel_and_adds_usage() {

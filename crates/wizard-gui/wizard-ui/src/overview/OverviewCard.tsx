@@ -1,4 +1,25 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Subheading } from "../components/catalyst/heading";
+import { Text } from "../components/catalyst/text";
+
+/** Shared card anatomy keeps headings and actions aligned across overview steps. */
+export function OverviewCardContent({ title, description, descriptionId, descriptionTitle, actions, view, headingLevel = 3 }: {
+  title: string;
+  description: ReactNode;
+  descriptionId?: string;
+  descriptionTitle?: string;
+  actions: ReactNode;
+  view?: string;
+  headingLevel?: 2 | 3;
+}) {
+  return <div className="overview-card-body">
+    <div className="overview-card-copy" key={view}>
+      <Subheading level={headingLevel}>{title}</Subheading>
+      <Text className="mt-2" id={descriptionId} title={descriptionTitle}>{description}</Text>
+    </div>
+    <div className="overview-card-actions">{actions}</div>
+  </div>;
+}
 
 // Remember a completed intro for this app launch, including page navigation.
 // A new launch/reload gets a fresh first hover; interrupted runs do not count.
@@ -8,11 +29,12 @@ let introSeen = false;
 // the action counterclockwise. The pen lifts between the two gestures.
 const strike = "M-34 128 C8 94 61 31 77 25 C96 17 47 111 14 182 C-9 230 0 237 31 207 L193 27 C229 -12 222 18 196 59 L49 281 C16 331 20 337 58 294 L276 66 C308 33 315 45 289 88 L124 347 C100 384 113 389 146 352 L327 150 C361 113 366 131 342 171 L233 353 C209 392 220 396 249 367 L356 276";
 
-export function OverviewCard({ kind, disabled, activationReady = true, suspended = false, children }: {
+export function OverviewCard({ kind, disabled, activationReady = true, suspended = false, onboarding = true, children }: {
   kind: "account" | "install" | "configure";
   disabled: boolean;
   activationReady?: boolean;
   suspended?: boolean;
+  onboarding?: boolean;
   children: ReactNode;
 }) {
   const card = useRef<HTMLElement>(null);
@@ -24,8 +46,12 @@ export function OverviewCard({ kind, disabled, activationReady = true, suspended
   const [buttonVisible, setButtonVisible] = useState(false);
 
   useEffect(() => {
-    if (disabled) { animation.current?.cancel(); setInkVisible(false); }
-  }, [disabled]);
+    if (disabled || !onboarding) {
+      animation.current?.cancel();
+      setInkVisible(false);
+      setOutlinePending(false);
+    }
+  }, [disabled, onboarding]);
 
   useEffect(() => {
     let previousSize: { width: number; height: number } | undefined;
@@ -50,17 +76,18 @@ export function OverviewCard({ kind, disabled, activationReady = true, suspended
   // Loading the existing account/agent state establishes a baseline. Only a
   // real locked -> available transition requests a new-step hint.
   useEffect(() => {
-    if (kind === "account" || !activationReady) return;
+    if (!onboarding || kind === "account" || !activationReady) return;
     if (previousDisabled.current === true && !disabled) setOutlinePending(true);
     if (disabled) setOutlinePending(false);
     previousDisabled.current = disabled;
-  }, [kind, disabled, activationReady]);
+  }, [kind, disabled, activationReady, onboarding]);
 
   const play = useCallback((mode: "intro" | "outline") => {
     const element = path.current;
     const button = card.current?.querySelector<HTMLButtonElement>(".overview-card-actions > button");
-    if (disabled || !element || !button || animation.current?.playState === "running"
-      || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
+    if (!onboarding || disabled || !element || !button || animation.current?.playState === "running"
+      || window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      || document.documentElement.dataset.motion === "reduce") return false;
 
     animation.current?.cancel();
     // Work in CSS pixels so the trail and button outline also align in WebKit
@@ -115,10 +142,10 @@ export function OverviewCard({ kind, disabled, activationReady = true, suspended
     };
     setInkVisible(true);
     return true;
-  }, [disabled]);
+  }, [disabled, onboarding]);
 
   useEffect(() => {
-    if (!outlinePending || disabled || suspended || !buttonVisible) return;
+    if (!onboarding || !outlinePending || disabled || suspended || !buttonVisible) return;
     let frame: number | undefined;
     const showWhenVisible = () => {
       if (document.visibilityState !== "visible") return;
@@ -134,13 +161,13 @@ export function OverviewCard({ kind, disabled, activationReady = true, suspended
       if (frame !== undefined) cancelAnimationFrame(frame);
       document.removeEventListener("visibilitychange", showWhenVisible);
     };
-  }, [outlinePending, disabled, suspended, buttonVisible, play]);
+  }, [onboarding, outlinePending, disabled, suspended, buttonVisible, play]);
 
   function playIntroOnce() {
-    if (kind === "account" && !suspended && !introSeen) play("intro");
+    if (onboarding && kind === "account" && !suspended && !introSeen) play("intro");
   }
 
-  return <article ref={card} className="overview-card" data-kind={kind} data-disabled={disabled} data-ink-visible={inkVisible}
+  return <article ref={card} className="overview-card" data-kind={kind} data-disabled={disabled} data-onboarding={onboarding} data-ink-visible={inkVisible}
     onPointerEnter={(event) => {
       if (event.pointerType !== "touch") playIntroOnce();
     }}
@@ -149,8 +176,8 @@ export function OverviewCard({ kind, disabled, activationReady = true, suspended
     }}
     onClickCapture={() => { animation.current?.cancel(); setInkVisible(false); }}>
     {children}
-    <svg className="overview-card-strike" aria-hidden="true" focusable="false">
+    {onboarding && <svg className="overview-card-strike" aria-hidden="true" focusable="false">
       <path ref={path} />
-    </svg>
+    </svg>}
   </article>;
 }

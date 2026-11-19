@@ -34,9 +34,9 @@ export function HubSignIn({ hub, compact = false }: { hub: HubAccountControl; co
 
   return (
     <section aria-label="Вход в CoreInfra AI Hub"
-      data-intro={animateIntro ? "" : undefined}
+      data-intro={animateIntro ? "" : undefined} data-compact={compact}
       onPointerDownCapture={finishIntro} onFocusCapture={finishIntro}
-      className="hub-onboarding mb-10 rounded-3xl border border-zinc-950/5 px-6 py-7 text-left sm:p-8 dark:border-white/10">
+      className="hub-onboarding ui-panel">
       <div className="hub-onboarding-symbol" aria-hidden="true">
         <div className="hub-onboarding-dots"><span /><span /><span /></div>
         <div className="hub-onboarding-mark">
@@ -47,10 +47,10 @@ export function HubSignIn({ hub, compact = false }: { hub: HubAccountControl; co
       <div className="hub-onboarding-reveal">
         <div className="hub-onboarding-content">
           <div aria-live="polite">
-            <h2 className="hub-onboarding-title text-2xl/8 font-semibold tracking-tight text-zinc-950 dark:text-white">
+            <h2 className="hub-onboarding-title text-base/6 font-semibold tracking-tight text-zinc-950 dark:text-white">
               {pending ? "Завершите вход в браузере" : compact ? "Подключите CoreInfra Hub" : "Ура!"}
             </h2>
-            <p className="hub-onboarding-copy mt-3 max-w-lg text-sm/6 text-zinc-600 dark:text-zinc-400">
+            <p className="hub-onboarding-copy mt-2 max-w-lg text-sm/6 text-zinc-600 dark:text-zinc-400">
               {pending
                 ? "После входа вернитесь в Wizard — аккаунт подключится автоматически."
                 : <>{compact ? "Войдите, чтобы настраивать агентов. Если аккаунта нет — " : "Wizard установлен, теперь войдите в аккаунт хаба, если аккаунта нет – "}<Link
@@ -62,7 +62,7 @@ export function HubSignIn({ hub, compact = false }: { hub: HubAccountControl; co
             </p>
           </div>
           <div className="hub-onboarding-action mt-5">
-            <Button color="blue" disabled={!hub.account || hub.submitting || hub.agentBusy} onClick={hub.change}>
+            <Button disabled={!hub.account || hub.submitting || hub.agentBusy} onClick={hub.change}>
               {hub.submitting ? "Открываем браузер…" : pending ? "Продолжить вход" : "Войти в CoreInfra Hub"}
             </Button>
           </div>

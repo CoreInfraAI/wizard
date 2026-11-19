@@ -1,0 +1,211 @@
+.ui-transfer {
+  --transfer-brand: var(--brand-claude);
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-panel);
+  background: var(--ui-surface-muted);
+  color: var(--ui-ink);
+  text-align: left;
+}
+.ui-transfer[data-brand="chatgpt"] {
+  --transfer-brand: var(--brand-openai);
+}
+.ui-transfer[data-brand="wizard"] { --transfer-brand: var(--brand-coreinfra); }
+.ui-transfer[data-openable="true"] {
+  cursor: pointer;
+}
+.ui-transfer[data-openable="true"]:hover {
+  border-color: var(--ui-border-strong);
+}
+.ui-transfer[data-openable="true"]:active {
+  background: var(--ui-surface-hover);
+  border-color: var(--ui-border-strong);
+}
+.ui-transfer:focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+.ui-transfer-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: -1;
+  background: var(--ui-progress);
+  transition: width 600ms linear;
+  pointer-events: none;
+}
+.ui-transfer-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 196px;
+  flex-direction: column;
+  gap: var(--ui-space-6);
+  padding: var(--ui-panel-gutter);
+}
+.ui-transfer-header {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: var(--ui-space-4);
+}
+.ui-transfer-content {
+  display: grid;
+  gap: var(--ui-space-3);
+}
+.ui-transfer-error {
+  color: var(--ui-danger);
+  font-size: 14px;
+  line-height: 24px;
+  overflow-wrap: anywhere;
+}
+.ui-transfer-copy {
+  flex: 1;
+  min-width: 0;
+  padding-right: 68px;
+}
+.ui-transfer-logo {
+  position: absolute;
+  right: 0;
+  top: var(--ui-space-2);
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  color: var(--ui-ink-subtle);
+  transition:
+    transform var(--ui-duration),
+    color var(--ui-duration);
+}
+.ui-transfer-logo > svg {
+  width: 48px;
+  height: 48px;
+  color: inherit;
+}
+.ui-transfer-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+  font-size: 14px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.ui-transfer-title > :first-child {
+  overflow-wrap: anywhere;
+}
+.ui-transfer-version,
+.ui-transfer-status,
+.ui-transfer-detail,
+.ui-transfer-notice {
+  display: block;
+  margin-top: var(--ui-space-1);
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--ui-ink-muted);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.ui-transfer-notice {
+  color: var(--ui-warning);
+}
+.ui-transfer-actions {
+  margin-top: auto;
+}
+.ui-transfer-actions :is(button, a) {
+  max-width: 100%;
+}
+.ui-transfer-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+.ui-transfer[data-active="true"] .ui-transfer-logo {
+  color: var(--transfer-brand);
+}
+.ui-transfer[data-tone="success"] .ui-transfer-title > svg {
+  color: var(--ui-success);
+}
+.ui-transfer[data-tone="error"] .ui-transfer-title > svg {
+  color: var(--ui-danger);
+}
+.ui-transfer[data-variant="compact"] {
+  width: 100%;
+  flex: none;
+  border-radius: 10px;
+  background: var(--ui-surface);
+}
+.ui-transfer[data-variant="compact"] .ui-transfer-body {
+  min-height: 64px;
+  padding: 10px 12px;
+}
+.ui-transfer[data-variant="compact"] .ui-transfer-header {
+  gap: 10px;
+  align-items: center;
+}
+.ui-transfer[data-variant="compact"] .ui-transfer-logo {
+  position: static;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  color: var(--transfer-brand);
+}
+.ui-transfer[data-variant="compact"] .ui-transfer-logo > svg {
+  width: 24px;
+  height: 24px;
+}
+.ui-transfer[data-variant="compact"] .ui-transfer-copy {
+  padding: 0;
+}
+.ui-transfer[data-variant="compact"] .ui-transfer-title {
+  font-size: 12px;
+  line-height: 20px;
+}
+.ui-transfer[data-variant="compact"] .ui-transfer-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-transfer[data-variant="compact"] .ui-transfer-title > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.ui-transfer-percent {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ui-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ui-transfer[data-variant="compact"]
+  :is(.ui-transfer-status, .ui-transfer-detail, .ui-transfer-notice) {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 16px;
+}
+.onboarding-install-grid[data-focused="true"] .ui-transfer-body {
+  min-height: 0;
+}
+@media (hover: hover) {
+  .ui-transfer[data-variant="card"]:hover .ui-transfer-logo {
+    color: var(--transfer-brand);
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-transfer-fill,
+  .ui-transfer-logo {
+    transition: none;
+  }
+  .ui-transfer[data-variant="card"]:hover .ui-transfer-logo {
+    transform: none;
+  }
+}
