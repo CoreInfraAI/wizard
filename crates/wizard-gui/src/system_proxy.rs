@@ -326,7 +326,7 @@ impl Drop for Observer {
 }
 
 pub(crate) fn start(app: &tauri::AppHandle) {
-    if !cfg!(any(target_os = "macos", target_os = "windows")) {
+    if !os::supported() {
         update(&app.state::<RevisionSignal<State>>(), |state| {
             state.status = Status::Unsupported;
         });
@@ -355,7 +355,7 @@ pub(crate) async fn get_system_proxy_state(
 ) -> Result<RevisionSnapshot<State>, String> {
     // The settings page starts each subscription with no revision. Unlike the
     // periodic observer, wait for any current operation before reading fresh state.
-    if last_revision.is_none() && cfg!(any(target_os = "macos", target_os = "windows")) {
+    if last_revision.is_none() && os::supported() {
         tauri::async_runtime::spawn_blocking(move || {
             let _guard = OPERATION.lock().map_err(|_| {
                 "Операции системного прокси недоступны; перезапустите Wizard".to_owned()
@@ -380,8 +380,8 @@ pub(crate) async fn set_system_proxy(
     enabled: bool,
     forced: bool,
 ) -> Result<(), String> {
-    if !cfg!(any(target_os = "macos", target_os = "windows")) {
-        return Err("Системный прокси пока доступен только на macOS и Windows".into());
+    if !os::supported() {
+        return Err("Системный прокси недоступен в этом окружении".into());
     }
     run(app, Some(enabled), forced).await
 }

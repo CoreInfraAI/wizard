@@ -48,7 +48,7 @@ export function SystemProxyPrompt({ observation: { state, error: loadError }, on
       {!busy && (!state || state.status === "unknown") && !failure && <Text role="status">Проверяем состояние системного прокси…</Text>}
       {state?.conflict && <Text>Уже настроен другой прокси. Проверьте его в настройках Wizard перед включением.</Text>}
       {state?.status === "partial" && !state.conflict && <Text>Прокси включён только для части подключений. Wizard включит его для остальных.</Text>}
-      {state?.status === "unsupported" && <Text>Системный прокси доступен только на macOS и Windows.</Text>}
+      {state?.status === "unsupported" && <Text>Системный прокси доступен на macOS, Windows и в GNOME на Linux.</Text>}
       {state?.status === "unavailable" && <Text>Нет доступных сетевых подключений. Подключитесь к сети и повторите попытку.</Text>}
       {failure && <div role="alert"><ErrorText>{failure}</ErrorText></div>}
     </DialogBody>

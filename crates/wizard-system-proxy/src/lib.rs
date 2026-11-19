@@ -14,6 +14,11 @@ mod macos;
 mod windows;
 mod windows_config;
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux::Native;
+
 #[cfg(target_os = "macos")]
 use macos::Native;
 #[cfg(target_os = "windows")]
@@ -23,6 +28,18 @@ use windows::Native;
 mod tests;
 
 static LOCK: Mutex<()> = Mutex::new(());
+
+#[must_use]
+pub fn supported() -> bool {
+    if cfg!(target_os = "linux") {
+        return std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| {
+            desktop
+                .split(':')
+                .any(|name| name.eq_ignore_ascii_case("GNOME"))
+        });
+    }
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
 
 /// Authorization was not granted before any OS settings were staged or written.
 /// Callers may offer an authorization retry without a partial-write warning.
@@ -97,7 +114,7 @@ fn update(enabled: bool, forced: bool) -> Result<()> {
     native_update(enabled, forced)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn native_status() -> Result<SystemProxyStatus> {
     let snapshot = Native::read()?;
     Ok(SystemProxyStatus {
@@ -105,7 +122,7 @@ fn native_status() -> Result<SystemProxyStatus> {
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn native_update(enabled: bool, forced: bool) -> Result<()> {
     // Nothing of Wizard's to remove, even from a string Wizard cannot parse: uninstall
     // must not fail on foreign settings.
@@ -116,12 +133,12 @@ fn native_update(enabled: bool, forced: bool) -> Result<()> {
     change::<Native>(enabled, forced)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn native_status() -> Result<SystemProxyStatus> {
     anyhow::bail!("system proxy configuration is supported only on macOS and Windows")
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn native_update(_: bool, _: bool) -> Result<()> {
     anyhow::bail!("system proxy configuration is supported only on macOS and Windows")
 }
@@ -129,7 +146,7 @@ fn native_update(_: bool, _: bool) -> Result<()> {
 // The boundary lets regression tests exercise the entire mutation flow without
 // touching the network configuration, authorization UI or native APIs.
 #[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows", test)),
+    not(any(target_os = "macos", target_os = "windows", target_os = "linux", test)),
     expect(dead_code)
 )]
 trait Backend {
@@ -141,7 +158,7 @@ trait Backend {
 }
 
 #[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows", test)),
+    not(any(target_os = "macos", target_os = "windows", target_os = "linux", test)),
     expect(dead_code)
 )]
 fn change<B: Backend>(enabled: bool, forced: bool) -> Result<()> {

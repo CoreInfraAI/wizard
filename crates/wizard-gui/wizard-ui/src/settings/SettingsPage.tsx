@@ -105,7 +105,7 @@ function SystemProxySettings() {
       <div className="mt-3 space-y-2" aria-live="polite">
         {busy && <Text>Применение системных настроек… На macOS может потребоваться авторизация.</Text>}
         {(!state || (state.status === "unknown" && !state.read_error)) && !loadError && <Text>Определение состояния…</Text>}
-        {state?.status === "unsupported" && <Text>Системный прокси пока доступен только на macOS и Windows.</Text>}
+        {state?.status === "unsupported" && <Text>Системный прокси доступен на macOS, Windows и в GNOME на Linux.</Text>}
         {state?.status === "unavailable" && <Text>Нет поддерживаемых сетевых сервисов.</Text>}
         {state?.status === "partial" && (
           <Text>Частично включён: настройки Wizard действуют не для всех протоколов или сетевых сервисов либо конфликтуют с другими настройками. Выключение уберёт только настройки Wizard.</Text>
