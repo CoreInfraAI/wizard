@@ -9,7 +9,11 @@ use crate::{
 use core::future::Future;
 use serde::Serialize;
 use tauri::Manager as _;
-use wizard_core::hub::{self, AgentTokens, Client, HubError, SessionUpdate};
+use wizard_core::{
+    agents::TokenAgent,
+    hub::{self, AgentTokens, Client, HubError, SessionUpdate},
+    video::{Job, VideoKey, fingerprint},
+};
 
 pub(crate) const PROXY_TOKEN_NAME: &str = "coreinfra-ai-wizard";
 
@@ -24,19 +28,7 @@ pub(crate) struct HubTokens {
     generation: u64,
 }
 
-pub(crate) fn video_keys(app: &tauri::AppHandle) -> (Option<String>, Vec<crate::video::VideoKey>) {
-    let snapshot = app.state::<RevisionSignal<HubTokens>>().current().state;
-    let proxy = settings::get_state(app).ok().and_then(|s| s.proxy_token);
-    let keys = snapshot
-        .tokens
-        .iter()
-        .filter(|t| crate::video::selectable(t, proxy.as_deref()))
-        .map(crate::video::VideoKey::from)
-        .collect();
-    (snapshot.hub_id, keys)
-}
-
-pub(crate) fn generation(app: &tauri::AppHandle) -> u64 {
+fn generation(app: &tauri::AppHandle) -> u64 {
     app.state::<RevisionSignal<HubTokens>>()
         .current()
         .state
@@ -277,13 +269,13 @@ pub(crate) async fn proxy_token(app: &tauri::AppHandle) -> Result<ProxyToken, St
     // Read the personal Hub in this session chain rather than using a cached profile.
     // Only refreshes returned by our own requests may advance the expected cookie.
     let response = hub::fetch_profile(&client, &session).await;
-    let profile = accept_proxy_response(app, &mut session, response).await?;
+    let profile = accept_token_response(app, &mut session, response, PROXY_LOOKUP_ERROR).await?;
     let hub_id = &profile.personal_hub_id;
     let response = hub::list_agent_tokens(&client, &session, hub_id).await;
-    let tokens = accept_proxy_response(app, &mut session, response).await?;
+    let tokens = accept_token_response(app, &mut session, response, PROXY_LOOKUP_ERROR).await?;
     let value = resolve_proxy_token(&tokens, async {
         let response = hub::issue_agent_token(&client, &session, hub_id, PROXY_TOKEN_NAME).await;
-        let token = accept_proxy_response(app, &mut session, response).await?;
+        let token = accept_token_response(app, &mut session, response, PROXY_LOOKUP_ERROR).await?;
         log::info!("Wizard proxy token issued in personal Hub");
         Ok(token)
     })
@@ -304,10 +296,11 @@ async fn resolve_proxy_token(
 
 // Preserve refreshes even on response errors, but never adopt an unrelated session
 // from settings. Callers saving the token recheck its session under the settings lock.
-async fn accept_proxy_response<T>(
+async fn accept_token_response<T>(
     app: &tauri::AppHandle,
     session: &mut String,
     (update, result): (SessionUpdate, Result<T, HubError>),
+    failure: &'static str,
 ) -> Result<T, String> {
     let next = match &update {
         SessionUpdate::Refreshed(refreshed) => refreshed.clone(),
@@ -322,9 +315,108 @@ async fn accept_proxy_response<T>(
     }
     *session = next;
     result.map_err(|error| {
-        log::error!("Wizard proxy Hub request failed: {error:?}");
-        "Не удалось получить токен Wizard в личном Hub".into()
+        log::error!("Wizard Hub token request failed: {error:?}");
+        failure.into()
     })
+}
+
+const PROXY_LOOKUP_ERROR: &str = "Не удалось получить токен Wizard в личном Hub";
+const CODEX_LOOKUP_ERROR: &str = "Не удалось получить ключ Codex в выбранном хабе";
+static CODEX_TOKEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Both automatic Codex setup and video use the same default in Wizard's selected Hub.
+/// Capture the selection now, even when the caller awaits this after other I/O.
+pub(crate) fn codex_token<'a>(
+    app: &'a tauri::AppHandle,
+    job: Option<&'a Job>,
+) -> impl Future<Output = Result<VideoKey, String>> + Send + 'a {
+    let revision = generation(app);
+    let selected = settings::get_state(app)
+        .map_err(|_| "Настройки Wizard недоступны")
+        .and_then(|s| {
+            if s.hub_session.is_empty() {
+                Err("Войдите в CoreInfra Hub в Wizard")
+            } else {
+                Ok(s.active_hub_id)
+            }
+        });
+    async move {
+        let selected = selected?;
+        let current = || {
+            let state = settings::get_state(app).map_err(|_| "Настройки Wizard недоступны")?;
+            if state.hub_session.is_empty()
+                || state.active_hub_id != selected
+                || generation(app) != revision
+            {
+                return Err("Хаб или аккаунт изменился во время запроса");
+            }
+            Ok(state)
+        };
+        current()?;
+        let profile = hub_auth::load_profile(app)
+            .await
+            .map_err(|_| CODEX_LOOKUP_ERROR)?;
+        let hub_id = profile.active_hub_id(&selected).to_owned();
+        if job.is_some_and(|j| j.hub_id != hub_id) {
+            return Err("Выберите в Wizard исходный хаб этого видеозадания".into());
+        }
+        let client = hub::client().map_err(|_| CODEX_LOOKUP_ERROR)?;
+        let list = async {
+            let state = current()?;
+            let mut session = state.hub_session;
+            let response = hub::list_agent_tokens(&client, &session, &hub_id).await;
+            let mut tokens =
+                accept_token_response(app, &mut session, response, CODEX_LOOKUP_ERROR).await?;
+            tokens.retain(|t| Some(t.token.as_str()) != state.proxy_token.as_deref());
+            Ok((tokens, session))
+        };
+        let token =
+            resolve_codex_token(job.map(|j| j.key_id.as_str()), list, async |mut session| {
+                current()?;
+                let response = hub::issue_agent_token(
+                    &client,
+                    &session,
+                    &hub_id,
+                    TokenAgent::Codex.token_name(),
+                )
+                .await;
+                let issued =
+                    accept_token_response(app, &mut session, response, CODEX_LOOKUP_ERROR).await?;
+                HubTokensManager::refresh(app).await;
+                Ok(issued)
+            })
+            .await?;
+        current()?;
+        Ok(VideoKey { hub_id, token })
+    }
+}
+
+async fn resolve_codex_token(
+    original_key_id: Option<&str>,
+    list: impl Future<Output = Result<(AgentTokens, String), String>>,
+    issue: impl AsyncFnOnce(String) -> Result<String, String>,
+) -> Result<String, String> {
+    // New jobs and Codex setup share this list-and-issue operation. Polls never issue.
+    let _guard = if original_key_id.is_none() {
+        Some(CODEX_TOKEN_LOCK.lock().await)
+    } else {
+        None
+    };
+    let (tokens, session) = list.await?;
+    let name = TokenAgent::Codex.token_name();
+    if let Some(id) = original_key_id {
+        return tokens
+            .iter()
+            .find(|t| t.name == name && fingerprint(&t.token) == id)
+            .map(|t| t.token.clone())
+            .ok_or_else(|| {
+                "Исходный ключ Codex для этого видеозадания отозван или недоступен".into()
+            });
+    }
+    if let Some(token) = tokens.named(name) {
+        return Ok(token.token.clone());
+    }
+    issue(session).await
 }
 
 /// Creates a token named `name` in the selected hub, then reloads the list so the token shows
@@ -441,6 +533,82 @@ mod tests {
             { "token": token, "name": "Agent", "issued_at": 1 }
         ]))
         .expect("test token list should deserialize")
+    }
+
+    #[test]
+    fn codex_and_video_share_the_oldest_default_and_poll_with_the_original_key() {
+        tauri::async_runtime::block_on(async {
+            let tokens: AgentTokens = serde_json::from_value(serde_json::json!([
+                {"name":"agent-codex", "token":"recent", "issued_at":3},
+                {"name":"studio", "token":"custom", "issued_at":1},
+                {"name":"coreinfra-ai-wizard", "token":"proxy", "issued_at":1},
+                {"name":"agent-codex", "token":"original", "issued_at":2}
+            ]))
+            .expect("fixture");
+            let resolve = |id| {
+                resolve_codex_token(id, ready(Ok((tokens.clone(), String::new()))), async |_| {
+                    panic!("existing defaults and job lookups must not issue keys")
+                })
+            };
+            assert_eq!(resolve(None).await.as_deref(), Ok("original"));
+            assert_eq!(
+                resolve(Some(&fingerprint("recent"))).await.as_deref(),
+                Ok("recent")
+            );
+            for missing in ["revoked", "custom", "proxy"] {
+                assert!(
+                    resolve_codex_token(
+                        Some(&fingerprint(missing)),
+                        ready(Ok((tokens.clone(), String::new()))),
+                        async |_| { panic!("polling must never issue a replacement") }
+                    )
+                    .await
+                    .is_err()
+                );
+            }
+            assert!(
+                resolve_codex_token(None, ready(Err("Hub unavailable".into())), async |_| {
+                    panic!("failed discovery must not issue a key")
+                })
+                .await
+                .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn simultaneous_first_requests_issue_one_codex_key() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        let issues = AtomicUsize::new(0);
+        tauri::async_runtime::block_on(async {
+            let request = || {
+                resolve_codex_token(
+                    None,
+                    async {
+                        let tokens = if issues.load(Ordering::SeqCst) == 0 {
+                            AgentTokens::default()
+                        } else {
+                            serde_json::from_value(serde_json::json!([
+                                {"name":"agent-codex","token":"issued","issued_at":1}
+                            ]))
+                            .expect("fixture")
+                        };
+                        tokio::task::yield_now().await;
+                        Ok((tokens, "refreshed-session".into()))
+                    },
+                    async |session| {
+                        assert_eq!(session, "refreshed-session");
+                        tokio::task::yield_now().await;
+                        issues.fetch_add(1, Ordering::SeqCst);
+                        Ok("issued".into())
+                    },
+                )
+            };
+            let (codex, video) = tokio::join!(request(), request());
+            assert_eq!(codex.as_deref(), Ok("issued"));
+            assert_eq!(video, codex);
+            assert_eq!(issues.load(Ordering::SeqCst), 1);
+        });
     }
 
     #[test]

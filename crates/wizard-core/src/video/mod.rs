@@ -4,15 +4,15 @@ pub mod server;
 
 use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
-use core::{future::Future, time::Duration};
+use core::time::Duration;
 use reqwest::{Client, RequestBuilder, Response, Url};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use server::VideoAccess;
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt as _;
-use wizard_settings::VideoConnection;
 
 pub const ADDRESS: &str = "127.0.0.1:33789";
 pub const URL: &str = "http://127.0.0.1:33789/mcp";
@@ -78,12 +78,18 @@ impl Create {
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct Job {
+pub struct Job {
     provider: Provider,
     model: String,
     id: String,
-    hub_id: String,
-    key_id: String,
+    pub hub_id: String,
+    pub key_id: String,
+}
+
+/// Resolved by Wizard for one operation. The token is never serialized or logged.
+pub struct VideoKey {
+    pub hub_id: String,
+    pub token: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -182,13 +188,10 @@ impl VideoHub {
         Ok(models)
     }
 
-    async fn create(
-        &self,
-        input: Create,
-        connection: &VideoConnection,
-        resolve_token: impl Future<Output = Result<String>>,
-    ) -> Result<Value> {
+    async fn create(&self, input: Create, access: &impl VideoAccess) -> Result<Value> {
         let (model_id, mut body) = input.into_body()?;
+        // Capture the caller's Hub before catalog I/O. Issue a key only for a known model.
+        let credentials = access.token(None);
         let model = self
             .models()
             .await?
@@ -203,11 +206,11 @@ impl VideoHub {
                 .origin
                 .join(&format!("{FAL}/{}", fal_model(&model.id)?))?,
         };
-        let token = resolve_token.await?;
+        let key = credentials.await?;
         let req = self
             .client
             .post(url)
-            .bearer_auth(&token)
+            .bearer_auth(&key.token)
             .header("content-type", "application/json")
             .body(serde_json::to_vec(&body)?);
         let response = read_json(req).await.context("Video submission failed. If the outcome is uncertain, do not submit again automatically")?;
@@ -222,23 +225,14 @@ impl VideoHub {
             provider: model.provider,
             model: model.id,
             id: id.to_owned(),
-            hub_id: connection.hub_id.clone(),
-            key_id: connection.key_id.clone(),
+            hub_id: key.hub_id,
+            key_id: fingerprint(&key.token),
         };
         Ok(json!({"job":job, "status":response["status"].as_str().unwrap_or("pending")}))
     }
 
-    async fn result(
-        &self,
-        input: GetResult,
-        connection: &VideoConnection,
-        resolve_token: impl Future<Output = Result<String>>,
-    ) -> Result<Value> {
+    async fn result(&self, input: GetResult, access: &impl VideoAccess) -> Result<Value> {
         let job = &input.job;
-        ensure!(
-            job.key_id == connection.key_id && job.hub_id == connection.hub_id,
-            "Reconnect the original Hub and video key in Wizard to read this job"
-        );
         ensure!(safe_segment(&job.id), "Invalid job ID");
         let path = match job.provider {
             Provider::OpenRouter => format!("{OPENROUTER}/{}", job.id),
@@ -250,7 +244,12 @@ impl VideoHub {
                 format!("{FAL}/{owner}/{app}/requests/{}", job.id)
             }
         };
-        let token = resolve_token.await?;
+        let key = access.token(Some(job)).await?;
+        ensure!(
+            job.hub_id == key.hub_id && job.key_id == fingerprint(&key.token),
+            "This video job requires its original Hub and API key"
+        );
+        let token = key.token;
         let url = self.origin.join(&path)?;
         let status_url = if job.provider == Provider::Fal {
             self.origin.join(&format!("{path}/status"))?
