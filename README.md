@@ -108,6 +108,50 @@ typography from the page behind it. Preserve heading order, keyboard focus,
 contrast in both themes and reduced-motion support. Download progress uses a
 labeled progressbar instead of announcing every percentage tick.
 
+Run the application checks from the repository root:
+
+```sh
+npm test --prefix crates/wizard-gui/wizard-ui
+npm run build --prefix crates/wizard-gui/wizard-ui
+```
+
+The flow tests cover background downloads, cancellation, explicit installation,
+version changes, first launch, connection plans and Hub balance states. Browser
+mocks do not exercise native archive installation or OS proxy changes.
+
+### Storybook
+
+```sh
+npm run storybook --prefix crates/wizard-gui/wizard-ui
+npm run build-storybook --prefix crates/wizard-gui/wizard-ui
+```
+
+Open <http://127.0.0.1:6006/>. The catalog contains design tokens, Catalyst controls,
+reusable product blocks, actual application screens and interaction flows. It
+includes Controls, component docs, accessibility checks, isolated light/dark
+themes, reduced motion, and 360/640/800/1100/1440 px viewports. The static catalog
+builds to `wizard-ui/storybook-static`; CI runs the frontend tests and builds both
+the application and catalog. The Catalyst license remains attached to its sources.
+
+`src/test/stories.test.tsx` runs the stories' actual play functions. The virtualized
+Combobox story is browser-only because JSDOM has no layout; verify it in the
+catalog. Check geometry, contrast, overflow and focus at the catalog's viewports.
+
+Useful stories:
+
+- `overview-transition--installation-into-control-panel` shows the installation
+  card folding into the management button, with replay/reset controls.
+- `сценарии-переходы--agent-update` exercises download, installation and version change.
+- `сценарии-переходы--setup-configuration` opens connection settings from management.
+- `сценарии-переходы--subscription-key` selects and saves a demo key across API and subscription modes.
+- `сценарии-переходы--narrow-activity` opens a download from the narrow sidebar menu.
+
+The scoped override of `@joshwooding/vite-plugin-react-docgen-typescript` to 0.9.1
+avoids the vulnerable glob/minimatch chain selected by Storybook 10.6.7's older
+range. `.storybook/main.ts` skips virtual story-index HMR events for this plugin,
+which otherwise reads null-prefixed module IDs as files. Remove the override and
+guard when upstream supports the updated dependency and filters virtual updates.
+
 ### Overview and initial setup
 
 **Обзор** is the default full-window page, above **Агенты** in the sidebar.
@@ -163,6 +207,80 @@ replaces Wizard and restarts it. Downloads survive closing the dialog and remain
 visible in the sidebar. «Отменить» aborts the download and discards its bytes.
 The main interface stays mounted throughout; only the explicit installation step
 prepares the proxy service for replacement.
+
+### Browser preview with mocks
+
+Run from the repository root:
+
+```sh
+npm run dev:mock --prefix crates/wizard-gui/wizard-ui
+```
+
+Open <http://127.0.0.1:1422/preview.html>. This uses the actual application
+components with local Tauri IPC mocks. It does not install applications, download
+archives, or contact Hub. The separate preview entry is excluded from the desktop
+production bundle. Reloading the preview resets all simulated operations.
+
+The «UI-превью · Моки» panel switches scenarios: first launch, background checks,
+failed checks, available update, missing agents,
+current version, downloaded archive, failed download with retry, reconnection,
+unknown size, required confirmation/running apps, signed-out account, and an
+unsupported platform. It also changes download speed, finishes downloads, resets
+the scene, and switches themes. A normal simulated download takes 36 seconds.
+For example, `preview.html?scenario=missing` opens the first-install scenario.
+`preview.html?scenario=downloads` starts two slower downloads to inspect the sidebar
+stack above the Hub divider in light and dark themes.
+`mixed_ready`, `mixed_progress` and `mixed_error` combine different states in
+neighboring cards to check alignment and independent actions.
+`all_agents` shows the daily overview with two illustrated cards: Hub balance and
+agent management. Its only action, «Панель управления», opens the list of agents.
+Each update opens its installation panel. Clicking an agent's connection status
+opens its settings inside management; «Назад» discards the draft and returns to
+the list. There are no generic install/setup buttons in management.
+The agent summary shows two names with logos and an overflow count. Drawings on
+enabled overview cards animate and turn blue on hover or keyboard focus, both
+during onboarding and after setup. The marker introduction is limited to
+onboarding; reduced motion keeps the color feedback without movement. The video
+banner is shared. Installation and update panels separate their actions with
+whitespace, without a horizontal rule.
+`unconfigured` shows the first connection flow. `onboarding_merge` demonstrates
+the installation card folding into the «Панель управления» button after
+setup finishes. The mock toolbar's «Показать переход» also plays it directly.
+Reduced-motion preferences skip the fold. `wizard_update` exercises the separate
+Wizard download/install dialog with simulated progress and no actual replacement.
+`balance_empty`, `balance_guest`, and `balance_error` cover the top-up prompt,
+guest access and unavailable balance. Guests see the Hub identity and its action,
+without a balance block or a replacement access label. In the mock preview, «Пополнить» simulates
+returning from Hub with 1,500 ₽; no real payment occurs. The native application
+reads `/hub/api/hub/info` and opens `/payments` for the selected Hub. Balance
+refreshes on window focus and every 30 seconds; missing data never means zero.
+Agent pages always show the connection form, aligned with the page content and
+without an outer frame, collapsed summary or cancel action. «Применить» stays on
+the right and is enabled only for pending changes; after saving, the form stays
+open with the saved values and the action becomes disabled. Missing CLI agents
+offer a copyable installation command. Connection modes share one framed radio
+group. Connected agents show «CoreInfra AI Hub» as their status.
+The mock preview offers two demo keys in both «API-доступ» and «Своя подписка»;
+the selected key persists when switching modes and is saved with the mock plan.
+This subscription key selection is preview-only: native Claude Desktop still
+uses the shared Wizard proxy key. No proxy authorization changes are simulated
+outside the mock environment.
+Settings have their own navigation item. Downloads appear only at the bottom of
+the left sidebar, above Hub; below 1024 px, open the navigation menu to access
+the same widgets. There is no download indicator in the top bar.
+Each app keeps its own progress indicator, so completing one transfer does not
+change the other's percentage. `chatgpt_error` shows a nested detection failure
+with details inside management; `unconfigured` also covers a stopped, unused proxy.
+`preview.html?scenario=startup` replays the first-launch animation on each reload,
+then opens Overview with all navigation and a signed-out account. Other scenarios
+retain the startup preference. `preview.html?scenario=checking` keeps the interface
+usable while releases are checked automatically and appear after three seconds.
+
+To verify the interaction: open the installation picker from onboarding, choose
+an app, then download from its expanded panel. Choose «Назад», select the other
+app, start its download, then close the dialog. Both widgets should keep progressing.
+Reopen one and cancel: only that download resets. Finish the other from the mock
+panel and verify that installation starts only after clicking its confirmation.
 
 Choosing a subscription offers to enable the system proxy if it is off.
 Only «Включить» changes OS settings; cancel keeps the selected mode. The prompt
