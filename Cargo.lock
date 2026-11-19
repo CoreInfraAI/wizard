@@ -5522,6 +5522,7 @@ dependencies = [
  "quick-xml",
  "regex",
  "reqwest",
+ "rustix",
  "semver",
  "serde",
  "serde_json",

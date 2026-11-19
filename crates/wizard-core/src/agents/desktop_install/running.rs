@@ -36,7 +36,7 @@ pub(crate) fn with_closed(
     apply: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     run_closed(
-        || close_existing(app),
+        || close_existing(app, last_path),
         apply,
         || open_existing(app, last_path),
     )
@@ -67,7 +67,9 @@ fn run_closed(
     }
 }
 
-fn close_existing(app: DesktopApp) -> Result<bool> {
+fn close_existing(app: DesktopApp, last_path: Option<&Path>) -> Result<bool> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = last_path;
     #[cfg(target_os = "macos")]
     {
         let id = app.spec().bundle.id;
@@ -88,7 +90,29 @@ fn close_existing(app: DesktopApp) -> Result<bool> {
     {
         windows::close_package(&app.spec().package)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        match app {
+            DesktopApp::Claude => linux::close(app, linux::claude_executable),
+            DesktopApp::ChatGpt => {
+                let info =
+                    match detection::detect_desktop(detection::DesktopAgent::Codex, last_path) {
+                        AgentDetection::Found(info) => info,
+                        AgentDetection::NotFound => anyhow::bail!("ChatGPT не найден"),
+                        AgentDetection::Error(error) => {
+                            anyhow::bail!("Не удалось найти ChatGPT: {error}")
+                        }
+                    };
+                let executable = linux::chatgpt_executable(&info.path)?;
+                linux::close(app, |path| {
+                    let bytes = path.as_os_str().as_encoded_bytes();
+                    bytes.strip_suffix(b" (deleted)").unwrap_or(bytes)
+                        == executable.as_os_str().as_encoded_bytes()
+                })
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         anyhow::bail!(
             "Перезапуск {} на этой платформе не поддерживается",
@@ -606,6 +630,7 @@ mod linux {
     pub(super) const LAUNCHER: &str = "/usr/bin/claude-desktop";
 
     pub(super) struct Process {
+        handle: Option<fs::File>,
         executable: PathBuf,
         command_line: Vec<u8>,
     }
@@ -623,32 +648,112 @@ mod linux {
     /// Inspect only Claude processes with the same real UID as Wizard. A readable
     /// executable link alone does not establish ownership (e.g. a privileged GUI).
     pub(super) fn processes() -> Vec<Process> {
-        let Some(uid) = fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|status| real_uid(&status))
-        else {
-            log::warn!("current process owner could not be read");
-            return Vec::new();
-        };
-        let Ok(entries) = fs::read_dir("/proc") else {
+        find_current_user_app_processes(&claude_executable).unwrap_or_else(|_| {
             log::warn!("process list could not be read");
-            return Vec::new();
-        };
-        entries
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().as_bytes().iter().all(u8::is_ascii_digit))
-            .filter_map(|entry| {
-                let executable = fs::read_link(entry.path().join("exe")).ok()?;
-                if !executable.starts_with(DIRECTORY) {
-                    return None;
+            Vec::new()
+        })
+    }
+
+    pub(super) fn claude_executable(path: &Path) -> bool {
+        path.starts_with(DIRECTORY)
+    }
+
+    pub(super) fn chatgpt_executable(launcher: &Path) -> Result<PathBuf> {
+        use std::io::Read as _;
+
+        let executable = fs::canonicalize(launcher)?;
+        let mut magic = [0; 4];
+        ensure!(
+            executable
+                .file_name()
+                .is_some_and(|name| name.as_bytes().eq_ignore_ascii_case(b"chatgpt"))
+                && fs::File::open(&executable)?.read_exact(&mut magic).is_ok()
+                && magic == *b"\x7fELF",
+            "Не удалось определить отдельный исполняемый файл ChatGPT по его лаунчеру"
+        );
+        Ok(executable)
+    }
+
+    fn find_current_user_app_processes(matches: &impl Fn(&Path) -> bool) -> Result<Vec<Process>> {
+        use std::os::fd::AsRawFd as _;
+
+        let uid = real_uid(&fs::read_to_string("/proc/self/status")?)
+            .context("Не удалось определить пользователя Wizard")?;
+        let mut found = Vec::new();
+        for entry in fs::read_dir("/proc")? {
+            let entry = entry?;
+            if !entry.file_name().as_bytes().iter().all(u8::is_ascii_digit) {
+                continue;
+            }
+            // Fast filter, then pin the process and repeat identification via the handle.
+            if !fs::read_link(entry.path().join("exe")).is_ok_and(|exe| matches(&exe)) {
+                continue;
+            }
+            let inspect = || -> std::io::Result<Option<Process>> {
+                let handle = fs::File::open(entry.path())?;
+                let dir = PathBuf::from(format!("/proc/self/fd/{}", handle.as_raw_fd()));
+                let executable = fs::read_link(dir.join("exe"))?;
+                if !matches(&executable)
+                    || real_uid(&fs::read_to_string(dir.join("status"))?) != Some(uid)
+                {
+                    return Ok(None);
                 }
-                let status = fs::read_to_string(entry.path().join("status")).ok()?;
-                (real_uid(&status) == Some(uid)).then(|| Process {
+                Ok(Some(Process {
+                    handle: Some(handle),
                     executable,
-                    command_line: fs::read(entry.path().join("cmdline")).unwrap_or_default(),
-                })
-            })
-            .collect()
+                    command_line: fs::read(dir.join("cmdline"))?,
+                }))
+            };
+            match inspect() {
+                Ok(Some(process)) => found.push(process),
+                Ok(None) => {}
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        || error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(found)
+    }
+
+    pub(super) fn close(app: super::DesktopApp, matches: impl Fn(&Path) -> bool) -> Result<bool> {
+        use core::time::Duration;
+        use std::time::Instant;
+
+        let processes = find_current_user_app_processes(&matches)?;
+        if processes.is_empty() {
+            return Ok(false);
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for process in &processes {
+            if command(process).is_some() {
+                request_quit(
+                    process
+                        .handle
+                        .as_ref()
+                        .context("Нет дескриптора процесса")?,
+                )?;
+            }
+        }
+        while !find_current_user_app_processes(&matches)?.is_empty() {
+            ensure!(
+                Instant::now() < deadline,
+                "{} не закрылся. Завершите текущую работу и повторите попытку.",
+                app.product()
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        Ok(true)
+    }
+
+    fn request_quit(handle: &fs::File) -> Result<()> {
+        use rustix::process::{Signal, pidfd_send_signal};
+
+        match pidfd_send_signal(handle, Signal::TERM) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+            Err(error) => Err(error).context("Не удалось запросить закрытие приложения"),
+        }
     }
 
     /// Executable and arguments of the Electron main process.
@@ -667,7 +772,7 @@ mod linux {
                 .executable
                 .file_name()
                 .is_some_and(|name| name.as_bytes().starts_with(b"chrome"));
-        if helper {
+        if helper || process.command_line.is_empty() {
             return None;
         }
         // A replaced executable reads as "<path> (deleted)".
@@ -708,9 +813,47 @@ mod linux {
 
         fn process(executable: &str, command_line: &[u8]) -> Process {
             Process {
+                handle: None,
                 executable: PathBuf::from(executable),
                 command_line: command_line.to_vec(),
             }
+        }
+
+        #[test]
+        fn chatgpt_launcher_must_resolve_to_a_dedicated_binary() -> Result<()> {
+            use std::os::unix::fs::symlink;
+
+            let dir = tempfile::tempdir()?;
+            let launcher = dir.path().join("chatgpt");
+            let binary = dir.path().join("ChatGPT");
+            fs::write(&binary, b"\x7fELF")?;
+            symlink(&binary, &launcher)?;
+            assert_eq!(chatgpt_executable(&launcher)?, fs::canonicalize(&binary)?);
+            fs::write(&binary, b"#!/bin/sh")?;
+            assert!(chatgpt_executable(&launcher).is_err());
+            fs::remove_file(&launcher)?;
+            let electron = dir.path().join("electron");
+            fs::write(&electron, b"\x7fELF")?;
+            symlink(electron, &launcher)?;
+            assert!(chatgpt_executable(&launcher).is_err());
+            Ok(())
+        }
+
+        #[test]
+        fn quit_signals_only_the_pinned_test_child() -> Result<()> {
+            use std::os::unix::process::ExitStatusExt as _;
+
+            let mut child = Command::new("/usr/bin/sleep").arg("2").spawn()?;
+            let handle = fs::File::open(format!("/proc/{}", child.id()))?;
+            let sent = request_quit(&handle);
+            let status = child.wait()?;
+            sent?;
+            assert_eq!(
+                status.signal(),
+                Some(rustix::process::Signal::TERM.as_raw())
+            );
+            // The original process is gone; the same descriptor remains harmless.
+            request_quit(&handle)
         }
 
         #[test]

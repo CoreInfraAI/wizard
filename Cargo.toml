@@ -47,6 +47,7 @@ dirs = "6"
 file-rotate = "0.8.0"
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
 libc = "0.2.189"
+rustix = "1.1.4"
 base64 = "0.22.1"
 clap = "4.5.60"
 cookie = { version = "0.18.2", default-features = false }
