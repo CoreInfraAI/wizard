@@ -115,7 +115,7 @@ pub fn restore_backup(id: u32, settings: &Settings) -> Result<()> {
     let path = std::path::absolute(config_path()?)?;
     let backups = BackupManager::new(AgentKind::Codex)?;
     let mut changes = backups.restore_changes(id)?;
-    protect_restored_configs(&mut changes, &path, settings)?;
+    restore_video_registration(&mut changes, &path, settings)?;
     backups.apply_changes(&changes)?;
     // Backups hold files only; the restored mode decides whether ChatGPT updates itself.
     #[cfg(target_os = "macos")]
@@ -132,7 +132,7 @@ pub fn restore_backup(id: u32, settings: &Settings) -> Result<()> {
     Ok(())
 }
 
-fn protect_restored_configs(
+fn restore_video_registration(
     changes: &mut Vec<FileChange>,
     active: &Path,
     settings: &Settings,
@@ -147,7 +147,6 @@ fn protect_restored_configs(
             .is_some_and(|n| n == "config.toml")
         {
             let connection = settings.video.as_ref().filter(|_| change.path() == active);
-            config_files::toml::update(&mut change.after, exclude_hub_key)?;
             crate::video::install::update_config(&mut change.after, None, connection)?;
         }
     }
@@ -498,7 +497,12 @@ fn daemon_executable(settings: &Settings) -> Result<Option<PathBuf>> {
     )
 }
 
-const API_FILTERS: &[&str] = &["COREINFRA_PROXY_URL", "HTTPS_PROXY", "NO_PROXY"];
+const API_FILTERS: &[&str] = &[
+    "COREINFRA_API_KEY",
+    "COREINFRA_PROXY_URL",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+];
 
 fn remove_inactive_routing_settings(
     doc: &mut DocumentMut,
@@ -524,7 +528,6 @@ fn remove_inactive_routing_settings(
 }
 
 fn write_routing_settings(doc: &mut DocumentMut, mode: RoutingMode) -> Result<()> {
-    exclude_hub_key(doc)?;
     let (provider, name, base_url) = match mode {
         RoutingMode::Disabled => return Ok(()),
         RoutingMode::Hub => (
@@ -594,27 +597,6 @@ fn write_routing_settings(doc: &mut DocumentMut, mode: RoutingMode) -> Result<()
     Ok(())
 }
 
-pub(crate) fn exclude_hub_key(doc: &mut DocumentMut) -> Result<()> {
-    config_files::toml::set_value(
-        doc,
-        &["shell_environment_policy", "filters", "COREINFRA_API_KEY"],
-        "exclude",
-    )
-}
-
-/// Upgrade older Wizard-managed API profiles at startup, including installations without video.
-pub fn migrate_hub_key_filter() -> Result<()> {
-    let _guard = PreparedAgent::Codex.lock()?;
-    let mut config = FileChange::read(config_path()?)?;
-    config_files::toml::update(&mut config.after, |doc| {
-        if mode_from_config(doc) != RoutingMode::Disabled {
-            exclude_hub_key(doc)?;
-        }
-        Ok(())
-    })?;
-    FileChange::apply_all(&[config])
-}
-
 fn remove_inactive_routing_env(
     after: &mut FileSnapshot,
     current_mode: RoutingMode,
@@ -663,7 +645,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn excludes_hub_key_across_modes_and_old_backup_restores() -> Result<()> {
+    fn hub_key_filter_follows_subscription_routing() -> Result<()> {
         let mut doc: DocumentMut =
             "[shell_environment_policy.filters]\nKEEP='include'\n".parse()?;
         for mode in [
@@ -675,21 +657,29 @@ mod tests {
             let before = mode_from_config(&doc);
             remove_inactive_routing_settings(&mut doc, before)?;
             write_routing_settings(&mut doc, mode)?;
-            for (key, value) in [("KEEP", "include"), ("COREINFRA_API_KEY", "exclude")] {
+            let key_filter = (mode == RoutingMode::Sub).then_some("exclude");
+            for (key, expected) in [("KEEP", Some("include")), ("COREINFRA_API_KEY", key_filter)] {
                 assert_eq!(
                     config_files::toml::get_string(
                         &doc,
                         &["shell_environment_policy", "filters", key]
                     ),
-                    Some(value)
+                    expected
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn restoring_video_registration_preserves_shell_policy() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let active = dir.path().join("config.toml");
         let old = dir.path().join("previous-home/config.toml");
         let mut backup = FileChange::read(old.clone())?;
-        backup.after = FileSnapshot::new("model_provider='coreinfra'\n".into(), 0o644);
+        let backed_up =
+            "model_provider='coreinfra'\n[shell_environment_policy]\nexclude=['PRIVATE_SETTING']\n";
+        backup.after = FileSnapshot::new(backed_up.into(), 0o644);
         let settings = Settings {
             video: Some(wizard_settings::VideoConnection {
                 account_id: "p".into(),
@@ -701,12 +691,12 @@ mod tests {
             ..Settings::default()
         };
         let mut changes = vec![backup];
-        protect_restored_configs(&mut changes, &active, &settings)?;
+        restore_video_registration(&mut changes, &active, &settings)?;
         FileChange::apply_all(&changes)?;
-        let old_config = std::fs::read_to_string(old)?;
-        assert!(old_config.contains("exclude"));
-        assert!(!old_config.contains("fixture-local-grant"));
-        assert!(std::fs::read_to_string(active)?.contains("fixture-local-grant"));
+        assert_eq!(std::fs::read_to_string(old)?, backed_up);
+        let active_config = std::fs::read_to_string(active)?;
+        assert!(active_config.contains("fixture-local-grant"));
+        assert!(!active_config.contains("shell_environment_policy"));
         Ok(())
     }
 

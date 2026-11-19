@@ -105,13 +105,7 @@ pub(crate) fn update_config(
     previous: Option<&VideoConnection>,
     next: Option<&VideoConnection>,
 ) -> Result<()> {
-    toml::update(snapshot, |doc| {
-        registration(doc, previous, next)?;
-        if next.is_some() {
-            codex::exclude_hub_key(doc)?;
-        }
-        Ok(())
-    })?;
+    toml::update(snapshot, |doc| registration(doc, previous, next))?;
     #[cfg(unix)]
     if next.is_some()
         && let FileSnapshot::Present { mode, .. } = snapshot

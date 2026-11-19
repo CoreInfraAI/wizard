@@ -26,7 +26,7 @@ def native_client(profile):
     env = {k: os.environ[k] for k in ("PATH", "HOME", "TMPDIR", "LANG", "USER") if k in os.environ}
     env.update(CODEX_HOME=str(profile), HTTP_PROXY="http://127.0.0.1:1",
                HTTPS_PROXY="http://127.0.0.1:1", ALL_PROXY="http://127.0.0.1:1",
-               NO_PROXY="127.0.0.1,localhost", COREINFRA_API_KEY="exclude-this-test-value")
+               NO_PROXY="127.0.0.1,localhost", WIZARD_VIDEO_TEST_FILTER="fixture")
     binary = os.environ["WIZARD_VIDEO_TEST_CODEX"]
     server = subprocess.Popen([binary, "app-server", "--listen", "stdio://",
                                "-c", 'model_provider="fixture"', "-c", 'model="offline"'],
@@ -66,7 +66,7 @@ def native_client(profile):
         tools = next(s["tools"] for s in inventory["data"] if s["name"] == "coreinfra_video")
         assert set(tools) == {"video_models","video_create","video_result"}
         shell = call("command/exec", {"command":[sys.executable,"-I","-c",
-                     "import os; print('COREINFRA_API_KEY' in os.environ)"],
+                     "import os; print('WIZARD_VIDEO_TEST_FILTER' in os.environ)"],
                      "cwd":str(profile.parent), "sandboxPolicy":{"type":"workspaceWrite","networkAccess":False}})
         assert shell["exitCode"] == 0 and shell["stdout"].strip() == "False", shell
         result = call("mcpServer/tool/call", {"threadId":thread,"server":"coreinfra_video",
@@ -107,4 +107,4 @@ if __name__ == "__main__":
     test_profile = Path(sys.argv[1]).resolve()
     existing = native_client(test_profile)
     asyncio.run(python_client(test_profile, existing))
-    print("Native ChatGPT skill, credential exclusion, MCP tools and Python SDK round trip passed.")
+    print("Native ChatGPT skill, existing shell policy, MCP tools and Python SDK round trip passed.")
