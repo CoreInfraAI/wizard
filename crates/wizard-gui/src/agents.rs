@@ -256,12 +256,10 @@ pub(crate) async fn prepare_agent_change(
         AgentChange::ClaudeSetRouting(mode) => claude::prepare_routing(mode, &token),
         AgentChange::ClaudeDesktopSetRouting(mode) => {
             let mut plan = claude_desktop::prepare_routing(mode, &token)?;
-            if cfg!(any(target_os = "macos", target_os = "windows")) {
-                plan.restart_desktop(
-                    wizard_core::agents::desktop_install::DesktopApp::Claude,
-                    settings.last_paths.claude_desktop.as_deref(),
-                );
-            }
+            plan.restart_desktop(
+                wizard_core::agents::desktop_install::DesktopApp::Claude,
+                settings.last_paths.claude_desktop.as_deref(),
+            );
             Ok(plan)
         }
         AgentChange::SetPiHub(mode) => pi::prepare_hub(mode, &token, &settings),

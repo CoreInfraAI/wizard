@@ -208,12 +208,6 @@ fn read_routing_at(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)
 /// Prepare a local profile update without writing files or restarting Claude. Hub writes `token`
 /// to the profile; Hub and Sub enable local proxy demand; Disabled ignores it.
 pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
-    // Hub and Sub point Claude at the local proxy, which Linux cannot start yet.
-    #[cfg(target_os = "linux")]
-    ensure!(
-        mode == RoutingMode::Disabled,
-        "Claude Desktop routing requires the local proxy, which is not available on Linux"
-    );
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
     prepare_routing_at(&config_library()?, mode, token)
