@@ -43,6 +43,17 @@ afterEach(() => {
   clearMocks();
 });
 
+it("shows the automatic video connection on the Codex page and lets the user reconnect it", async () => {
+  const user = userEvent.setup();
+  launch("current", "/agents/codex");
+  const video = within(await screen.findByRole("group", { name: "Видеомодели CoreInfra" }));
+  expect(await video.findByText(/ключ agent-codex/)).toBeVisible();
+  expect(environment.calls).not.toContain("set_video_connection");
+  await user.click(video.getByRole("button", { name: "Отключить" }));
+  await user.click(await video.findByRole("button", { name: "Включить видеомодели" }));
+  expect(await video.findByRole("button", { name: "Отключить" })).toBeVisible();
+});
+
 describe("shared installation flow", () => {
   it("keeps a download through Back and Escape, then cancels and starts again from zero", async () => {
     const user = userEvent.setup();
