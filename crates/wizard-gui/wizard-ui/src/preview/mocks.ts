@@ -206,6 +206,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
     balance_rub: ["balance_empty", "balance_guest", "onboarding_merge"].includes(scenario) ? 0 : 2500,
   });
   const proxy = new Snapshots({ enabled: !onboarding });
+  let videoEnabled = true;
   const update = new Snapshots<UpdateState>(
     scenario === "wizard_update" ? { status: "available", version: "1.0.6" }
       : scenario === "checking" || scenario === "startup"
@@ -486,6 +487,11 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
             return configured.read(revision);
           case "get_proxy_state":
             return proxy.read(revision);
+          case "get_video_connection":
+            return { enabled: videoEnabled, running: videoEnabled, error: null };
+          case "set_video_connection":
+            videoEnabled = args.enabled === true;
+            return;
           case "get_update_state":
             return update.read(revision);
           case "get_application_settings":
