@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useContext, useEffect, useState } from "react";
 import { CheckIcon } from "@heroicons/react/20/solid";
 import {
   type AgentChange,
@@ -34,6 +34,7 @@ import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 import { useSystemProxy } from "../settings/system_proxy";
 import { SystemProxyPrompt } from "../settings/SystemProxyPrompt";
+import { SubscriptionTokenPreviewContext } from "./connection_preview";
 
 type ModeOption<M extends string> = {
   mode: M;
@@ -280,10 +281,11 @@ export function RoutingFieldset<M extends string>({
   needsApply?: boolean;
 }) {
   const [draft, setDraft] = useState<M | undefined>(initialMode);
+  const subscriptionTokenPreview = useContext(SubscriptionTokenPreviewContext);
   const selected = draft ?? mode;
   const enabled = selected !== "disabled";
   const proxyOnly =
-    agent === "claude_desktop" && selected === "sub";
+    agent === "claude_desktop" && selected === "sub" && !subscriptionTokenPreview;
   const token = useAgentToken(agent, agentToken, hub);
   const tokenChanged =
     !proxyOnly &&
