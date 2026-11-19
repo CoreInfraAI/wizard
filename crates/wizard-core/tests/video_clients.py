@@ -1,5 +1,6 @@
-"""Opt-in compatibility test, launched by the Rust native_and_python_clients fixture."""
+"""Codex app-server test client and the opt-in Python MCP compatibility test."""
 import asyncio
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -7,37 +8,48 @@ import queue
 import subprocess
 import sys
 import threading
-import time
-import tomllib
-
-import httpx2
-from mcp import Client
-from mcp.client.streamable_http import streamable_http_client
 
 
-MP4 = (Path(__file__).parent / "fixtures/blue.mp4").read_bytes()
+def receive(channel, timeout, operation):
+    try:
+        message = channel.get(timeout=max(0, timeout))
+    except queue.Empty:
+        raise TimeoutError(f"Timed out waiting for {operation}") from None
+    if message is None:
+        raise RuntimeError(f"Codex exited during {operation}")
+    return message
 
 
-def native_client(profile):
+@contextmanager
+def codex_session(profile, model_url="http://127.0.0.1:1/v1", extra_env=None):
     config = profile / "config.toml"
-    with config.open("a") as file:
+    with config.open("a", encoding="utf-8") as file:
         file.write('\n[model_providers.fixture]\nname="Offline fixture"\n'
-                   'base_url="http://127.0.0.1:1/v1"\nwire_api="responses"\n')
-    env = {k: os.environ[k] for k in ("PATH", "HOME", "TMPDIR", "LANG", "USER") if k in os.environ}
+                   f'base_url="{model_url}"\nwire_api="responses"\n')
+    system_vars = ("PATH", "HOME", "TMPDIR", "LANG", "USER", "SYSTEMROOT", "WINDIR",
+                   "SYSTEMDRIVE", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA",
+                   "COMSPEC", "PATHEXT", "TEMP", "TMP")
+    env = {k: os.environ[k] for k in system_vars if k in os.environ}
     env.update(CODEX_HOME=str(profile), HTTP_PROXY="http://127.0.0.1:1",
                HTTPS_PROXY="http://127.0.0.1:1", ALL_PROXY="http://127.0.0.1:1",
-               NO_PROXY="127.0.0.1,localhost", WIZARD_VIDEO_TEST_FILTER="fixture",
-               COREINFRA_API_KEY="unrelated-process-fixture-key")
+               NO_PROXY="127.0.0.1,localhost")
+    env.update(extra_env or {})
     binary = os.environ["WIZARD_VIDEO_TEST_CODEX"]
-    server = subprocess.Popen([binary, "app-server", "--listen", "stdio://",
+    launcher = ["node", binary] if binary.endswith(".js") else [binary]
+    server = subprocess.Popen([*launcher, "app-server", "--listen", "stdio://",
                                "-c", 'model_provider="fixture"', "-c", 'model="offline"'],
                               cwd=profile.parent, env=env, stdin=subprocess.PIPE,
-                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                              stdout=subprocess.PIPE, stderr=sys.stderr, encoding="utf-8", bufsize=1)
     replies = queue.Queue()
+    events = queue.Queue()
     def read():
-        for line in server.stdout:
-            replies.put(json.loads(line))
-        replies.put(None)
+        try:
+            for line in server.stdout:
+                message = json.loads(line)
+                (events if "method" in message else replies).put(message)
+        finally:
+            replies.put(None)
+            events.put(None)
     threading.Thread(target=read, daemon=True).start()
     def send(message):
         server.stdin.write(json.dumps(message) + "\n")
@@ -47,19 +59,26 @@ def native_client(profile):
         nonlocal seq
         seq += 1
         send({"jsonrpc":"2.0", "id":seq, "method":method, "params":params})
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            msg = replies.get(timeout=max(.01, deadline - time.monotonic()))
-            if msg is None:
-                raise RuntimeError("test app-server exited")
-            if msg.get("id") == seq and "method" not in msg:
-                assert "error" not in msg, (method, msg.get("error"))
-                return msg["result"]
-        raise TimeoutError(method)
+        msg = receive(replies, 30, method)
+        assert msg["id"] == seq and "error" not in msg, (method, msg.get("error"))
+        return msg["result"]
     try:
         call("initialize", {"clientInfo":{"name":"wizard_fixture","version":"1"},
                             "capabilities":{"experimentalApi":True}})
         send({"jsonrpc":"2.0","method":"initialized"})
+        yield call, events
+    finally:
+        server.stdin.close()
+        try:
+            server.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            server.terminate()
+            server.wait(timeout=4)
+
+
+def native_client(profile):
+    shell_env = {"WIZARD_VIDEO_TEST_FILTER": "fixture", "COREINFRA_API_KEY": "unrelated-process-fixture-key"}
+    with codex_session(profile, extra_env=shell_env) as (call, _):
         options = {"cwd":str(profile.parent),"ephemeral":True,"sandbox":"workspace-write"}
         old_thread = call("thread/start", options)["thread"]["id"]
         before = call("mcpServerStatus/list", {"threadId":old_thread})
@@ -84,16 +103,15 @@ def native_client(profile):
                       "fields":{"provider":{"options":{"test":{"seed":0,"flag":False,"values":[None,2.75]}}}}}})
         assert not result.get("isError"), result
         return result["structuredContent"]["job"]
-    finally:
-        server.stdin.close()
-        try:
-            server.wait(timeout=4)
-        except subprocess.TimeoutExpired:
-            server.terminate()
-            server.wait(timeout=4)
 
 
 async def python_client(profile, existing_job):
+    import tomllib
+    import httpx2
+    from mcp import Client
+    from mcp.client.streamable_http import streamable_http_client
+
+    mp4 = (Path(__file__).parent / "fixtures/blue.mp4").read_bytes()
     with (profile / "config.toml").open("rb") as file:
         local = tomllib.load(file)["mcp_servers"]["coreinfra_video"]
     async with httpx2.AsyncClient(headers=local["http_headers"], trust_env=False) as http:
@@ -103,14 +121,14 @@ async def python_client(profile, existing_job):
             assert len(models.structured_content["models"]) == 2
             for _ in range(2):
                 result = await wizard.call_tool("video_result", {"job": existing_job, "index": 1})
-            assert Path(result.structured_content["path"]).read_bytes() == MP4
+            assert Path(result.structured_content["path"]).read_bytes() == mp4
             submitted = await wizard.call_tool("video_create", {
                 "model": "example/flux/image-to-video", "prompt": "python client",
                 "fields_json": json.dumps({"image_url":"data:image/png;base64,AAAA","extra":[False,None,3]})})
             job = submitted.structured_content["job"]
         async with Client(streamable_http_client(local["url"], http_client=http)) as resumed:
             final = await resumed.call_tool("video_result", {"job":job})
-            assert Path(final.structured_content["path"]).read_bytes() == MP4
+            assert Path(final.structured_content["path"]).read_bytes() == mp4
 
 
 if __name__ == "__main__":
