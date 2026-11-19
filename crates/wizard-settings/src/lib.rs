@@ -32,10 +32,23 @@ pub struct Settings {
     /// Random id that tells Wizard installations apart in Hub update metrics. Not a secret.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub install_id: String,
+    /// One local video client grant. The upstream agent token is resolved in Hub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoConnection>,
     /// Application lifecycle preferences, independent of proxy demand.
     pub application: ApplicationSettings,
     /// Kept last: it serializes as a TOML table, written after plain keys.
     pub last_paths: LastPaths,
+}
+
+// No Debug: local_bearer authenticates paid video requests on loopback.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VideoConnection {
+    pub account_id: String,
+    pub hub_id: String,
+    pub key_name: String,
+    pub key_id: String,
+    pub local_bearer: String,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -201,6 +214,23 @@ pub fn update_file(edit: impl FnOnce(&mut Settings)) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_connection_round_trips_in_existing_installations() -> Result<()> {
+        let mut settings: Settings = toml_edit::de::from_str("install_id = 'abcdefgh27'")?;
+        assert!(settings.video.is_none());
+        settings.video = Some(VideoConnection {
+            account_id: "account".into(),
+            hub_id: "team".into(),
+            key_name: "studio".into(),
+            key_id: "fingerprint".into(),
+            local_bearer: "local-grant".into(),
+        });
+        let saved = toml_edit::ser::to_string_pretty(&settings)?;
+        let restored: Settings = toml_edit::de::from_str(&saved)?;
+        assert!(settings == restored);
+        Ok(())
+    }
 
     #[test]
     fn application_defaults_and_partial_tables() {

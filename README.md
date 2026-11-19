@@ -2,6 +2,37 @@
 
 An application for configuring agents to use CoreInfra.
 
+## Video in ChatGPT Work and Codex
+
+In Wizard, sign in, select a Hub, then open **ChatGPT / Codex → Видеомодели CoreInfra**. Select the API key by its Hub name and click **Подключить видеомодели**. Matching names show a short fingerprint. Keep Wizard running and ask for a video in a new chat, or invoke `$coreinfra-video`.
+
+Wizard installs the bundled skill under the user's Codex skills directory and registers `coreinfra_video` at `http://127.0.0.1:33789/mcp` in the same Codex profile. Wizard refreshes its bundled files on startup. **Отключить** revokes local access and removes the managed registration and unmodified skill files. Updates preserve user edits and report file conflicts. Registration works with the profile selected by `CODEX_HOME`.
+
+`video_models` returns the public catalog and prices in RUB per second. `video_create` submits one paid job. Save the full returned `job` object and pass it to `video_result` to poll, including after restarting Wizard. The original Hub and key must still be available. A completed download returns a local MP4 in **Downloads/CoreInfra Video**. Use `download: false` to poll without creating a file. fal also returns its signed result URL in this mode. Repeating a submission after a network timeout can incur another charge.
+
+The local bearer in the Codex MCP registration grants access to video operations for the selected Hub key. Wizard resolves that key in the signed-in account for each authenticated operation. Job references contain the Hub ID, key fingerprint, provider, model and upstream job ID. Wizard keeps no job table or MCP session. A Python MCP client with permission to reach loopback can use the same URL and local `http_headers`. ChatGPT Work can use the registered tools with shell network access restricted.
+
+### Custom video fields
+
+Put provider-specific JSON in `fields`. Wizard merges its entries into the outgoing JSON body and preserves nested objects, arrays, numbers, booleans and nulls. For clients that cannot express open-ended object arguments, `fields_json` accepts the same object as a JSON string. Use one representation per request. `model` and `prompt` are reserved tool arguments. The destination, authentication and HTTP headers are controlled by Wizard.
+
+```json
+{
+  "model": "blackforestlabs/flux-3-max/image-to-video",
+  "prompt": "The paper boat drifts downstream",
+  "fields": {
+    "image_url": "data:image/png;base64,<encoded first frame>",
+    "duration": 5,
+    "seed": 0,
+    "generate_audio": false
+  }
+}
+```
+
+For OpenRouter, put per-provider options under `fields.provider.options` and inline frame images under `fields.frame_images`. The Hub strips other OpenRouter routing options and `callback_url`. fal accepts inline `image_url` and `end_image_url` and uses polling for job status. The MCP request body limit is 32 MiB including base64 encoding. The Hub and model determine which fields they honor. [OpenRouter media](https://coreinfra.ru/docs/use/openrouter) · [fal queue](https://coreinfra.ru/docs/use/fal)
+
+The [client compatibility test](crates/wizard-core/tests/video_clients.py) includes a Python SDK 2.x example using `streamable_http_client`. To repeat the end-to-end test, set `WIZARD_VIDEO_TEST_PYTHON` to a Python with `mcp` 2.x installed and `WIZARD_VIDEO_TEST_CODEX` to a Codex executable. Run `cargo test -p wizard-core native_and_python_clients -- --ignored --nocapture`. All submissions in this test go to its temporary local Hub.
+
 ## How to build
 
 1. Install Rust and Node.js:

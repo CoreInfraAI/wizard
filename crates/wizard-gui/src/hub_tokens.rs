@@ -11,7 +11,7 @@ use serde::Serialize;
 use tauri::Manager as _;
 use wizard_core::hub::{self, AgentTokens, Client, HubError, SessionUpdate};
 
-const PROXY_TOKEN_NAME: &str = "coreinfra-ai-wizard";
+pub(crate) const PROXY_TOKEN_NAME: &str = "coreinfra-ai-wizard";
 
 #[derive(Clone, Default, Serialize)]
 pub(crate) struct HubTokens {
@@ -22,6 +22,25 @@ pub(crate) struct HubTokens {
     /// Bumped by `clear`, so a refresh or issue started for a previous session is discarded.
     #[serde(skip)]
     generation: u64,
+}
+
+pub(crate) fn video_keys(app: &tauri::AppHandle) -> (Option<String>, Vec<crate::video::VideoKey>) {
+    let snapshot = app.state::<RevisionSignal<HubTokens>>().current().state;
+    let proxy = settings::get_state(app).ok().and_then(|s| s.proxy_token);
+    let keys = snapshot
+        .tokens
+        .iter()
+        .filter(|t| crate::video::selectable(t, proxy.as_deref()))
+        .map(crate::video::VideoKey::from)
+        .collect();
+    (snapshot.hub_id, keys)
+}
+
+pub(crate) fn generation(app: &tauri::AppHandle) -> u64 {
+    app.state::<RevisionSignal<HubTokens>>()
+        .current()
+        .state
+        .generation
 }
 
 #[derive(Clone, Copy, Debug)]
