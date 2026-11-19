@@ -16,18 +16,23 @@ anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true
 cookie.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
 dirs.workspace = true
 ed25519-dalek.workspace = true
 log.workspace = true
 regex.workspace = true
+rmcp.workspace = true
 quick-xml.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] } # keep key order in user files
 semver.workspace = true
+schemars.workspace = true
 sha2.workspace = true
 jsonc-parser.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "fs", "macros"] }
 toml_edit = { workspace = true, features = ["serde"] }
 tempfile.workspace = true
 tokio-rustls.workspace = true

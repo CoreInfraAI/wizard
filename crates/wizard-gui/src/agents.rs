@@ -394,9 +394,12 @@ pub(crate) async fn apply_direct_change(
             return apply_agent_plan(plan, app).await;
         }
         DirectChange::RestoreBackup { agent, id } => {
-            let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
+            let restore_app = app.clone();
             let result = tauri::async_runtime::spawn_blocking(move || match agent {
-                BackupAgent::Codex => codex::restore_backup(id, &settings),
+                BackupAgent::Codex => {
+                    let _guard = settings::lock_state()?;
+                    codex::restore_backup(id, &settings::get_state(&restore_app)?)
+                }
                 BackupAgent::Claude => claude::restore_backup(id),
                 BackupAgent::ClaudeDesktop => unreachable!(),
             })

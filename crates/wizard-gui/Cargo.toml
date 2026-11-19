@@ -33,6 +33,7 @@ tauri-plugin-log.workspace = true
 tauri-plugin-single-instance.workspace = true
 tauri-plugin-updater.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 wizard-core.workspace = true
 wizard-proxy.workspace = true
 wizard-proxy-daemon.workspace = true

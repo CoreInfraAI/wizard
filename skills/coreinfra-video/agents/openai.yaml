@@ -1,0 +1,10 @@
+interface:
+  display_name: "CoreInfra Video"
+  short_description: "Генерация видео через модели CoreInfra Hub"
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "coreinfra_video"
+      description: "CoreInfra Wizard video tools"
+      transport: "streamable_http"
+      url: "http://127.0.0.1:33789/mcp"

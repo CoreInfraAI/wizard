@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use anyhow::ensure;
 use regex::Regex;
 use std::sync::LazyLock;
@@ -7,6 +9,7 @@ mod config_files;
 pub mod hub;
 mod platform;
 pub mod prepared_plan;
+pub mod video;
 
 pub fn validate_token(token: &str) -> anyhow::Result<()> {
     static TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {

@@ -23,6 +23,7 @@ mod system_proxy;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod tray;
 mod updater;
+mod video;
 
 const MAIN_WINDOW_NAME: &str = "main";
 static MAIN_WINDOW_LOCK: Mutex<()> = Mutex::new(());
@@ -89,6 +90,7 @@ pub fn run_application() -> Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(desktop_install::InstallManagers::default())
         .manage(proxy::ProxyState::default())
+        .manage(video::State::default())
         // Proxy startup can sign out a rejected session, which clears the token list.
         .manage(revision_signal::RevisionSignal::new(
             hub_tokens::HubTokens::default(),
@@ -136,6 +138,8 @@ pub fn run_application() -> Result<()> {
             hub_tokens::get_hub_tokens_state,
             hub_tokens::get_configured_token_info,
             hub_tokens::refresh_hub_tokens,
+            video::get_video_connection,
+            video::set_video_connection,
             proxy::get_proxy_state,
             agents::get_agent_state,
             agents::launch_agent,
@@ -160,6 +164,7 @@ pub fn run_application() -> Result<()> {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => request_main_window(app),
         tauri::RunEvent::Exit => {
+            tauri::async_runtime::block_on(video::shutdown(app));
             system_proxy::stop(app);
             proxy::stop_observer(app);
         }
@@ -173,6 +178,7 @@ fn setup(app: &mut tauri::App, minimized: bool) -> Result<(), Box<dyn core::erro
     log::info!("starting CoreInfra Wizard {}", app.package_info().version);
     let first_run = tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
     hub_auth::initialize(app.handle());
+    tauri::async_runtime::block_on(video::initialize(app.handle()));
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let tray_enabled = {
         app.manage(tray::TrayState::default());

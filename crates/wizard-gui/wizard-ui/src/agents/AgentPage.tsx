@@ -18,6 +18,7 @@ import {
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { DesktopVersion } from "./DesktopInstall";
+import { VideoConnection } from "./VideoConnection";
 import { MissingAgent } from "./MissingAgent";
 import { agentPageNames } from "./navigation";
 import { useHubTokens } from "../settings/hub_tokens";
@@ -251,6 +252,7 @@ export function AgentPage({
               onPrepare={prepare}
             />
           )}
+          <VideoConnection hub={hub} hubId={account.account?.active_hub_id} disabled={isChangeInProgress} />
           {(codex.status === "not_found" || (codex.status === "found" && codex.data.cli.status === "not_found")) && (
             <MissingAgent agent="codex" />
           )}

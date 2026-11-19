@@ -260,6 +260,10 @@ pub struct AgentToken {
 pub struct AgentTokens(Vec<AgentToken>);
 
 impl AgentTokens {
+    pub fn iter(&self) -> impl Iterator<Item = &AgentToken> {
+        self.0.iter()
+    }
+
     /// Retains only the tokens that satisfy the predicate.
     pub fn retain(&mut self, predicate: impl FnMut(&AgentToken) -> bool) {
         self.0.retain(predicate);
