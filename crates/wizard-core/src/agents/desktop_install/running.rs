@@ -661,17 +661,27 @@ mod linux {
     pub(super) fn chatgpt_executable(launcher: &Path) -> Result<PathBuf> {
         use std::io::Read as _;
 
-        let executable = fs::canonicalize(launcher)?;
+        let launcher = fs::canonicalize(launcher)?;
+        let executable = chatgpt_binary_path(&launcher);
         let mut magic = [0; 4];
         ensure!(
             executable
                 .file_name()
                 .is_some_and(|name| name.as_bytes().eq_ignore_ascii_case(b"chatgpt"))
-                && fs::File::open(&executable)?.read_exact(&mut magic).is_ok()
+                && fs::File::open(executable)?.read_exact(&mut magic).is_ok()
                 && magic == *b"\x7fELF",
             "Не удалось определить отдельный исполняемый файл ChatGPT по его лаунчеру"
         );
-        Ok(executable)
+        Ok(executable.to_owned())
+    }
+
+    fn chatgpt_binary_path(launcher: &Path) -> &Path {
+        // The DEB's /usr/bin/chatgpt resolves to this wrapper, not the Electron binary.
+        if launcher == Path::new("/usr/lib/chatgpt/codex-launcher") {
+            Path::new("/usr/lib/chatgpt/ChatGPT")
+        } else {
+            launcher
+        }
     }
 
     fn find_current_user_app_processes(matches: &impl Fn(&Path) -> bool) -> Result<Vec<Process>> {
