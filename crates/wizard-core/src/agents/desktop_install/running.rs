@@ -610,8 +610,26 @@ mod linux {
         command_line: Vec<u8>,
     }
 
-    /// Claude Desktop processes that this user can inspect, which excludes other users'.
+    fn real_uid(status: &str) -> Option<u32> {
+        status.lines().find_map(|line| {
+            line.strip_prefix("Uid:")?
+                .split_ascii_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+    }
+
+    /// Inspect only Claude processes with the same real UID as Wizard. A readable
+    /// executable link alone does not establish ownership (e.g. a privileged GUI).
     pub(super) fn processes() -> Vec<Process> {
+        let Some(uid) = fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| real_uid(&status))
+        else {
+            log::warn!("current process owner could not be read");
+            return Vec::new();
+        };
         let Ok(entries) = fs::read_dir("/proc") else {
             log::warn!("process list could not be read");
             return Vec::new();
@@ -621,7 +639,11 @@ mod linux {
             .filter(|entry| entry.file_name().as_bytes().iter().all(u8::is_ascii_digit))
             .filter_map(|entry| {
                 let executable = fs::read_link(entry.path().join("exe")).ok()?;
-                executable.starts_with(DIRECTORY).then(|| Process {
+                if !executable.starts_with(DIRECTORY) {
+                    return None;
+                }
+                let status = fs::read_to_string(entry.path().join("status")).ok()?;
+                (real_uid(&status) == Some(uid)).then(|| Process {
                     executable,
                     command_line: fs::read(entry.path().join("cmdline")).unwrap_or_default(),
                 })
