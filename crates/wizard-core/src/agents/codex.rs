@@ -60,8 +60,7 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
         Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
-    let proxy_needs_apply = !cfg!(target_os = "linux")
-        && routing_mode != RoutingMode::Disabled
+    let proxy_needs_apply = routing_mode != RoutingMode::Disabled
         && matches!(desktop, AgentDetection::Found(_))
         && (!settings.codex_proxy_enabled || desktop_proxy_needs_apply());
     AgentDetection::Found(Codex {
@@ -263,15 +262,10 @@ pub fn prepare_routing_for_gui(
     settings: &Settings,
 ) -> Result<PreparedPlan> {
     let mut plan = prepare_routing(mode, token, settings)?;
-    // Linux cannot start the local proxy yet: route only the CLI there.
-    let desktop = if cfg!(target_os = "linux") {
-        AgentDetection::NotFound
-    } else {
-        detection::detect_desktop(
-            DesktopAgent::Codex,
-            settings.last_paths.codex_desktop.as_deref(),
-        )
-    };
+    let desktop = detection::detect_desktop(
+        DesktopAgent::Codex,
+        settings.last_paths.codex_desktop.as_deref(),
+    );
     if mode != RoutingMode::Disabled
         && let AgentDetection::Error(error) = &desktop
     {
