@@ -64,8 +64,8 @@ const base = [
   // Background color applied to control in dark mode
   "dark:bg-white/5 dark:group-data-checked:bg-(--radio-checked-bg)",
   // Border
-  "border border-zinc-950/15 group-data-checked:border-transparent group-data-hover:group-data-checked:border-transparent group-data-hover:border-zinc-950/30 group-data-checked:bg-(--radio-checked-border)",
-  "dark:border-white/15 dark:group-data-checked:border-white/5 dark:group-data-hover:group-data-checked:border-white/5 dark:group-data-hover:border-white/30",
+  "border border-zinc-500/80 group-data-checked:border-transparent group-data-hover:group-data-checked:border-transparent group-data-hover:border-zinc-700 group-data-checked:bg-(--radio-checked-border)",
+  "dark:border-zinc-400/75 dark:group-data-checked:border-white/5 dark:group-data-hover:group-data-checked:border-white/5 dark:group-data-hover:border-zinc-300",
   // Inner highlight shadow
   "after:absolute after:inset-0 after:rounded-full after:shadow-[inset_0_1px_--theme(--color-white/15%)]",
   "dark:after:-inset-px dark:after:hidden dark:after:rounded-full dark:group-data-checked:after:block",

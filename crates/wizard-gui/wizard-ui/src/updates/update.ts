@@ -8,9 +8,11 @@ let applicationVersionRequest: Promise<string> | undefined;
 export type UpdateState =
   | { status: "checking" }
   | { status: "available"; version: string }
-  | { status: "installing" }
+  | { status: "downloading"; version: string; received: number; total: number | null }
+  | { status: "ready_to_install"; version: string }
+  | { status: "installing"; version: string }
   | { status: "up_to_date" }
-  | { status: "failed"; message: string };
+  | { status: "failed"; message: string; version?: string | null };
 
 export type UpdateObservation = {
   state: UpdateState | undefined;
@@ -19,12 +21,9 @@ export type UpdateObservation = {
 
 type UpdateSnapshot = UpdateState & { revision: number };
 
-export function requestUpdate(): Promise<void> {
-  return invoke<void>("request_update");
-}
-
-export function retryUpdateCheck(): Promise<void> {
-  return invoke<void>("retry_update_check");
+export function updateProgress(state: UpdateState | undefined) {
+  return state?.status === "downloading" && state.total && state.total > 0
+    ? Math.min(100, Math.floor(state.received / state.total * 100)) : undefined;
 }
 
 export function useUpdateState(): UpdateObservation {

@@ -46,7 +46,7 @@ export const Select = forwardRef(function Select(
           // Options (multi-select)
           "[&_optgroup]:font-semibold",
           // Typography
-          "text-base/6 text-zinc-950 placeholder:text-zinc-500 sm:text-sm/6 dark:text-white dark:*:text-white",
+          "text-base/6 text-zinc-950 placeholder:text-zinc-500 dark:placeholder:text-zinc-400 sm:text-sm/6 dark:text-white dark:*:text-white",
           // Border
           "border border-zinc-950/10 data-hover:border-zinc-950/20 dark:border-white/10 dark:data-hover:border-white/20",
           // Background color

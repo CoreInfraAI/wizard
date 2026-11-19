@@ -25,9 +25,10 @@ const numerals = {
 };
 
 /** Pen-written step numbers and quiet graphite drawings, kept crisp at any scale. */
-export function OverviewArtwork({ kind, connected = false, disabled, label, describedBy, onClick }: {
+export function OverviewArtwork({ kind, connected = false, step = true, disabled, label, describedBy, onClick }: {
   kind: keyof typeof numerals;
   connected?: boolean;
+  step?: boolean;
   disabled: boolean;
   label: string;
   describedBy?: string;
@@ -38,7 +39,7 @@ export function OverviewArtwork({ kind, connected = false, disabled, label, desc
   return <button type="button" className="overview-art" data-connected={connected}
     disabled={disabled} aria-label={label} aria-describedby={describedBy} onClick={onClick}>
     <span className="overview-art-grid" aria-hidden="true" />
-    <svg className="overview-step-number" viewBox="0 0 56 68" fill="none" strokeLinecap="round" strokeLinejoin="round" focusable="false" aria-hidden="true">
+    {step && <svg className="overview-step-number" viewBox="0 0 56 68" fill="none" strokeLinecap="round" strokeLinejoin="round" focusable="false" aria-hidden="true">
       <defs>
         <mask id={numeralMask} maskUnits="userSpaceOnUse" x="0" y="0" width="56" height="68">
           <path className="overview-number-trace" d={numeral.trace} pathLength={1} stroke="white" strokeWidth="8" />
@@ -51,7 +52,7 @@ export function OverviewArtwork({ kind, connected = false, disabled, label, desc
         </g>
       </g>
       <path className="overview-number-dot" d="M44.6 53.2C46.6 52.9 47.2 55.5 45.2 56C43.4 56.2 43.1 53.7 44.6 53.2Z" fill="currentColor" />
-    </svg>
+    </svg>}
     <svg className="overview-sketch" viewBox="0 0 176 128" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" focusable="false" aria-hidden="true">
       {kind === "account" && <>
         <g transform="rotate(-4 88 58)">

@@ -6,7 +6,9 @@ mod download;
 mod requests;
 mod running;
 
-pub use download::{DownloadProgress, SavedDownload, download_release, saved_download};
+pub use download::{
+    DownloadProgress, SavedDownload, discard_download, download_release, saved_download,
+};
 pub(crate) use running::with_closed;
 pub use running::{open_existing, open_first_install, running_apps};
 

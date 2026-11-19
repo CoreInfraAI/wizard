@@ -1,5 +1,5 @@
 import { useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
-import { MenuButton, useClose } from "@headlessui/react";
+import { MenuButton } from "@headlessui/react";
 import { ComputerDesktopIcon, EllipsisHorizontalIcon, MoonIcon, SunIcon } from "@heroicons/react/20/solid";
 import { hubDisplayName, loginHubAccount, logoutHubAccount, openHub, openHubRegistration, selectHub, useHubAccount } from "./hub_account";
 import { getTheme, setTheme, subscribeTheme } from "./theme";
@@ -8,7 +8,6 @@ import { SidebarItem, SidebarLabel } from "../components/catalyst/sidebar";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 import { useOpenLogs } from "../logs/OpenLogsButton";
-import { settingsPath } from "../agents/navigation";
 
 // Account state and actions are shared by the sidebar and agent pages.
 export function useHubAccountControl() {
@@ -44,6 +43,7 @@ export function useHubAccountControl() {
       if (!agentBusy) void run(() => selectHub(hubId));
     },
     open: () => void run(() => openHub(getTheme())),
+    topUp: () => void run(() => openHub(getTheme(), "payments")),
     register: () => void run(openHubRegistration),
   };
 }
@@ -56,9 +56,8 @@ const themes = [
   { value: "system", label: "Системная тема", Icon: ComputerDesktopIcon },
 ] as const;
 
-export function HubAccountMenu({ hub, settingsCurrent }: { hub: HubAccountControl; settingsCurrent: boolean }) {
+export function HubAccountMenu({ hub }: { hub: HubAccountControl }) {
   const { account } = hub;
-  const closeSidebar = useClose();
   const logs = useOpenLogs();
   const typeaheadUntil = useRef(0);
   const theme = useSyncExternalStore(subscribeTheme, getTheme);
@@ -144,9 +143,6 @@ export function HubAccountMenu({ hub, settingsCurrent }: { hub: HubAccountContro
             <DropdownDivider />
             <DropdownItem disabled={hub.submitting} onClick={hub.open}>
               <DropdownLabel>Перейти в хаб</DropdownLabel>
-            </DropdownItem>
-            <DropdownItem href={`#${settingsPath}`} aria-current={settingsCurrent ? "page" : undefined} onClick={closeSidebar}>
-              <DropdownLabel>Настройки</DropdownLabel>
             </DropdownItem>
             <DropdownItem disabled={logs.pending} onClick={logs.open}>
               <DropdownLabel>Логи</DropdownLabel>

@@ -1,20 +1,28 @@
 import { useState } from "react";
-import { type AgentId, type PreparedAgentChange, applyAgentPlan, prepareAgentChange } from "./agents_state";
+import {
+  type PreparedAgentChange,
+  applyAgentPlan,
+  prepareAgentChange,
+} from "./agents_state";
 import { reportError } from "../logs/log";
 import { ErrorText } from "../components/ErrorText";
 import { Button } from "../components/catalyst/button";
-import { Dialog, DialogActions, DialogBody, DialogDescription, DialogTitle } from "../components/catalyst/dialog";
+import {
+  Dialog,
+  DialogActions,
+  DialogBody,
+} from "../components/catalyst/dialog";
+import { DialogHeader } from "../components/ui/DialogHeader";
 import { Text } from "../components/catalyst/text";
+import { agentPageNames } from "./navigation";
 
-const agentNames: Record<AgentId, string> = {
-  codex: "ChatGPT / Codex",
-  claude: "Claude Code",
-  pi: "Pi",
-  opencode: "OpenCode",
-  claude_desktop: "Claude Desktop",
-};
-
-export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied, applyLabel = "Завершить настройку" }: {
+export function PreparedPlanDialog({
+  prepared,
+  onReprepared,
+  onClose,
+  onApplied,
+  applyLabel = "Завершить настройку",
+}: {
   prepared: PreparedAgentChange;
   onReprepared: (prepared: PreparedAgentChange) => void;
   onClose: () => void;
@@ -34,14 +42,19 @@ export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied,
     setRepreparing(true);
 
     try {
-      const token = prepared.token === null ? null : { kind: "existing" as const, token: prepared.token };
+      const token =
+        prepared.token === null
+          ? null
+          : { kind: "existing" as const, token: prepared.token };
       const next = await prepareAgentChange(prepared.change, token);
       onReprepared(next);
       setError(undefined);
     } catch (cause: unknown) {
       const message = "Не удалось пересоздать план";
       reportError(message, cause);
-      setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}. Показан прежний план. Часть изменений могла быть применена.`);
+      setError(
+        `${message}: ${cause instanceof Error ? cause.message : String(cause)}. Показан прежний план. Часть изменений могла быть применена.`,
+      );
     } finally {
       setRepreparing(false);
     }
@@ -60,22 +73,33 @@ export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied,
     } catch (cause: unknown) {
       const message = "Не удалось применить изменения";
       reportError(message, cause);
-      setError(`${message}: ${cause instanceof Error ? cause.message : String(cause)}. Часть изменений могла быть применена.`);
+      setError(
+        `${message}: ${cause instanceof Error ? cause.message : String(cause)}. Часть изменений могла быть применена.`,
+      );
     } finally {
       setApplying(false);
     }
   }
 
   return (
-    <Dialog open onClose={() => { if (!busy) onClose(); }}>
-      <DialogTitle>План изменений: {agentNames[agent]}</DialogTitle>
-      {hasChanges && (
-        <DialogDescription>
-          {prepared.restarts_desktop
-            ? "Завершите текущую работу. Wizard закроет приложение, если оно запущено, применит настройки и откроет его."
-            : "Завершите текущую работу и закройте агента перед применением. Wizard выполнит следующие действия."}
-        </DialogDescription>
-      )}
+    <Dialog
+      open
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <DialogHeader
+        title={`План изменений: ${agentPageNames[agent]}`}
+        disabled={busy}
+        onClose={onClose}
+        description={
+          hasChanges
+            ? prepared.restarts_desktop
+              ? "Завершите текущую работу. Wizard закроет приложение, если оно запущено, применит настройки и откроет его."
+              : "Завершите текущую работу и закройте агента перед применением. Wizard выполнит следующие действия."
+            : undefined
+        }
+      />
       <DialogBody>
         {hasChanges ? (
           <ol className="max-h-80 list-decimal space-y-4 overflow-y-auto pl-6 text-zinc-950 dark:text-white">
@@ -88,18 +112,33 @@ export function PreparedPlanDialog({ prepared, onReprepared, onClose, onApplied,
         ) : (
           <Text>Изменения не требуются.</Text>
         )}
-        {error && <div className="mt-4"><ErrorText>{error}</ErrorText></div>}
+        {error && (
+          <div className="mt-4">
+            <ErrorText>{error}</ErrorText>
+          </div>
+        )}
       </DialogBody>
       <DialogActions>
-        <Button plain disabled={busy} onClick={() => { if (!hasChanges) onApplied?.(); onClose(); }}>
+        <Button
+          plain
+          disabled={busy}
+          onClick={() => {
+            if (!hasChanges) onApplied?.();
+            onClose();
+          }}
+        >
           {hasChanges ? "Отмена" : "Закрыть"}
         </Button>
-        {error && <Button outline disabled={busy} onClick={() => void reprepare()}>
-          {repreparing ? "Пересоздание…" : "Пересоздать"}
-        </Button>}
-        {hasChanges && <Button disabled={busy} onClick={() => void apply()}>
-          {applying ? "Сохраняем…" : applyLabel}
-        </Button>}
+        {error && (
+          <Button outline disabled={busy} onClick={() => void reprepare()}>
+            {repreparing ? "Пересоздание…" : "Пересоздать"}
+          </Button>
+        )}
+        {hasChanges && (
+          <Button disabled={busy} onClick={() => void apply()}>
+            {applying ? "Сохраняем…" : applyLabel}
+          </Button>
+        )}
       </DialogActions>
     </Dialog>
   );

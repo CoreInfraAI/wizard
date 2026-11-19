@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "../components/catalyst/button";
-import { Heading } from "../components/catalyst/heading";
+import { PageHeader } from "../components/ui/Layout";
+import { Checkbox, CheckboxField } from "../components/catalyst/checkbox";
+import { Label } from "../components/catalyst/fieldset";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
 
@@ -52,10 +54,10 @@ export function LogWindow() {
   }, [text, follow]);
 
   return (
-    <main className="flex h-dvh flex-col gap-4 bg-zinc-100 p-6 dark:bg-zinc-950">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <main className="flex h-dvh flex-col gap-4 bg-zinc-100 p-(--ui-page-gutter) dark:bg-zinc-950">
+      <PageHeader title="Логи" />
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-4">
-          <Heading>Логи</Heading>
           <div role="group" aria-label="Источник логов" className="flex gap-2">
             {(["wizard", "proxy"] as const).map((value) => (
               <Button
@@ -72,10 +74,7 @@ export function LogWindow() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-            <input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />
-            Прокручивать вниз
-          </label>
+          <CheckboxField><Checkbox checked={follow} onChange={setFollow} /><Label>Прокручивать вниз</Label></CheckboxField>
           <Button outline type="button" onClick={() => setPaused((value) => !value)}>
             {paused ? "Продолжить" : "Пауза"}
           </Button>

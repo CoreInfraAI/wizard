@@ -9,7 +9,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use core::{future::Future, pin::pin, time::Duration};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::Manager as _;
 use tokio::time::Instant;
@@ -252,10 +252,54 @@ pub(crate) async fn select_hub(app: tauri::AppHandle, hub_id: String) -> Result<
     Ok(())
 }
 
+/// Reads only non-secret summary fields for the selected, accessible hub.
+#[tauri::command]
+pub(crate) async fn get_hub_summary(
+    app: tauri::AppHandle,
+    hub_id: String,
+) -> Result<hub::HubSummary, String> {
+    let profile = load_profile(&app)
+        .await
+        .map_err(|_| "Не удалось загрузить хаб")?;
+    if !profile.hubs.iter().any(|hub| hub.hub_id == hub_id) {
+        return Err("Хаб недоступен этому аккаунту".into());
+    }
+    let (sent, summary) = hub_tokens::with_session(&app, |client, session| async move {
+        let (update, summary) = hub::fetch_hub_summary(&client, &session, &hub_id).await;
+        let current_session = match &update {
+            hub::SessionUpdate::Refreshed(refreshed) => refreshed.clone(),
+            _ => session,
+        };
+        (update, summary.map(|summary| (current_session, summary)))
+    })
+    .await
+    .map_err(|_| "Не удалось загрузить баланс хаба")?;
+    let settings = settings::get_state(&app).map_err(|_| "Настройки недоступны")?;
+    if settings.hub_session != sent
+        || profile.active_hub_id(&settings.active_hub_id) != summary.hub_id
+    {
+        return Err("Выбранный хаб изменился".into());
+    }
+    Ok(summary)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HubSection {
+    Payments,
+}
+
 /// Opens only the configured Hub origin in the system browser.
 #[tauri::command]
-pub(crate) async fn open_hub(app: tauri::AppHandle, theme: String) -> Result<(), String> {
+pub(crate) async fn open_hub(
+    app: tauri::AppHandle,
+    theme: String,
+    section: Option<HubSection>,
+) -> Result<(), String> {
     let mut url = Url::parse(hub::HUB_ORIGIN).map_err(|_| "Некорректный адрес хаба")?;
+    if matches!(section, Some(HubSection::Payments)) {
+        url.set_path("/payments");
+    }
     let account = HubAccount::saved(&app, false, None);
     if let Some(id) = account.active_hub_id {
         url.query_pairs_mut().append_pair("hub_id", &id);

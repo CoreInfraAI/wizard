@@ -1,207 +1,274 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../components/catalyst/button";
 import { Checkbox, CheckboxField } from "../components/catalyst/checkbox";
 import { Label } from "../components/catalyst/fieldset";
-import { Heading } from "../components/catalyst/heading";
 import { Text } from "../components/catalyst/text";
+import { TransferCard } from "../components/ui/TransferCard";
+import { ActionBar } from "../components/ui/Layout";
 import { ErrorText } from "../components/ErrorText";
-import { useDesktopInstall } from "../agents/DesktopInstall";
+import { CancelDownloadButton } from "../agents/DesktopInstall";
+import {
+  megabytes,
+  useRunningApps,
+  type useDesktopInstall,
+} from "../agents/desktop_install_state";
 import { AgentIcon, type AgentChoice } from "./agents";
+import { downloadProgress, useInstallations } from "./installations_state";
 
-type Observation = ReturnType<typeof useDesktopInstall>;
-
-/** Downloading ends at a separate confirmation; installation is always explicit. */
-export function InstallCard({ choice, observation, signedIn, found, version, active, hidden, onStart, onDone }: {
+/** Selection and expanded installation render the same live backend snapshot. */
+export function InstallCard({
+  choice,
+  observation,
+  signedIn,
+  found,
+  version,
+  focused,
+  onSelect,
+  onBack,
+  onDone,
+}: {
   choice: AgentChoice;
-  observation: Observation;
+  observation: ReturnType<typeof useDesktopInstall>;
   signedIn: boolean;
   found: boolean;
   version: string | null;
-  active: boolean;
-  hidden: boolean;
-  onStart: () => void;
+  focused: boolean;
+  onSelect: () => void;
+  onBack?: () => void;
   onDone: () => void;
 }) {
   const { desktop, state } = observation;
-  const [pauseRequested, setPauseRequested] = useState(false);
-  const [error, setError] = useState<string>();
-  const [preparedGate, setGate] = useState<{ revision: number; running: string[]; confirmation: string | null }>();
-  const gate = preparedGate?.revision === state?.revision ? preparedGate : undefined;
+  const controls = useInstallations();
+  const requesting = controls.requesting[desktop];
   const [confirmed, setConfirmed] = useState(false);
-  const [requesting, setRequesting] = useState(false);
-  const preparedRevision = useRef<number | undefined>(undefined);
-  // One explicit click permits one check -> download transition, never later checks.
-  const downloadAfterCheck = useRef<{ before: number; result: number } | undefined>(undefined);
-  const inFlight = useRef(false);
-  const lastProgress = useRef(0);
-  const mounted = useRef(true);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-
-  useEffect(() => {
-    if (state?.status !== "downloading" && state?.status !== "available") setPauseRequested(false);
-  }, [state?.status]);
-
-  async function request(command: string, args: Record<string, unknown> = {}) {
-    if (inFlight.current) return false;
-    inFlight.current = true;
-    setRequesting(true);
-    setError(undefined);
-    try {
-      await invoke(command, { desktop, ...(command === "install_desktop_release" ? { openAfterInstall: false } : {}), ...args });
-      return true;
-    } catch (cause) {
-      downloadAfterCheck.current = undefined;
-      if (mounted.current) setError(typeof cause === "string" ? cause : "Не удалось начать операцию. Попробуйте ещё раз.");
-      return false;
-    } finally {
-      inFlight.current = false;
-      if (mounted.current) setRequesting(false);
-    }
-  }
-
-  useEffect(() => {
-    if (hidden || !signedIn || error || observation.error) downloadAfterCheck.current = undefined;
-    // A check publishes Checking and one result (desktop_install.rs). Bind to that
-    // result: RevisionSignal may skip a failure and show a later background check.
-    // Keep the pre-click snapshot valid while the IPC command is being accepted.
-    const check = downloadAfterCheck.current;
-    const changed = state && check && state.revision !== check.before;
-    const checked = state && check && state.revision === check.result;
-    const checking = state?.status === "checking" && check && ((state.revision + 1) >>> 0) === check.result;
-    if (changed && !checking && !(checked && state.status === "available")) downloadAfterCheck.current = undefined;
-    if (hidden || !active || !state || requesting || inFlight.current || error || observation.error) return;
-    if (state.status === "available" && checked && downloadAfterCheck.current !== undefined) {
-      downloadAfterCheck.current = undefined;
-      void request("download_desktop_release");
-    }
-    if (state.status === "ready_to_install" && preparedRevision.current !== state.revision) {
-      // Prepare the confirmation, but never install as a side effect of downloading.
-      preparedRevision.current = state.revision;
-      inFlight.current = true;
-      setRequesting(true);
-      void invoke<string[]>("get_desktop_running_apps", { desktop }).then((running) => {
-        inFlight.current = false;
-        if (!mounted.current) return;
-        setConfirmed(false);
-        setGate({ revision: state.revision, running, confirmation: state.confirmation });
-        setRequesting(false);
-      }).catch(() => {
-        inFlight.current = false;
-        if (mounted.current) {
-          setError("Не удалось проверить запущенные приложения. Повторите попытку.");
-          setRequesting(false);
-        }
-      });
-    }
-  });
-
-  const downloading = state?.status === "downloading";
-  const installed = state?.status === "installed";
+  const retryInstall =
+    state?.status === "failed" && state.operation === "install";
   const downloaded = state?.status === "ready_to_install";
-  const upToDate = state?.status === "up_to_date";
-  const completed = active && (installed || upToDate);
-  const installedVersion = installed ? state.version : version;
+  const installable = downloaded || retryInstall;
+  const confirmation = installable ? state.confirmation : null;
+  const releaseVersion = downloaded ? state.version : null;
+  useEffect(() => setConfirmed(false), [confirmation, releaseVersion, focused]);
+  const runningApps = useRunningApps(desktop, focused && installable);
+  const { running } = runningApps;
+  const downloading = state?.status === "downloading";
   const installing = state?.status === "installing";
-  const failed = state?.status === "failed";
-  const failedMessage = error ?? observation.error ?? (failed ? state.message : undefined);
-  const progress = downloading && state.total > 0 ? Math.min(100, Math.floor(state.received / state.total * 100)) : undefined;
-  const saved = state?.status === "available" ? state.saved : null;
-  const paused = state?.status === "available" && (pauseRequested || saved !== null);
-  const displayProgress = progress ?? (saved && saved.total > 0 ? Math.min(100, Math.floor(saved.received / saved.total * 100)) : undefined);
-  useEffect(() => { if (displayProgress !== undefined) lastProgress.current = displayProgress; }, [displayProgress]);
-  const fill = !active && !paused ? 0 : completed || installing || state?.status === "ready_to_install" ? 100 : displayProgress ?? lastProgress.current;
-  const unsupported = state?.status === "unsupported";
+  const installed = state?.status === "installed";
+  const available = state?.status === "available";
+  const current = installed || state?.status === "up_to_date";
+  const checking =
+    state?.status === "checking" || (state?.status === "idle" && signedIn);
+  const canDownload =
+    available ||
+    (state?.status === "failed" && state.operation === "download") ||
+    (state?.status === "idle" && !found && !signedIn);
+  const progress = downloadProgress(state);
+  const failedMessage =
+    controls.errors[desktop] ??
+    observation.error ??
+    (state?.status === "failed" ? state.message : undefined);
+  const active = observation.busy || downloaded || retryInstall;
   const networkBlocked = !signedIn || Boolean(observation.error);
-  const description = desktop === "claude" ? "Приложение Anthropic с Cowork и Claude\u00a0Code." : "Приложение OpenAI с ChatGPT\u00a0Work и Codex.";
-  const title = failedMessage ? failed && state.operation === "check" ? "Не удалось проверить обновления" : "Установка прервана"
-    : paused ? `На паузе${displayProgress === undefined ? "" : ` · ${displayProgress}%`}`
-      : !active ? downloaded ? `Скачана версия ${state.version}` : found || installed ? "" : description
-        : upToDate ? "Версия актуальна" : installed ? "Установлен" : installing ? "Устанавливается…" : gate ? "Подтвердите установку"
-          : downloading ? pauseRequested ? "Приостанавливаем…" : `Скачивается${progress === undefined ? "…" : ` ${progress}%`}`
-            : downloaded ? "Подготавливаем установку…" : state?.status === "available" ? `Доступна версия ${state.version}` : "Проверяем обновления…";
-  const bytes = downloading ? state : paused ? saved : null;
-  const detail = downloading && state.reconnecting ? "Восстанавливаем соединение…" : bytes && bytes.total > 0 ? `${Math.floor(bytes.received / 1048576)} из ${Math.floor(bytes.total / 1048576)} МБ` : undefined;
+  const busy = Boolean(requesting || observation.busy);
+  const actionLabel =
+    state?.status === "unsupported"
+      ? "Недоступно"
+      : downloaded
+        ? "Установить"
+        : retryInstall
+          ? "Повторить установку"
+          : available && found
+            ? "Скачать обновление"
+            : state?.status === "failed"
+              ? "Повторить"
+              : "Скачать";
+  const description =
+    desktop === "claude"
+      ? "Приложение Anthropic с Cowork и Claude Code."
+      : "Приложение OpenAI с ChatGPT Work и Codex.";
+  const status = !focused && current ? "" : downloading
+    ? `Скачивается${progress === undefined ? "…" : ` · ${progress}%`}`
+    : installing
+      ? "Устанавливается…"
+      : downloaded
+        ? `Версия ${state.version} — готова к установке`
+        : checking
+          ? "Проверяем версию…"
+          : installed
+            ? `Установлена версия ${state.version}`
+            : state?.status === "up_to_date"
+              ? ""
+              : available
+                ? `Доступна версия ${state.version}`
+                : state?.status === "unsupported"
+                  ? state.message
+                  : state?.status === "failed" && state.operation === "check"
+                    ? "Не удалось проверить версию"
+                    : found
+                      ? ""
+                      : description;
 
-  async function pause() {
-    if (hidden || inFlight.current || observation.error) return;
-    downloadAfterCheck.current = undefined;
-    setPauseRequested(true);
-    if (!await request("pause_desktop_download") && mounted.current) setPauseRequested(false);
+  function start() {
+    if (!focused) { onSelect(); return; }
+    if (active) return;
+    if (canDownload) void controls.download(desktop);
   }
 
-  function start(resume = false) {
-    if (hidden || !state || unsupported || inFlight.current || (downloaded ? observation.error : networkBlocked)) return;
-    onStart();
-    setError(undefined);
-    setPauseRequested(false);
-    setGate(undefined);
-    preparedRevision.current = undefined;
-    downloadAfterCheck.current = undefined;
-    lastProgress.current = 0;
-    if (downloaded || observation.inProgress) return;
-    if (resume && state.status === "available") {
-      void request("download_desktop_release");
-      return;
-    }
-    // RevisionSignal uses wrapping u32 revisions. Joining a check needs only its
-    // result; a new check first publishes Checking, then its result.
-    downloadAfterCheck.current = { before: state.revision, result: (state.revision + (state.status === "checking" ? 1 : 2)) >>> 0 };
-    // Adopt an in-flight background check instead of starting a duplicate operation.
-    if (state?.status === "checking") return;
-    // An installed app follows the same entry point; the backend compares versions.
-    void request("check_desktop_release");
-  }
-
-  if (active && downloaded) return <div className="onboarding-install-confirmation" hidden={hidden}>
-    <div className="flex items-center gap-3">
-      <AgentIcon choice={choice} />
-      <Heading level={2} className="font-semibold!" tabIndex={-1}>{choice.name} версии {state.version} скачан.</Heading>
+  return (
+    <div className="onboarding-install-entry">
+      <TransferCard
+        name={choice.name}
+        icon={<AgentIcon choice={choice} />}
+        brand={desktop}
+        version={
+          found &&
+          !downloading &&
+          !downloaded &&
+          !installing &&
+          (!installed || !focused) &&
+          !retryInstall
+            ? (installed ? state.version : version)
+              ? `Версия ${installed ? state.version : version}`
+              : "Версия не определена"
+            : undefined
+        }
+        status={status}
+        detail={
+          downloading
+            ? `${megabytes(state.received)} / ${state.total > 0 ? megabytes(state.total) : "…"} МБ`
+            : undefined
+        }
+        notice={
+          downloading && state.reconnecting
+            ? "Восстанавливаем соединение…"
+            : undefined
+        }
+        error={!focused ? failedMessage : undefined}
+        progress={progress}
+        downloading={downloading}
+        filled={downloaded || installing || installed}
+        tone={
+          installed
+            ? "success"
+            : state?.status === "failed"
+              ? "error"
+              : "default"
+        }
+        onOpen={!focused && active ? onSelect : undefined}
+        action={
+          !focused && (active || canDownload) ? (
+            <div className="ui-transfer-action-group">
+              <Button
+                outline
+                disabled={
+                  !state ||
+                  state.status === "unsupported" ||
+                  (!active && (busy || networkBlocked))
+                }
+                onClick={start}
+              >
+                {found ? "Обновить" : "Скачать"}
+              </Button>
+            </div>
+          ) : undefined
+        }
+      />
+      {focused && (
+        <>
+          {downloaded && (state.notes.length > 0 || !state.path) && (
+            <div className="mt-4 space-y-2">
+              {state.notes.map((note) => (
+                <Text key={note}>{note}</Text>
+              ))}
+              {!state.path && (
+                <Text>
+                  Система запросит права администратора для установки{" "}
+                  {choice.name}.
+                </Text>
+              )}
+            </div>
+          )}
+          {installable && running.length > 0 && (
+            <Text className="mt-4">
+              Wizard закроет {running.join(", ")} и откроет снова. Сохраните
+              текущую работу перед установкой.
+            </Text>
+          )}
+          {installable && !runningApps.checked && (
+            <Text className="mt-4">
+              {runningApps.error ?? "Проверяем запущенные приложения…"}
+            </Text>
+          )}
+          {installable && confirmation && (
+            <CheckboxField className="mt-4" disabled={Boolean(requesting)}>
+              <Checkbox checked={confirmed} onChange={setConfirmed} />
+              <Label>{confirmation}</Label>
+            </CheckboxField>
+          )}
+          {installing && (
+            <Text className="mt-4">
+              Не выходите из Wizard до завершения установки.
+            </Text>
+          )}
+          {installed &&
+            state.notices.map((notice) => (
+              <Text key={notice} className="mt-4">
+                {notice}
+              </Text>
+            ))}
+          {failedMessage && (
+            <div className="mt-4" role="alert">
+              <ErrorText>{failedMessage}</ErrorText>
+            </div>
+          )}
+          <ActionBar
+            className="mt-6"
+            leading={
+              onBack && <Button plain onClick={onBack}>
+                Назад
+              </Button>
+            }
+          >
+            {(downloaded ||
+              (state?.status === "failed" &&
+                state.operation === "download")) && (
+              <CancelDownloadButton desktop={desktop} />
+            )}
+            {downloading ? (
+              <CancelDownloadButton desktop={desktop} />
+            ) : installing ? (
+              <Button outline disabled>
+                Устанавливаем…
+              </Button>
+            ) : current ? (
+              <Button onClick={onDone}>Готово</Button>
+            ) : (
+              (installable || canDownload) && (
+                <Button
+                  disabled={
+                    busy ||
+                    Boolean(observation.error) ||
+                    (installable
+                      ? !runningApps.checked ||
+                        (Boolean(confirmation) && !confirmed)
+                      : networkBlocked)
+                  }
+                  onClick={() =>
+                    installable
+                      ? void controls.install(
+                          desktop,
+                          confirmed,
+                          running.length > 0,
+                        )
+                      : start()
+                  }
+                >
+                  {actionLabel}
+                </Button>
+              )
+            )}
+          </ActionBar>
+        </>
+      )}
     </div>
-    {state.notes.length > 0 && <div className="mt-4 space-y-2">{state.notes.map((note) => <Text key={note}>{note}</Text>)}</div>}
-    {!state.path && <Text className="mt-4">Система запросит права администратора для установки {choice.name}.</Text>}
-    {gate && gate.running.length > 0 && <Text className="mt-4">Wizard закроет {gate.running.join(", ")} и откроет снова. Сохраните текущую работу перед установкой.</Text>}
-    {gate?.confirmation && <CheckboxField className="mt-4"><Checkbox checked={confirmed} onChange={setConfirmed} /><Label>{gate.confirmation}</Label></CheckboxField>}
-    {failedMessage && <div className="mt-4 space-y-2" role="alert"><ErrorText>{failedMessage}</ErrorText>{!gate && <Button plain disabled={requesting} onClick={retry}>Повторить</Button>}</div>}
-    <div className="onboarding-footer flex justify-end gap-3">
-      <Button plain disabled={requesting} onClick={onDone}>Отмена</Button>
-      <Button disabled={requesting || Boolean(observation.error) || !gate || (Boolean(gate.confirmation) && !confirmed)} onClick={() => void request("install_desktop_release", { confirmed, close: Boolean(gate?.running.length) })}>Установить</Button>
-    </div>
-  </div>;
-
-  function retry() {
-    // Failed operations are checked again; a paused download resumes its saved release.
-    start(true);
-  }
-
-  return <article className="onboarding-install-card" data-app={desktop} data-active={active || paused} aria-label={choice.name} hidden={hidden}
-    style={{ "--install-progress": `${fill}%` } as CSSProperties}>
-    <div aria-hidden="true" className="onboarding-download-fill" />
-    <div className="onboarding-install-main">
-      <div className="onboarding-install-copy">
-        <div className="onboarding-install-header">
-          <div className="onboarding-install-details">
-            <Heading level={3} className="font-semibold!">{choice.name}</Heading>
-            {(found || installed) && <Text className="mt-1 tabular-nums">{installedVersion ? `Версия ${installedVersion}` : "Версия не определена"}</Text>}
-            <Text className={found || completed ? "" : "mt-1"} role="status" aria-live="polite">{title}</Text>
-            {detail && <Text className="tabular-nums">{detail}</Text>}
-          </div>
-          <div className="onboarding-install-logo" aria-hidden="true"><div className="onboarding-install-mark"><AgentIcon choice={choice} /></div></div>
-          {/* Extend across the card so logo color follows the download fill exactly. */}
-          <div className="onboarding-install-color" aria-hidden="true"><div className="onboarding-install-logo"><div className="onboarding-install-mark"><AgentIcon choice={choice} /></div></div></div>
-        </div>
-        <div className="onboarding-install-actions">
-          {failedMessage ? <Button outline disabled={requesting || networkBlocked} aria-label="Попробовать снова" onClick={retry}>Повторить</Button>
-              : paused ? <Button outline disabled={requesting || networkBlocked} aria-label="Продолжить скачивание" onClick={retry}>Продолжить</Button>
-                : downloading ? <Button outline disabled={requesting || pauseRequested || Boolean(observation.error)} onClick={() => void pause()}>{pauseRequested ? "Приостанавливаем…" : "Приостановить"}</Button>
-                  : completed ? <Button outline onClick={onDone}>Готово</Button>
-                    : (!active || state?.status === "available") && <Button outline disabled={requesting || !state || unsupported || (downloaded ? Boolean(observation.error) : networkBlocked)} onClick={() => start()}>{unsupported ? "Недоступно" : downloaded ? "Установить" : found || installed ? "Проверить обновления" : "Скачать"}</Button>}
-        </div>
-      </div>
-    </div>
-    {(downloading || paused) && <progress className="sr-only" aria-label={`Скачивание ${choice.name}`} max={100} value={displayProgress} />}
-    {failedMessage && <div className="onboarding-install-note" role="alert"><ErrorText>{failedMessage}</ErrorText></div>}
-    {!found && state?.status === "unsupported" && <Text className="onboarding-install-note">{state.message}</Text>}
-    {installed && state.notices.length > 0 && <div className="onboarding-install-note space-y-2">{state.notices.map((notice) => <Text key={notice}>{notice}</Text>)}</div>}
-  </article>;
+  );
 }

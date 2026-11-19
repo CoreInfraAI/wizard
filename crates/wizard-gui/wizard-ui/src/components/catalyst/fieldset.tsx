@@ -31,7 +31,7 @@ export function Legend({
       {...props}
       className={clsx(
         className,
-        "text-base/6 font-normal text-zinc-950 data-disabled:opacity-50 sm:text-sm/6 dark:text-white",
+        "text-sm/6 font-normal text-zinc-950 data-disabled:opacity-50 dark:text-white",
       )}
     />
   );
@@ -45,7 +45,7 @@ export function FieldGroup({
     <div
       data-slot="control"
       {...props}
-      className={clsx(className, "space-y-8")}
+      className={clsx(className, "space-y-6")}
     />
   );
 }
@@ -80,7 +80,7 @@ export function Label({
       {...props}
       className={clsx(
         className,
-        "text-base/6 text-zinc-950 select-none data-disabled:opacity-50 sm:text-sm/6 dark:text-white",
+        "text-sm/6 text-zinc-950 select-none data-disabled:opacity-50 dark:text-white",
       )}
     />
   );
@@ -99,7 +99,7 @@ export function Description({
       {...props}
       className={clsx(
         className,
-        "text-base/6 text-zinc-500 data-disabled:opacity-50 sm:text-sm/6 dark:text-zinc-400",
+        "text-sm/6 text-zinc-500 data-disabled:opacity-50 dark:text-zinc-400",
       )}
     />
   );
@@ -118,7 +118,7 @@ export function ErrorMessage({
       {...props}
       className={clsx(
         className,
-        "text-base/6 text-red-600 data-disabled:opacity-50 sm:text-sm/6 dark:text-red-500",
+        "text-sm/6 text-red-600 data-disabled:opacity-50 dark:text-red-500",
       )}
     />
   );

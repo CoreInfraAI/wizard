@@ -13,6 +13,8 @@ mod autostart;
 mod desktop_install;
 mod hub_auth;
 mod hub_tokens;
+#[cfg(test)]
+mod ipc_test;
 mod logs;
 mod proxy;
 mod revision_signal;
@@ -112,7 +114,7 @@ pub fn run_application() -> Result<()> {
             desktop_install::download_desktop_release,
             desktop_install::install_desktop_release,
             desktop_install::get_desktop_running_apps,
-            desktop_install::pause_desktop_download,
+            desktop_install::cancel_desktop_download,
             system_proxy::get_system_proxy_state,
             system_proxy::set_system_proxy,
             settings::get_application_settings,
@@ -121,8 +123,11 @@ pub fn run_application() -> Result<()> {
             logs::read_logs,
             updater::get_update_state,
             updater::request_update,
+            updater::cancel_update,
+            updater::install_update,
             updater::retry_update_check,
             hub_auth::get_hub_account_state,
+            hub_auth::get_hub_summary,
             hub_auth::login_hub_account,
             hub_auth::logout_hub_account,
             hub_auth::select_hub,

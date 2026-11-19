@@ -1,0 +1,11 @@
+.startup-screen { display: grid; min-height: 100dvh; place-items: center; overflow: hidden; background: #fff; }
+.startup-logo { width: min(280px, 65vw); height: auto; animation: startup-logo 1400ms ease-in-out both; }
+:root[data-theme="dark"] .startup-screen { background: #18181b; }
+@keyframes startup-logo {
+  0% { opacity: 0; transform: translateY(8px) scale(.97); }
+  30%, 85% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-2px) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .startup-logo { animation: none; }
+}

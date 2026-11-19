@@ -217,6 +217,34 @@ impl HubProfile {
     }
 }
 
+/// The selected hub's displayable balance and membership, without its agent tokens.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HubSummary {
+    pub hub_id: String,
+    pub role_in_hub: String,
+    pub balance_rub: Option<f64>,
+}
+
+pub async fn fetch_hub_summary(
+    client: &Client,
+    session: &str,
+    hub_id: &str,
+) -> (SessionUpdate, Result<HubSummary, HubError>) {
+    #[derive(Serialize)]
+    struct Request<'a> {
+        hub_id: &'a str,
+    }
+    let (update, summary) =
+        post::<HubSummary>(client, session, HUB_INFO_PATH, &Request { hub_id }).await;
+    let summary = summary.and_then(|summary| {
+        if summary.hub_id != hub_id || summary.role_in_hub.is_empty() {
+            return Err(HubError::Response);
+        }
+        Ok(summary)
+    });
+    (update, summary)
+}
+
 /// Agent token of a Hub hub. `token` is a secret: no `Debug`, never logged.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AgentToken {
@@ -337,6 +365,22 @@ fn session_from_headers(headers: &HeaderMap) -> Result<Option<String>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_preserves_hidden_and_zero_balances_without_exposing_tokens() {
+        let hidden: HubSummary = serde_json::from_value(serde_json::json!({
+            "hub_id": "team", "role_in_hub": "member", "agent_tokens": [{"token": "secret"}]
+        }))
+        .expect("valid hub response");
+        assert_eq!(hidden.balance_rub, None);
+        let zero: HubSummary = serde_json::from_value(serde_json::json!({
+            "hub_id": "personal", "role_in_hub": "owner", "balance_rub": 0
+        }))
+        .expect("valid zero balance");
+        assert_eq!(zero.balance_rub, Some(0.0));
+        let exposed = serde_json::to_value(hidden).expect("serializable summary");
+        assert!(exposed.get("agent_tokens").is_none());
+    }
 
     fn profile() -> HubProfile {
         HubProfile {

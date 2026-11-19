@@ -119,6 +119,13 @@ export type AgentStates = {
   pi: AgentDetection<Pi>;
 };
 
+// Codex can be found through its CLI while desktop detection fails, or vice versa.
+export function hasAgentDetectionError(detection: AgentStates[AgentId]) {
+  return detection.status === "error" ||
+    (detection.status === "found" && "desktop" in detection.data &&
+      (detection.data.desktop.status === "error" || detection.data.cli.status === "error"));
+}
+
 type DetectionState =
   | { status: "loading" }
   | { status: "ready"; data: AgentStateSnapshot }

@@ -1,249 +1,125 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "../components/catalyst/button";
-import { Checkbox, CheckboxField } from "../components/catalyst/checkbox";
-import { Label } from "../components/catalyst/fieldset";
-import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
+import {
+  useInstallations,
+} from "../onboarding/installations_state";
+import type { DesktopApp } from "./desktop_install_state";
 
-// Keep in sync with `DesktopApp` in `crates/wizard-core/src/agents/desktop_install/mod.rs`.
-export type DesktopApp = "claude" | "chatgpt";
+export type { DesktopApp } from "./desktop_install_state";
 
-const names: Record<DesktopApp, { name: string }> = {
-  claude: { name: "Claude" },
-  chatgpt: { name: "ChatGPT" },
-};
-
-type Operation = "check" | "download" | "install";
-type Release = { version: string; path: string | null; notes: string[]; confirmation: string | null };
-/** Bytes that a paused or interrupted download saved; downloading again continues from them. */
-type Saved = { received: number; total: number };
-type Phase =
-  | { status: "idle" | "checking" | "up_to_date" }
-  // `close`: the user agreed to close the running applications, which open again afterwards.
-  | { status: "installing"; close: boolean }
-  | ({ status: "available"; saved: Saved | null } & Release)
-  | ({ status: "ready_to_install" } & Release)
-  // `total` is 0 until known.
-  | { status: "downloading"; received: number; total: number; reconnecting: boolean }
-  | { status: "installed"; version: string; notices: string[] }
-  | { status: "unsupported"; message: string }
-  | { status: "failed"; operation: Operation; message: string; confirmation: string | null };
-type Snapshot = Phase & { revision: number };
-
-const megabytes = (bytes: number) => Math.floor(bytes / (1024 * 1024)).toLocaleString("ru-RU");
-const RUNNING_POLL_MS = 2000;
-
-/** Products that installation would close because they run now, polled while `active`. */
-function useRunningApps(desktop: DesktopApp, active: boolean) {
-  const [running, setRunning] = useState<string[]>([]);
-  useEffect(() => {
-    setRunning([]);
-    if (!active) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function poll() {
-      try {
-        const next = await invoke<string[]>("get_desktop_running_apps", { desktop });
-        if (stopped) return;
-        setRunning((current) => current.join("\n") === next.join("\n") ? current : next);
-      } catch {
-        // Keep the last answer: installation checks again before it closes anything.
-      }
-      if (!stopped) timer = setTimeout(() => void poll(), RUNNING_POLL_MS);
-    }
-    void poll();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [desktop, active]);
-  return running;
-}
-
-export function useDesktopInstall(desktop: DesktopApp) {
-  const [state, setState] = useState<Snapshot>();
-  const [error, setError] = useState<string>();
-  useEffect(() => {
-    let stopped = false;
-    async function observe() {
-      let lastRevision: number | null = null;
-      while (!stopped) {
+/** Archive cancellation is available only in the expanded installation panel. */
+export function CancelDownloadButton({
+  desktop,
+  size = "md",
+  disabled = false,
+}: {
+  desktop: DesktopApp;
+  size?: "sm" | "md";
+  disabled?: boolean;
+}) {
+  const controls = useInstallations();
+  const requesting = Boolean(controls.requesting[desktop]);
+  const [cancelling, setCancelling] = useState(false);
+  return (
+    <Button
+      plain
+      size={size}
+      disabled={disabled || requesting}
+      onClick={async (event) => {
+        event.stopPropagation();
+        setCancelling(true);
         try {
-          const next: Snapshot = await invoke<Snapshot>("get_desktop_install_state", { desktop, lastRevision });
-          if (stopped) return;
-          setState(next);
-          setError(undefined);
-          lastRevision = next.revision;
-        } catch {
-          if (stopped) return;
-          setError(`Не удалось получить состояние установки ${names[desktop].name}`);
-          lastRevision = null;
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await controls.cancel(desktop);
+        } finally {
+          setCancelling(false);
         }
-      }
-    }
-    void observe();
-    return () => { stopped = true; };
-  }, [desktop]);
-
-  // Checks also run in the background and do not mean the user chose this app.
-  const inProgress = state?.status === "downloading" || state?.status === "installing";
-  const busy = state?.status === "checking" || inProgress;
-  // Hidden until the state loads, so that an unsupported application never flashes.
-  const hidden = state === undefined ? error === undefined : state.status === "unsupported";
-  return { desktop, state, error, busy, inProgress, hidden };
+      }}
+    >
+      {cancelling ? "Отменяем…" : "Отменить"}
+    </Button>
+  );
 }
 
-export function DesktopInstall({ observation, signedIn, disabled, installed }: {
-  observation: ReturnType<typeof useDesktopInstall>;
+/** A stable version column and action group, shared by both desktop agents. */
+export function DesktopVersion({
+  desktop,
+  installed,
+  signedIn,
+  disabled,
+  version,
+  children,
+}: {
+  desktop: DesktopApp;
+  installed: boolean;
   signedIn: boolean;
   disabled: boolean;
-  installed: boolean;
+  version: string | null;
+  children: ReactNode;
 }) {
-  const [error, setError] = useState<string>();
-  const [confirmed, setConfirmed] = useState(false);
-  const { desktop, state, busy } = observation;
-  const { name } = names[desktop];
-  const confirmation = state?.status === "ready_to_install" || state?.status === "failed" ? state.confirmation : null;
-  // A confirmation applies only to the release it was given for.
-  useEffect(() => {
-    if (confirmation === null) setConfirmed(false);
-  }, [confirmation]);
-  const retryInstall = state?.status === "failed" && state.operation === "install";
-  const installable = state?.status === "ready_to_install" || retryInstall;
-  const running = useRunningApps(desktop, installable && !busy);
-  if (!state) return observation.error ? <ErrorText>{observation.error}</ErrorText> : null;
-  if (state.status === "unsupported") return <Text>{state.message}</Text>;
-
-  // Installation closes these and opens them again afterwards.
-  const closing = installable && running.length > 0 ? running.join(", ") : undefined;
-  const blocked = disabled || busy || observation.error !== undefined;
-  const networkBlocked = blocked || !signedIn;
-  const unconfirmed = confirmation !== null && !confirmed;
-  const progress = state.status === "downloading" && state.total > 0
-    ? Math.min(100, Math.floor(state.received / state.total * 100)) : undefined;
-
-  let operation: Operation = "check";
-  let label = "Проверить обновления";
-  switch (state.status) {
-    case "checking":
-      label = "Проверяем обновления…";
-      break;
-    case "available":
-      operation = "download";
-      label = state.saved
-        ? `Продолжить скачивание (${megabytes(state.saved.received)} из ${megabytes(state.saved.total)} МБ)`
-        : installed ? "Скачать обновление" : `Скачать ${name}`;
-      break;
-    case "ready_to_install":
-      operation = "install";
-      label = closing ? `Закрыть ${closing} и установить`
-        : installed ? "Установить обновление" : `Установить ${name}`;
-      break;
-    case "installing":
-      operation = "install";
-      label = state.close ? "Закрываем и устанавливаем…" : "Устанавливаем…";
-      break;
-    case "failed":
-      operation = state.operation;
-      label = operation === "install" ? (closing ? `Закрыть ${closing} и повторить установку` : "Повторить установку")
-        : operation === "download" ? "Повторить скачивание"
-        : "Повторить проверку";
-      break;
-  }
-
-  async function request(operation: Operation) {
-    if (blocked || (operation !== "install" && !signedIn)) return;
-    if (operation === "install" && unconfirmed) return;
-    setError(undefined);
-    try {
-      if (operation === "install") {
-        await invoke("install_desktop_release", {
-          desktop, confirmed: confirmation !== null && confirmed, close: closing !== undefined,
-        });
-      } else {
-        await invoke(operation === "check" ? "check_desktop_release" : "download_desktop_release", { desktop });
-      }
-    } catch {
-      setError("Не удалось начать операцию. Проверьте её состояние и повторите попытку.");
-    }
-  }
-
-  async function pause() {
-    setError(undefined);
-    try {
-      await invoke("pause_desktop_download", { desktop });
-    } catch {
-      setError("Не удалось приостановить скачивание. Проверьте его состояние и повторите попытку.");
-    }
-  }
-
-  const release = state.status === "available" || state.status === "ready_to_install" ? state : undefined;
+  const controls = useInstallations();
+  const observation = controls.observations[desktop];
+  const { state } = observation;
+  const displayedVersion = state?.status === "installed" ? state.version : version;
+  const previousVersion = useRef(displayedVersion);
+  const versionLabel = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const previous = previousVersion.current;
+    previousVersion.current = displayedVersion;
+    if (!previous || !displayedVersion || previous === displayedVersion ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+      document.documentElement.dataset.motion === "reduce") return;
+    const animation = versionLabel.current?.animate?.([
+      { opacity: .25, transform: "translateY(6px)" },
+      { opacity: 1, transform: "translateY(0)" },
+    ], { duration: 280, easing: "ease-out" });
+    return () => animation?.cancel();
+  }, [displayedVersion]);
+  if (observation.hidden) return <>{children}</>;
+  if (!state)
+    return (
+      <>
+        <span>{children}</span>
+        <ErrorText>{observation.error}</ErrorText>
+      </>
+    );
+  const current = state.status === "up_to_date" || state.status === "installed";
+  const checking = state.status === "idle" || state.status === "checking";
+  const checkFailed = state.status === "failed" && state.operation === "check";
   return (
-    <div className="space-y-2">
-      {!signedIn && <Text>Войдите в CoreInfra Hub, чтобы проверить обновления и скачать приложение.</Text>}
-      <div className="flex flex-wrap items-center gap-2">
-        {state.status === "downloading" ? (
-          <>
-            <Button outline disabled className="overflow-hidden data-disabled:opacity-100" aria-busy="true">
-              <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 bg-blue-500/25 transition-[width] motion-reduce:transition-none dark:bg-blue-400/25"
-                style={{ width: `${progress ?? 0}%` }} />
-              <span className="relative">Скачивание…</span>
-            </Button>
-            <progress className="sr-only" aria-label={`Скачивание ${name}`} max={100} value={progress} />
-            <Button plain disabled={disabled || observation.error !== undefined} onClick={() => void pause()}>
-              Приостановить
-            </Button>
-          </>
-        ) : (
-          <Button outline disabled={operation === "install" ? blocked || unconfirmed : networkBlocked}
-            aria-busy={busy} onClick={() => void request(operation)}>
-            {label}
-          </Button>
-        )}
-        {!busy && operation !== "check" && (
-          <Button plain disabled={networkBlocked} onClick={() => void request("check")}>Проверить заново</Button>
-        )}
+    <div className="ui-version-row">
+      <div className="ui-version-copy">
+        <span ref={versionLabel} className="ui-version-value" aria-live="polite">{displayedVersion ? `v${displayedVersion}` : children}</span>
       </div>
-      {state.status === "downloading" && (state.reconnecting
-        ? <Text>Соединение прервано. Переподключаемся, скачанное сохранено…</Text>
-        : state.total > 0 && <Text>Скачано {megabytes(state.received)} из {megabytes(state.total)} МБ.</Text>)}
-      {state.status === "up_to_date" && <Text>Более новой доступной версии не найдено.</Text>}
-      {state.status === "available" && (
-        <Text>Доступна версия {state.version}.
-          {state.path && <><br />Путь установки: <code className="break-all">{state.path}</code>.</>}</Text>
+      <div className="ui-version-actions">
+        {checking && signedIn && (
+          <span role="status" className="ui-version-status">
+            Проверяем версию…
+          </span>
+        )}
+        {checkFailed && (
+          <span title={state.message} className="ui-version-status">
+            Не удалось проверить версию
+          </span>
+        )}
+        {!current &&
+          !checkFailed &&
+          (!checking || (!installed && !signedIn)) && (
+            <Button
+              outline
+              size="sm"
+              disabled={disabled}
+              onClick={() => controls.open(desktop)}
+            >
+              {installed ? "Обновить" : "Скачать"}
+            </Button>
+          )}
+      </div>
+      {controls.errors[desktop] && (
+        <div className="ui-version-error">
+          <ErrorText>{controls.errors[desktop]}</ErrorText>
+        </div>
       )}
-      {state.status === "ready_to_install" && (
-        <Text>Версия {state.version} скачана и готова к установке.
-          {state.path && <><br />Путь установки: <code className="break-all">{state.path}</code>.</>}</Text>
-      )}
-      {release?.notes.map((note) => <Text key={note}>{note}</Text>)}
-      {state.status === "available" && state.confirmation !== null && (
-        <Text>{state.confirmation} — Wizard попросит подтвердить это перед установкой.</Text>
-      )}
-      {state.status === "ready_to_install" && state.path === null && (
-        <Text>Система запросит права администратора для установки {name}.</Text>
-      )}
-      {confirmation !== null && (state.status === "ready_to_install" || retryInstall) && (
-        <CheckboxField disabled={blocked}>
-          <Checkbox checked={confirmed} onChange={setConfirmed} />
-          <Label>{confirmation}</Label>
-        </CheckboxField>
-      )}
-      {closing && (
-        <Text>Wizard закроет {closing} и откроет {running.length > 1 ? "их" : "его"} снова после установки. Текущие ответы и сессии будут прерваны.</Text>
-      )}
-      {state.status === "installing" && <Text>Не выходите из Wizard до завершения операции.</Text>}
-      {state.status === "installed" && (
-        <>
-          <Text>Версия {state.version} установлена.</Text>
-          {state.notices.map((notice) => <Text key={notice}>{notice}</Text>)}
-        </>
-      )}
-      {state.status === "failed" && <ErrorText>{state.message}</ErrorText>}
-      {observation.error && <ErrorText>{observation.error}</ErrorText>}
-      {error && <ErrorText>{error}</ErrorText>}
     </div>
   );
 }

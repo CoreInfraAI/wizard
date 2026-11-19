@@ -13,7 +13,7 @@ export function DescriptionList({
       {...props}
       className={clsx(
         className,
-        "grid grid-cols-1 text-base/6 sm:grid-cols-[min(50%,--spacing(80))_auto] sm:text-sm/6",
+        "grid grid-cols-1 text-sm/6 sm:grid-cols-[min(50%,--spacing(80))_auto]",
       )}
     />
   );
