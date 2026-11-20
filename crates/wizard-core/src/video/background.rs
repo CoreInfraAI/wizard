@@ -122,9 +122,8 @@ mod tests {
                 .post(&url)
                 .bearer_auth(bearer)
                 .header("Accept", "application/json, text/event-stream")
-                .json(
-                    &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
-                )
+                .header("Content-Type", "application/json")
+                .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
                 .send()
         };
         assert!(list("one").await?.status().is_success());
