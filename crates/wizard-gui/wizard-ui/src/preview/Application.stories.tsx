@@ -20,6 +20,16 @@ export const FirstSetup: Story = {
   name: "Обзор · первое подключение",
   parameters: { scenario: "unconfigured" },
 };
+export const SystemProxyBanner: Story = {
+  name: "Обзор · включить системный прокси",
+  parameters: { scenario: "unconfigured" },
+  play: async ({ canvas }) => {
+    const banner = within(await canvas.findByRole("region", { name: /Для доступа к OpenAI и Anthropic из браузера/ }));
+    await expect(banner.getByText("Все остальные ресурсы будут доступны напрямую.")).toBeVisible();
+    await expect(banner.getByRole("button", { name: "Пропустить" })).toBeVisible();
+    await expect(banner.getByRole("button", { name: "Включить" })).toBeEnabled();
+  },
+};
 export const EmptyBalance: Story = {
   name: "Агент готов · пополнение хаба",
   parameters: { scenario: "balance_empty" },
@@ -68,6 +78,16 @@ export const ClaudeDesktop: Story = {
 export const ChatGPT: Story = {
   name: "ChatGPT и Codex",
   parameters: { route: "/agents/codex" },
+};
+export const AdditionalModels: Story = {
+  name: "ChatGPT и Codex · дополнительные модели",
+  parameters: { scenario: "current", route: "/agents/codex" },
+  play: async ({ canvas }) => {
+    const panel = await canvas.findByRole("region", { name: "Дополнительные модели" });
+    const toggle = await within(panel).findByRole("switch", { name: "Подключить coreinfra-video для видео-моделей" });
+    await expect(toggle).toBeChecked();
+    panel.scrollIntoView({ block: "center" });
+  },
 };
 export const ClaudeCode: Story = {
   name: "Claude Code",

@@ -1,14 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../components/catalyst/button";
 import { Dialog } from "../components/catalyst/dialog";
 import { DialogHeader } from "../components/ui/DialogHeader";
-import { ActionBar, ViewTransition } from "../components/ui/Layout";
+import { ViewTransition } from "../components/ui/Layout";
 import { Identity } from "../components/ui/Identity";
 import { Field, Label } from "../components/catalyst/fieldset";
 import { Select } from "../components/catalyst/select";
 import { Text } from "../components/catalyst/text";
-import { ErrorText } from "../components/ErrorText";
 import type { HubAccountControl } from "../settings/HubAccount";
 import { hubDisplayName } from "../settings/hub_account";
 import { useHubTokens } from "../settings/hub_tokens";
@@ -19,9 +17,8 @@ import {
   type Hub,
 } from "../agents/AgentConfiguration";
 import {
-  type AgentChange,
-  type PreparedAgentChange,
-  type TokenChoice,
+  type ConnectionDraft,
+  type ConnectionPlan,
   type useAgentState,
   prepareAgentChange,
 } from "../agents/agents_state";
@@ -50,10 +47,10 @@ function Configure({
   hub: Hub;
   account: HubAccountControl;
   onBusy: (busy: boolean) => void;
-  onComplete: (restarted: boolean) => void;
+  onComplete: () => void;
   onBack: () => void;
 }) {
-  const [prepared, setPrepared] = useState<PreparedAgentChange>();
+  const [prepared, setPrepared] = useState<ConnectionPlan>();
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState<string>();
   const inFlight = useRef(false);
@@ -66,13 +63,13 @@ function Configure({
     return () => onBusy(false);
   }, [busy, onBusy]);
 
-  async function prepare(change: AgentChange, token: TokenChoice | null) {
+  async function prepare(draft: ConnectionDraft) {
     if (inFlight.current) return;
     inFlight.current = true;
     setPreparing(true);
     setError(undefined);
     try {
-      setPrepared(await prepareAgentChange(change, token));
+      setPrepared(await prepareAgentChange(draft));
     } catch (cause) {
       setError(
         `Не удалось подготовить изменения: ${typeof cause === "string" ? cause : "попробуйте снова"}`,
@@ -148,7 +145,7 @@ function Configure({
                 return { SetPiHub: mode === "hub" ? "hub" : "disabled" };
             }
           }}
-          onPrepare={(change, token) => void prepare(change, token)}
+          onPrepare={prepare}
         />
       ) : (
         <div className="mt-6 space-y-4">
@@ -165,91 +162,17 @@ function Configure({
       {prepared && (
         <PreparedPlanDialog
           prepared={prepared}
+          launchChoice={choice}
           onReprepared={setPrepared}
           onClose={() => setPrepared(undefined)}
-          onApplied={() => onComplete(prepared.restarts_desktop)}
+          onApplied={onComplete}
         />
       )}
     </div>
   );
 }
 
-function Completed({
-  choice,
-  restarted,
-  onFinish,
-  onBusy,
-  onBack,
-}: {
-  choice: AgentChoice;
-  restarted: boolean;
-  onFinish: () => void;
-  onBusy: (busy: boolean) => void;
-  onBack: () => void;
-}) {
-  const [launching, setLaunching] = useState(false);
-  const [error, setError] = useState<string>();
-  const inFlight = useRef(false);
-  async function launch() {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setLaunching(true);
-    onBusy(true);
-    setError(undefined);
-    try {
-      await invoke("launch_agent", { agent: choice.id });
-      onFinish();
-    } catch (cause) {
-      setError(
-        typeof cause === "string"
-          ? cause
-          : `Не удалось запустить ${choice.name}. Попробуйте ещё раз.`,
-      );
-    } finally {
-      inFlight.current = false;
-      setLaunching(false);
-      onBusy(false);
-    }
-  }
-  return (
-    <div>
-      <Identity
-        icon={<AgentIcon choice={choice} />}
-        title={`${choice.name} настроен`}
-        focusable
-      />
-      <Text className="mt-4">
-        {restarted
-          ? "Приложение открыто с новыми настройками."
-          : choice.desktop
-            ? "Можно открывать приложение и начинать работу."
-            : "Агент откроется в терминале."}
-      </Text>
-      <ActionBar
-        divider
-        leading={
-          <Button plain disabled={launching} onClick={onBack}>
-            Выбрать другого агента
-          </Button>
-        }
-      >
-        <Button
-          disabled={launching}
-          onClick={() => (restarted ? onFinish() : void launch())}
-        >
-          {restarted ? "Готово" : launching ? "Запускаем…" : "Запустить агента"}
-        </Button>
-      </ActionBar>
-      {error && (
-        <div className="mt-4" role="alert">
-          <ErrorText>{error}</ErrorText>
-        </div>
-      )}
-    </div>
-  );
-}
-
-type Stage = "entry" | "select" | "configure" | "complete";
+type Stage = "entry" | "select" | "configure";
 
 export function SetupDialog({
   account,
@@ -266,7 +189,6 @@ export function SetupDialog({
       : [];
   const [selected, setSelected] = useState<ChoiceId>();
   const [stage, setStage] = useState<Stage>("entry");
-  const [restarted, setRestarted] = useState(false);
   // Resolve the entry screen from live detection, not the first (possibly partial) snapshot.
   const viewStage =
     stage === "entry"
@@ -306,9 +228,6 @@ export function SetupDialog({
     setSelected(id);
     setStage("configure");
   }
-  function finish() {
-    onClose();
-  }
 
   return (
     <Dialog
@@ -342,21 +261,7 @@ export function SetupDialog({
               hub={hub}
               account={account}
               onBusy={changeBusy}
-              onComplete={(restarted) => {
-                setSelected(selectedChoice.id);
-                setRestarted(restarted && Boolean(selectedChoice.desktop));
-                changeBusy(false);
-                setStage("complete");
-              }}
-              onBack={() => setStage("select")}
-            />
-          )}
-          {viewStage === "complete" && selectedChoice && (
-            <Completed
-              choice={selectedChoice}
-              restarted={restarted}
-              onFinish={finish}
-              onBusy={changeBusy}
+              onComplete={onClose}
               onBack={() => setStage("select")}
             />
           )}

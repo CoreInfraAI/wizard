@@ -635,10 +635,10 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
               token: resolvedToken,
               plan: { preview: true, agent, mode, token: resolvedToken },
               info: [
-                { description: "Сохранить резервную копию настроек агента." },
+                { description: "Сохранит резервную копию настроек агента." },
                 {
                   description:
-                    "Обновить режим подключения и токен CoreInfra Hub.",
+                    "Обновит режим подключения и токен CoreInfra Hub.",
                 },
               ],
               restarts_desktop: agent === "claude_desktop" || agent === "codex",

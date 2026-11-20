@@ -1,143 +1,207 @@
-import { useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Disclosure, DisclosureButton, DisclosurePanel } from "@headlessui/react";
+import { ChevronRightIcon } from "@heroicons/react/16/solid";
+import { invoke } from "@tauri-apps/api/core";
 import {
-  type PreparedAgentChange,
+  type ConnectionPlan,
   applyAgentPlan,
+  applyVideoConnection,
   prepareAgentChange,
 } from "./agents_state";
 import { reportError } from "../logs/log";
 import { ErrorText } from "../components/ErrorText";
 import { Button } from "../components/catalyst/button";
-import {
-  Dialog,
-  DialogActions,
-  DialogBody,
-} from "../components/catalyst/dialog";
+import { Dialog, DialogActions, DialogBody } from "../components/catalyst/dialog";
 import { DialogHeader } from "../components/ui/DialogHeader";
-import { Text } from "../components/catalyst/text";
+import { Code, Text } from "../components/catalyst/text";
+import type { AgentChoice } from "../onboarding/agents";
 import { agentPageNames } from "./navigation";
 
+const visibleSteps = 2;
+const plural = new Intl.PluralRules("ru");
+function stepCount(count: number) {
+  const form = plural.select(count);
+  return count + " " + (form === "one" ? "шаг" : form === "few" ? "шага" : "шагов");
+}
+
+function PlanSteps({ plan }: { plan: ConnectionPlan }) {
+  const steps: ReactNode[] = (plan.routing?.info ?? []).map(step => step.description);
+  // Keep the choice from the form visible alongside the first routing action.
+  if (plan.videoEnabled !== undefined) {
+    steps.unshift(plan.videoEnabled
+      ? <>Установит скилл <Code>coreinfra-video</Code> для видео-моделей.</>
+      : <>Отключит видео-модели и удалит скилл <Code>coreinfra-video</Code>, установленный Wizard.</>);
+  }
+  const rows = steps.map((step, index) => <li key={index}><Text>{step}</Text></li>);
+  return (
+    <>
+      <ul className="agent-plan-steps">{rows.slice(0, visibleSteps)}</ul>
+      {rows.length > visibleSteps && (
+        <Disclosure>
+          <DisclosureButton className="agent-plan-disclosure">
+            {({ open }) => <>
+              <ChevronRightIcon aria-hidden="true" />
+              {open ? "Скрыть подробности" : "Ещё " + stepCount(rows.length - visibleSteps)}
+            </>}
+          </DisclosureButton>
+          <DisclosurePanel>
+            <ul className="agent-plan-steps">{rows.slice(visibleSteps)}</ul>
+          </DisclosurePanel>
+        </Disclosure>
+      )}
+    </>
+  );
+}
+
 export function PreparedPlanDialog({
-  prepared,
-  onReprepared,
-  onClose,
-  onApplied,
+  prepared, launchChoice, onReprepared, onClose, onApplied,
   applyLabel = "Завершить настройку",
 }: {
-  prepared: PreparedAgentChange;
-  onReprepared: (prepared: PreparedAgentChange) => void;
+  prepared: ConnectionPlan;
+  launchChoice: AgentChoice;
+  onReprepared: (prepared: ConnectionPlan) => void;
   onClose: () => void;
   onApplied?: () => void;
   applyLabel?: "Применить" | "Завершить настройку";
 }) {
-  const { agent, info } = prepared;
-  const hasChanges = info.length > 0;
-  const [applying, setApplying] = useState(false);
-  const [repreparing, setRepreparing] = useState(false);
+  const { agent, routing, videoEnabled } = prepared;
+  const hasChanges = Boolean(routing?.info.length) || videoEnabled !== undefined;
+  const [operation, setOperation] = useState<"apply" | "prepare" | "launch">();
+  const [routingApplied, setRoutingApplied] = useState(false);
+  const [applied, setApplied] = useState(false);
   const [error, setError] = useState<string>();
-  const busy = applying || repreparing;
+  const inFlight = useRef(false);
+  const success = useRef<HTMLDivElement>(null);
+  const busy = operation !== undefined;
+
+  useEffect(() => {
+    if (applied) success.current?.querySelector<HTMLElement>("h2")?.focus();
+  }, [applied]);
+
+  function finish() {
+    onApplied?.();
+    onClose();
+  }
 
   async function reprepare() {
-    if (busy || !error) return;
-
-    setRepreparing(true);
-
+    if (inFlight.current || !routing || routingApplied) return;
+    inFlight.current = true;
+    setOperation("prepare");
     try {
-      const token =
-        prepared.token === null
-          ? null
-          : { kind: "existing" as const, token: prepared.token };
-      const next = await prepareAgentChange(prepared.change, token);
+      const token = routing.token === null ? null : { kind: "existing" as const, token: routing.token };
+      const next = await prepareAgentChange({ agent, routing: { change: routing.change, token }, videoEnabled });
       onReprepared(next);
       setError(undefined);
-    } catch (cause: unknown) {
-      const message = "Не удалось пересоздать план";
-      reportError(message, cause);
-      setError(
-        `${message}: ${cause instanceof Error ? cause.message : String(cause)}. Показан прежний план. Часть изменений могла быть применена.`,
-      );
+    } catch (cause) {
+      reportError("Не удалось пересоздать план", cause);
+      setError("Не удалось пересоздать план. " + String(cause));
     } finally {
-      setRepreparing(false);
+      inFlight.current = false;
+      setOperation(undefined);
     }
   }
 
   async function apply() {
-    if (busy || !hasChanges) return;
-
-    setApplying(true);
+    if (inFlight.current || !hasChanges || applied) return;
+    inFlight.current = true;
+    setOperation("apply");
     setError(undefined);
-
+    let applyingVideo = false;
     try {
-      await applyAgentPlan(prepared.plan);
-      onApplied?.();
-      onClose();
-    } catch (cause: unknown) {
-      const message = "Не удалось применить изменения";
+      if (routing?.info.length && !routingApplied) {
+        await applyAgentPlan(routing.plan);
+        setRoutingApplied(true);
+      }
+      if (videoEnabled !== undefined) {
+        // A routing plan may snapshot the same agent files. Finish it before changing video.
+        applyingVideo = true;
+        await applyVideoConnection(videoEnabled);
+      }
+      setApplied(true);
+    } catch (cause) {
+      const message = applyingVideo ? "Не удалось применить настройку видео." : "Не удалось применить изменения. Часть изменений могла быть применена.";
       reportError(message, cause);
-      setError(
-        `${message}: ${cause instanceof Error ? cause.message : String(cause)}. Часть изменений могла быть применена.`,
-      );
+      setError(message + " " + String(cause));
     } finally {
-      setApplying(false);
+      inFlight.current = false;
+      setOperation(undefined);
     }
   }
 
+  async function launch() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setOperation("launch");
+    setError(undefined);
+    try {
+      await invoke("launch_agent", { agent: launchChoice.id });
+      finish();
+    } catch (cause) {
+      const message = "Не удалось запустить " + launchChoice.name + ".";
+      reportError(message, cause);
+      setError(message + " " + String(cause));
+    } finally {
+      inFlight.current = false;
+      setOperation(undefined);
+    }
+  }
+
+  function close() {
+    if (inFlight.current) return;
+    if (applied || !hasChanges) finish();
+    else onClose();
+  }
+
   return (
-    <Dialog
-      open
-      onClose={() => {
-        if (!busy) onClose();
-      }}
-    >
-      <DialogHeader
-        title={`План изменений: ${agentPageNames[agent]}`}
-        disabled={busy}
-        onClose={onClose}
-        description={
-          hasChanges
-            ? prepared.restarts_desktop
-              ? "Завершите текущую работу. Wizard закроет приложение, если оно запущено, применит настройки и откроет его."
-              : "Завершите текущую работу и закройте агента перед применением. Wizard выполнит следующие действия."
-            : undefined
-        }
-      />
-      <DialogBody>
-        {hasChanges ? (
-          <ol className="max-h-80 list-decimal space-y-4 overflow-y-auto pl-6 text-zinc-950 dark:text-white">
-            {info.map((step, index) => (
-              <li key={index} className="pl-1">
-                <Text className="break-words">{step.description}</Text>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <Text>Изменения не требуются.</Text>
-        )}
-        {error && (
-          <div className="mt-4">
-            <ErrorText>{error}</ErrorText>
-          </div>
-        )}
-      </DialogBody>
+    <Dialog open onClose={close}>
+      {applied ? (
+        <div ref={success}>
+          <DialogHeader
+            title="Настройки применены"
+            description={launchChoice.desktop
+              ? routing?.restarts_desktop
+                ? launchChoice.name + " открыт с новыми настройками."
+                : "Можно продолжить работу в " + launchChoice.name + "."
+              : launchChoice.name + " откроется в терминале."}
+          />
+        </div>
+      ) : (
+        <>
+          <DialogHeader
+            title={`План изменений: ${agentPageNames[agent]}`}
+            onClose={close}
+            disabled={busy}
+            description={routing?.info.length
+              ? routing.restarts_desktop
+                ? "Завершите текущую работу. Wizard закроет приложение, если оно запущено, применит настройки и откроет его."
+                : "Завершите текущую работу и закройте агента перед применением."
+              : undefined}
+          />
+          <DialogBody>
+            {hasChanges ? <PlanSteps plan={prepared} /> : <Text>Изменения не требуются.</Text>}
+          </DialogBody>
+        </>
+      )}
+      {error && <div className="mt-4" role="alert"><ErrorText>{error}</ErrorText></div>}
       <DialogActions>
-        <Button
-          plain
-          disabled={busy}
-          onClick={() => {
-            if (!hasChanges) onApplied?.();
-            onClose();
-          }}
-        >
-          {hasChanges ? "Отмена" : "Закрыть"}
+        <Button plain disabled={busy} onClick={close}>
+          {applied ? "Готово" : hasChanges ? "Отмена" : "Закрыть"}
         </Button>
-        {error && (
-          <Button outline disabled={busy} onClick={() => void reprepare()}>
-            {repreparing ? "Пересоздание…" : "Пересоздать"}
+        {applied ? (
+          <Button disabled={busy} onClick={() => void launch()}>
+            {operation === "launch" ? "Запускаем…" : "Запустить агента"}
           </Button>
-        )}
-        {hasChanges && (
-          <Button disabled={busy} onClick={() => void apply()}>
-            {applying ? "Сохраняем…" : applyLabel}
-          </Button>
+        ) : (
+          <>
+            {error && routing && !routingApplied && (
+              <Button outline disabled={busy} onClick={() => void reprepare()}>
+                {operation === "prepare" ? "Пересоздание…" : "Пересоздать"}
+              </Button>
+            )}
+            {hasChanges && <Button disabled={busy} onClick={() => void apply()}>
+              {operation === "apply" ? "Сохраняем…" : applyLabel}
+            </Button>}
+          </>
         )}
       </DialogActions>
     </Dialog>

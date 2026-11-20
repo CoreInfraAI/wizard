@@ -4,6 +4,7 @@ import { MotionConfig } from "motion/react";
 import { startPreviewMocks, type Scenario } from "../src/preview/mocks";
 import { initializeTheme, setTheme } from "../src/settings/theme";
 import { SubscriptionTokenPreviewContext } from "../src/agents/connection_preview";
+import { systemProxyBannerDismissedKey } from "../src/overview/SystemProxyBanner";
 import "../src/styles.css";
 import "../src/components/BrandIcons.css";
 
@@ -99,6 +100,7 @@ const preview: Preview = {
   },
   beforeEach(context) {
     const scenario = (context.parameters.scenario ?? "update") as Scenario;
+    localStorage.removeItem(systemProxyBannerDismissedKey);
     if (scenario !== "startup")
       localStorage.setItem("coreinfra.startup.seen", "true");
     const environment = startPreviewMocks(scenario, { onboarding: context.parameters.onboarding });

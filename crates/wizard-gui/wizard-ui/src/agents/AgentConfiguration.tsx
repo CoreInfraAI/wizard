@@ -3,6 +3,7 @@ import { CheckIcon } from "@heroicons/react/20/solid";
 import {
   type AgentChange,
   type AgentId,
+  type ConnectionDraft,
   type HubMode,
   type RoutingMode,
   type TokenChoice,
@@ -35,6 +36,7 @@ import { ErrorText } from "../components/ErrorText";
 import { useSystemProxy } from "../settings/system_proxy";
 import { SystemProxyPrompt } from "../settings/SystemProxyPrompt";
 import { SubscriptionTokenPreviewContext } from "./connection_preview";
+import { VideoConnection, useVideoConnection } from "./VideoConnection";
 
 type ModeOption<M extends string> = {
   mode: M;
@@ -273,7 +275,7 @@ export function RoutingFieldset<M extends string>({
   note?: ReactNode;
   disabled: boolean;
   error?: string;
-  onPrepare: (change: AgentChange, token: TokenChoice | null) => void;
+  onPrepare: (draft: ConnectionDraft) => void;
   initialMode?: M;
   actions?: ReactNode;
   actionsClassName?: string;
@@ -292,8 +294,12 @@ export function RoutingFieldset<M extends string>({
     (token.selected?.kind === "create" ||
       (token.selected?.kind === "existing" &&
         token.selected.token !== agentToken));
-  const changed =
+  const routingChanged =
     selected !== mode || (enabled && (needsApply || tokenChanged));
+  const prepareRouting = !editing || routingChanged;
+  const showVideo = agent === "codex" || agent === "claude" || (agent === "claude_desktop" && selected === "hub");
+  const video = useVideoConnection(showVideo);
+  const videoChanged = showVideo && video.needsApply;
   const systemProxy = useSystemProxy();
   const [proxyPrompt, setProxyPrompt] = useState(false);
 
@@ -307,14 +313,25 @@ export function RoutingFieldset<M extends string>({
       setProxyPrompt(true);
   }
 
+  function prepare() {
+    const includeVideo = showVideo && (video.needsApply || (prepareRouting && video.enabled));
+    onPrepare({
+      agent,
+      routing: prepareRouting ? {
+        change: toChange(selected),
+        token: enabled && !proxyOnly ? (token.selected ?? null) : null,
+      } : undefined,
+      videoEnabled: includeVideo ? video.enabled : undefined,
+    });
+  }
+
   return (
     <>
-      <Panel title="Подключение" className="mt-6" framed={false}>
+      <Panel title="Подключение" description={note} className="mt-6" framed={false}>
         <Fieldset aria-label="Подключение">
-          {note && <Text>{note}</Text>}
-          <FieldGroup className={note ? "mt-4" : undefined}>
+          <FieldGroup>
             <RadioGroup
-              className="agent-routing-options"
+              className="agent-connection-options"
               value={selected}
               disabled={disabled}
               aria-label="Режим подключения"
@@ -339,20 +356,19 @@ export function RoutingFieldset<M extends string>({
                 <TokenNote token={token} hub={hub} disabled={disabled} />
               )
             )}
+            {showVideo && (
+              <VideoConnection video={video} signedIn={hub.signedIn} disabled={disabled} />
+            )}
             <ActionBar leading={actions} className={actionsClassName}>
               <Button
                 type="button"
                 disabled={
                   disabled ||
-                  (enabled && (proxyOnly ? !hub.signedIn : !token.ready)) ||
-                  (editing && !changed)
+                  (prepareRouting && enabled && (proxyOnly ? !hub.signedIn : !token.ready)) ||
+                  (showVideo && !video.status && !video.error) ||
+                  (!prepareRouting && !videoChanged)
                 }
-                onClick={() =>
-                  onPrepare(
-                    toChange(selected),
-                    enabled && !proxyOnly ? (token.selected ?? null) : null,
-                  )
-                }
+                onClick={prepare}
               >
                 {editing ? "Применить" : "Завершить настройку"}
               </Button>

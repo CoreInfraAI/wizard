@@ -203,7 +203,7 @@
 .ui-choice [data-slot="label"] {
   cursor: pointer;
 }
-.agent-routing-options {
+.agent-connection-options {
   display: grid;
   gap: var(--ui-space-5);
   padding: var(--ui-space-5);
@@ -211,8 +211,35 @@
   border-radius: var(--ui-radius-control);
   background: var(--ui-surface);
 }
-.agent-routing-options > * { margin-block: 0; }
+.agent-connection-options > * { margin-block: 0; }
 .agent-routing-option [data-slot="label"] { cursor: pointer; }
+.agent-plan-steps {
+  display: grid;
+  gap: var(--ui-space-2);
+  padding-inline-start: var(--ui-space-5);
+  list-style: disc;
+  overflow-wrap: anywhere;
+}
+.agent-plan-steps li::marker { color: var(--ui-ink-subtle); }
+.agent-plan-steps [data-slot="text"] { color: var(--ui-ink); }
+.agent-plan-steps code { white-space: nowrap; }
+.agent-plan-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  min-height: 32px;
+  margin-top: var(--ui-space-2);
+  border-radius: var(--ui-radius-control);
+  color: var(--ui-ink);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.agent-plan-disclosure svg { width: 16px; height: 16px; }
+.agent-plan-disclosure[aria-expanded="true"] svg { transform: rotate(90deg); }
+.agent-plan-disclosure:hover { text-decoration: underline; text-underline-offset: 3px; }
+.agent-plan-disclosure:focus-visible { outline: 2px solid var(--ui-focus); outline-offset: 2px; }
+.agent-plan-disclosure + div { margin-top: var(--ui-space-1); }
 .ui-setting-list {
   display: grid;
   gap: var(--ui-space-6);

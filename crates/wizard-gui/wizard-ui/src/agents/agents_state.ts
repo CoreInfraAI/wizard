@@ -33,12 +33,31 @@ export type PreparedAgentChange = {
 // Values are secrets.
 export type TokenChoice = { kind: "existing"; token: string } | { kind: "create" };
 
-export function prepareAgentChange(change: AgentChange, token: TokenChoice | null): Promise<PreparedAgentChange> {
-  return invoke<PreparedAgentChange>("prepare_agent_change", { change, token });
+export type ConnectionDraft = {
+  agent: AgentId;
+  routing?: { change: AgentChange; token: TokenChoice | null };
+  videoEnabled?: boolean;
+};
+
+export type ConnectionPlan = {
+  agent: AgentId;
+  routing?: PreparedAgentChange;
+  videoEnabled?: boolean;
+};
+
+export async function prepareAgentChange({ agent, routing, videoEnabled }: ConnectionDraft): Promise<ConnectionPlan> {
+  const prepared = routing
+    ? await invoke<PreparedAgentChange>("prepare_agent_change", routing)
+    : undefined;
+  return { agent, routing: prepared, videoEnabled };
 }
 
 export function applyAgentPlan(plan: PreparedPlan): Promise<void> {
   return invoke<void>("apply_agent_plan", { plan });
+}
+
+export function applyVideoConnection(enabled: boolean): Promise<void> {
+  return invoke<void>("set_video_connection", { enabled });
 }
 
 export type BackupAgent = "codex" | "claude" | "claude_desktop";

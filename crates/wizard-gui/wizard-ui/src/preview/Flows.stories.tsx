@@ -144,6 +144,39 @@ export const ConnectionEditor: Story = {
     await expect(canvas.getByRole("radio", { name: "API-доступ" })).toBeChecked();
   },
 };
+
+async function openClaudeCodePlan(canvas: ReturnType<typeof within>, page: ReturnType<typeof within>) {
+  await userEvent.click(await canvas.findByRole("radio", { name: "Своя подписка Claude" }));
+  const proxy = await page.findByRole("dialog", { name: "Включить системный прокси?" });
+  await userEvent.click(within(proxy).getByRole("button", { name: "Пропустить" }));
+  await expect(await canvas.findByRole("switch", { name: /coreinfra-video/ })).toBeChecked();
+  await userEvent.click(canvas.getByRole("button", { name: "Применить" }));
+  return within(await page.findByRole("dialog", { name: "План изменений: Claude Code" }));
+}
+
+export const AgentChangePlan: Story = {
+  name: "Claude Code · план изменений",
+  parameters: { scenario: "all_agents", route: "/agents/claude" },
+  play: async ({ canvas, canvasElement }) => {
+    const plan = await openClaudeCodePlan(canvas, within(canvasElement.ownerDocument.body));
+    await expect(plan.getByText("coreinfra-video", { selector: "code" })).toBeVisible();
+    const details = plan.getByRole("button", { name: /Ещё .*шаг/ });
+    await expect(details).toHaveAttribute("aria-expanded", "false");
+  },
+};
+
+export const AgentSettingsApplied: Story = {
+  name: "Claude Code · настройки применены",
+  parameters: { scenario: "all_agents", route: "/agents/claude" },
+  play: async ({ canvas, canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    const plan = await openClaudeCodePlan(canvas, page);
+    await userEvent.click(plan.getByRole("button", { name: "Применить" }));
+    const success = within(await page.findByRole("dialog", { name: "Настройки применены" }));
+    await expect(success.getByRole("button", { name: "Готово" })).toBeVisible();
+    await expect(success.getByRole("button", { name: "Запустить агента" })).toBeEnabled();
+  },
+};
 export const SubscriptionKey: Story = {
   name: "Подключение · выбор ключа для API и подписки",
   parameters: { route: "/agents/claude-desktop" },
@@ -157,7 +190,7 @@ export const SubscriptionKey: Story = {
     await step("Сохранить выбранный ключ при переходе на подписку", async () => {
       await userEvent.click(canvas.getByRole("radio", { name: "Своя подписка Claude" }));
       const prompt = await page.findByRole("dialog", { name: "Включить системный прокси?" });
-      await userEvent.click(within(prompt).getByRole("button", { name: "Отмена" }));
+      await userEvent.click(within(prompt).getByRole("button", { name: "Пропустить" }));
       await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
       await expect(canvas.getByText(/Будет использован токен «Команда · демо»/)).toBeVisible();
       await userEvent.click(canvas.getByRole("button", { name: "Изменить токен" }));
@@ -168,6 +201,8 @@ export const SubscriptionKey: Story = {
       await userEvent.click(canvas.getByRole("button", { name: "Применить" }));
       const plan = await page.findByRole("dialog", { name: "План изменений: Claude Desktop" });
       await userEvent.click(within(plan).getByRole("button", { name: "Применить" }));
+      const success = await page.findByRole("dialog", { name: "Настройки применены" });
+      await userEvent.click(within(success).getByRole("button", { name: "Готово" }));
       await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
       await expect(canvas.getByRole("radio", { name: "Своя подписка Claude" })).toBeChecked();
       await expect(canvas.getByText(/Будет использован токен «Команда · демо»/)).toBeVisible();
@@ -342,7 +377,7 @@ export const Setup: Story = {
         within(plan).getByRole("button", { name: "Завершить настройку" }),
       );
       await expectVisible(
-        page.findByRole("heading", { name: "Claude Desktop настроен" }),
+        page.findByRole("dialog", { name: "Настройки применены" }),
       );
     });
     await step("Перейти к рабочему обзору", async () => {

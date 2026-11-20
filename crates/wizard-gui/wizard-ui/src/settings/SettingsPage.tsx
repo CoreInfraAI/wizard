@@ -166,8 +166,9 @@ function SystemProxySettings() {
       <SwitchField disabled={disabled}>
         <Label>Использовать прокси Wizard</Label>
         <Description>
-          Запросы к OpenAI и Anthropic идут через выходные узлы CoreInfra AI
-          Hub. Все остальные ресурсы доступны напрямую.
+          Запросы к OpenAI и Anthropic идут через выходные узлы CoreInfra AI Hub.
+          <br />
+          Все остальные ресурсы доступны напрямую.
         </Description>
         <Switch
           checked={hasOurs}
@@ -220,9 +221,6 @@ function SystemProxySettings() {
             ОС использует Wizard, но локальный прокси недоступен. Приложения
             могут потерять доступ к сети.
           </StateNotice>
-        )}
-        {hasOurs && (
-          <Text>Прокси продолжит работать после выхода из GUI Wizard.</Text>
         )}
         {loadError && <StateNotice tone="error">{loadError}</StateNotice>}
         {state?.read_error && (

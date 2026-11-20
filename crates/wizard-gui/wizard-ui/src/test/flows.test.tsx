@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
@@ -10,7 +10,9 @@ import {
 import userEvent from "@testing-library/user-event";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import App from "../App";
+import * as agentCommands from "../agents/agents_state";
 import { SubscriptionTokenPreviewContext } from "../agents/connection_preview";
+import { systemProxyBannerDismissedKey } from "../overview/SystemProxyBanner";
 import { createMockEnvironment, type MockOptions, type Scenario } from "../preview/mocks";
 
 let environment: ReturnType<typeof createMockEnvironment>;
@@ -34,8 +36,13 @@ async function openInstallationPicker(user: ReturnType<typeof userEvent.setup>) 
   await user.click(await screen.findByRole("button", { name: "Установить агента" }));
   return screen.findByRole("dialog", { name: "Установите агентов" });
 }
+async function finishSettings(user: ReturnType<typeof userEvent.setup>) {
+  const success = await screen.findByRole("dialog", { name: "Настройки применены" });
+  await user.click(within(success).getByRole("button", { name: "Готово" }));
+}
 beforeEach(() => {
   localStorage.setItem("coreinfra.startup.seen", "true");
+  localStorage.removeItem(systemProxyBannerDismissedKey);
 });
 afterEach(() => {
   cleanup();
@@ -43,17 +50,95 @@ afterEach(() => {
   clearMocks();
 });
 
-it("shows the automatic video connection on the Codex page and lets the user reconnect it", async () => {
+describe("overview system proxy banner", () => {
+  const name = "Для доступа к OpenAI и Anthropic из браузера включите системный прокси.";
+
+  it("remembers Skip after reopening Wizard and leaves the proxy off", async () => {
+    const user = userEvent.setup();
+    const app = launch("unconfigured", "/overview");
+    const banner = await screen.findByRole("region", { name });
+    await user.click(within(banner).getByRole("button", { name: "Пропустить" }));
+    expect(banner).not.toBeInTheDocument();
+
+    app.unmount();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Начало работы" });
+    expect(screen.queryByRole("region", { name })).not.toBeInTheDocument();
+    expect(environment.systemProxy.value.status).toBe("off");
+    expect(environment.calls).not.toContain("set_system_proxy");
+  });
+
+  it("reports a conflicting proxy and lets the user retry the normal Settings action", async () => {
+    const user = userEvent.setup();
+    launch("unconfigured", "/overview");
+    const banner = await screen.findByRole("region", { name });
+    const enable = within(banner).getByRole("button", { name: "Включить" });
+    const proxy = environment.systemProxy;
+    expect(environment.calls).not.toContain("set_system_proxy");
+
+    // Another proxy appeared after the last snapshot reached the UI.
+    proxy.value = { ...proxy.value, conflict: true };
+    await user.click(enable);
+    expect(await within(banner).findByRole("alert")).toHaveTextContent("Обнаружены другие настройки прокси");
+    expect(proxy.value.status).toBe("off");
+    await act(async () => proxy.publish({ ...proxy.value, conflict: false }));
+    await user.click(enable);
+    expect(enable).toBeDisabled();
+    expect(within(banner).getByRole("button", { name: "Пропустить" })).toBeDisabled();
+    await waitFor(() => expect(banner).not.toBeInTheDocument());
+    expect(proxy.value.status).toBe("on");
+
+    await user.click(screen.getByRole("link", { name: "Настройки" }));
+    const toggle = await screen.findByRole("switch", { name: "Использовать прокси Wizard" });
+    await waitFor(() => expect(toggle).toBeChecked());
+  });
+
+  it("follows sign-in and live proxy state before making the offer", async () => {
+    launch("offline", "/overview");
+    await screen.findByRole("button", { name: "Войти" });
+    expect(screen.queryByRole("region", { name })).not.toBeInTheDocument();
+
+    const { account, systemProxy } = environment;
+    await act(async () => {
+      systemProxy.publish({ ...systemProxy.value, conflict: true });
+      account.publish({ ...account.value, signed_in: true });
+    });
+    expect(screen.queryByRole("region", { name })).not.toBeInTheDocument();
+    await act(async () => systemProxy.publish({ ...systemProxy.value, conflict: false }));
+    const banner = await screen.findByRole("region", { name });
+    await act(async () => systemProxy.publish({ ...systemProxy.value, status: "on" }));
+    expect(banner).not.toBeInTheDocument();
+    expect(environment.calls).not.toContain("set_system_proxy");
+  });
+});
+
+it("keeps video local to the draft until confirmation and shares the saved preference across agents", async () => {
   const user = userEvent.setup();
-  launch("current", "/agents/codex");
-  const group = await screen.findByRole("group", { name: "Видеомодели" });
-  const video = within(group);
-  const disconnect = await video.findByRole("button", { name: "Отключить видеомодели" });
-  expect(group).toHaveTextContent(/^Отключить видеомодели$/);
+  launch("all_agents", "/agents/codex");
+  const name = "Подключить coreinfra-video для видео-моделей";
+  const toggle = await screen.findByRole("switch", { name });
+  expect(toggle).toBeChecked();
+  await user.click(toggle);
+  await user.click(screen.getByRole("button", { name: "Применить" }));
+  let plan = await screen.findByRole("dialog", { name: "План изменений: ChatGPT / Codex" });
+  expect(within(plan).getByText("coreinfra-video", { selector: "code" })).toBeVisible();
+  await user.click(within(plan).getByRole("button", { name: "Отмена" }));
+  await user.click(screen.getByRole("link", { name: "Claude Code" }));
+  const shared = await screen.findByRole("switch", { name });
+  expect(shared).toBeChecked();
+  await user.click(shared);
+  await user.click(screen.getByRole("button", { name: "Применить" }));
+  plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
   expect(environment.calls).not.toContain("set_video_connection");
-  await user.click(disconnect);
-  await user.click(await video.findByRole("button", { name: "Включить видеомодели" }));
-  expect(await video.findByRole("button", { name: "Отключить видеомодели" })).toBeVisible();
+  await user.click(within(plan).getByRole("button", { name: "Применить" }));
+  const success = await screen.findByRole("dialog", { name: "Настройки применены" });
+  expect(environment.calls.filter(command => command === "set_video_connection")).toHaveLength(1);
+  expect(environment.calls).not.toContain("apply_agent_plan");
+  expect(environment.calls).not.toContain("launch_agent");
+  await user.click(within(success).getByRole("button", { name: "Запустить агента" }));
+  expect(environment.calls.filter(command => command === "launch_agent")).toHaveLength(1);
+  await user.click(screen.getByRole("link", { name: "ChatGPT / Codex" }));
+  expect(await screen.findByRole("switch", { name })).not.toBeChecked();
 });
 
 it("offers one Apply to install video in an existing Claude Code gateway profile", async () => {
@@ -63,13 +148,50 @@ it("offers one Apply to install video in an existing Claude Code gateway profile
     if (claude.status !== "found") throw new Error("Claude Code fixture missing");
     agents.publish({ ...agents.value, claude: { ...claude, data: { ...claude.data, video_needs_apply: true } } });
   });
-  expect(await screen.findByRole("button", { name: "Отключить видеомодели" })).toBeVisible();
-  expect(screen.queryByText(/установит скилл/)).not.toBeInTheDocument();
+  expect(await screen.findByRole("switch", { name: "Подключить coreinfra-video для видео-моделей" })).toBeChecked();
+  expect(screen.getByText(/локальный MCP-сервер/)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Применить" }));
   const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
   await user.click(within(plan).getByRole("button", { name: "Применить" }));
+  await finishSettings(user);
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
+});
+
+it("keeps the Claude Code video choice in all three modes and retries only the failed step", async () => {
+  const user = userEvent.setup();
+  launch("all_agents", "/agents/claude");
+  const toggle = await screen.findByRole("switch", { name: /coreinfra-video/ });
+  expect(toggle).toBeChecked();
+  await user.click(toggle);
+  await user.click(screen.getByRole("radio", { name: "Своя подписка Claude" }));
+  await user.click(await screen.findByRole("button", { name: "Пропустить" }));
+  expect(toggle).toBeVisible();
+  expect(toggle).not.toBeChecked();
+  await user.click(screen.getByRole("radio", { name: "Без CoreInfra AI Hub" }));
+  expect(toggle).toBeVisible();
+  expect(toggle).not.toBeChecked();
+  await user.click(screen.getByRole("button", { name: "Применить" }));
+  const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
+  expect(within(plan).getByText(/Отключит видео-модели/)).toBeVisible();
+  const details = within(plan).getByRole("button", { name: "Ещё 1 шаг" });
+  await user.click(details);
+  expect(within(plan).getByText("Обновит режим подключения и токен CoreInfra Hub.")).toBeVisible();
+  await user.keyboard("{Enter}");
+  expect(details).toHaveAttribute("aria-expanded", "false");
+  const save = vi.spyOn(agentCommands, "applyVideoConnection").mockRejectedValueOnce("Сервис занят");
+  try {
+    await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    expect(await within(plan).findByRole("alert")).toHaveTextContent("Сервис занят");
+    expect(screen.queryByRole("dialog", { name: "Настройки применены" })).not.toBeInTheDocument();
+    await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    await finishSettings(user);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(environment.calls.filter(command => command === "apply_agent_plan")).toHaveLength(1);
+    expect(environment.calls).not.toContain("launch_agent");
+  } finally {
+    save.mockRestore();
+  }
 });
 
 describe("shared installation flow", () => {
@@ -325,15 +447,13 @@ describe("application transitions", () => {
     await screen.findByRole("heading", { name: "Начало работы" });
     expect(screen.queryByRole("button", { name: "Пополнить" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Настроить агента" }));
-    let dialog = await screen.findByRole("dialog", { name: "Настройка агентов" });
+    const dialog = await screen.findByRole("dialog", { name: "Настройка агентов" });
     await user.click(within(dialog).getByRole("radio", { name: "Claude Desktop" }));
     await user.click(within(dialog).getByRole("button", { name: "Настроить агента" }));
     await user.click(await within(dialog).findByRole("button", { name: "Завершить настройку" }));
     const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Desktop" });
     await user.click(within(plan).getByRole("button", { name: "Завершить настройку" }));
-    await screen.findByRole("heading", { name: "Claude Desktop настроен" });
-    dialog = screen.getByRole("dialog", { name: "Настройка агентов" });
-    await user.click(within(dialog).getByRole("button", { name: "Готово" }));
+    await finishSettings(user);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(window.location.hash).toBe("#/overview");
     const dashboard = await screen.findByRole("region", { name: "Хаб и агенты" });
@@ -440,6 +560,7 @@ describe("application transitions", () => {
     await user.click(within(management).getByRole("button", { name: "Применить" }));
     const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Desktop" });
     await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    await finishSettings(user);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "План изменений: Claude Desktop" })).not.toBeInTheDocument());
     const updated = await within(management).findByRole("button", { name: "Настройки подключения Claude Desktop: Без CoreInfra" });
     await waitFor(() => expect(updated).toHaveFocus());
@@ -533,6 +654,7 @@ describe("application transitions", () => {
     await user.click(screen.getByRole("button", { name: "Применить" }));
     const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Desktop" });
     await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    await finishSettings(user);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     const savedMode = screen.getByRole("radio", { name: "Без CoreInfra AI Hub" });
     expect(savedMode).toBeChecked();
@@ -562,6 +684,7 @@ describe("application transitions", () => {
     await user.click(screen.getByRole("button", { name: "Применить" }));
     const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Desktop" });
     await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    await finishSettings(user);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(environment.agents.value.claude_desktop).toMatchObject({
       status: "found",
@@ -601,6 +724,7 @@ describe("application transitions", () => {
     await user.click(screen.getByRole("button", { name: "Применить" }));
     const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Desktop" });
     await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    await finishSettings(user);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(environment.agents.value.claude_desktop).toMatchObject({
       status: "found", data: { routing_mode: "sub", token: null },
@@ -618,6 +742,7 @@ describe("application transitions", () => {
     const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Desktop" });
     expect(environment.tokens.value.tokens).toHaveLength(1);
     await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    await finishSettings(user);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(environment.agents.value.claude_desktop).toMatchObject({
       status: "found", data: { token: environment.tokens.value.tokens[0].token },
