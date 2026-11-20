@@ -155,11 +155,15 @@ fn validate_payload(version: Version, mut payload: Payload, target: Target) -> R
     let url = Url::parse(&payload.url).context("Некорректный адрес архива")?;
     ensure!(
         url.scheme() == "https"
-            && url.host_str() == Some("downloads.claude.ai")
+            && url.host_str()
+                == Some(match target.app {
+                    DesktopApp::Claude => "downloads.claude.ai",
+                    DesktopApp::ChatGpt => "persistent.oaistatic.com",
+                })
             && url.port().is_none()
             && url.username().is_empty()
             && url.password().is_none(),
-        "Недопустимый адрес архива Claude"
+        "Недопустимый адрес архива"
     );
 
     ensure!(
@@ -242,12 +246,12 @@ pub(super) async fn check_release(token: &str, target: Target) -> Result<Option<
     parse_release(&bytes, target)
 }
 
-const APT_ORIGIN: &str = "https://downloads.claude.ai/claude-desktop";
-const APT_SIGNER: &str = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE";
+const CLAUDE_APT_ORIGIN: &str = "https://downloads.claude.ai/claude-desktop";
+const CLAUDE_APT_SIGNER: &str = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE";
 
-async fn apt_metadata(client: &Client, path: &str) -> Result<Vec<u8>> {
+async fn apt_metadata(client: &Client, url: String) -> Result<Vec<u8>> {
     let mut response = client
-        .get(format!("{APT_ORIGIN}/{path}"))
+        .get(url)
         .timeout(Duration::from_secs(30))
         .send()
         .await
@@ -282,14 +286,17 @@ fn deb_field<'a>(paragraph: &'a str, name: &str) -> Result<&'a str> {
         .context("В метаданных APT отсутствует обязательное поле")
 }
 
-fn verify_apt_index(release: &str, arch: &str, index: &[u8]) -> Result<()> {
-    let valid_until = deb_field(release, "Valid-Until")?.replace(" UTC", " +0000");
-    let expiry = chrono::DateTime::parse_from_rfc2822(&valid_until)
-        .context("Некорректный срок действия метаданных APT")?;
-    ensure!(
-        expiry > chrono::Utc::now(),
-        "Подписанные метаданные APT устарели"
-    );
+fn verify_apt_index(release: &str, arch: &str, index: &[u8], app: DesktopApp) -> Result<()> {
+    // OpenAI publishes Date but not Valid-Until; keep expiry mandatory for Anthropic.
+    if app == DesktopApp::Claude || release.lines().any(|line| line.starts_with("Valid-Until:")) {
+        let valid_until = deb_field(release, "Valid-Until")?.replace(" UTC", " +0000");
+        let expiry = chrono::DateTime::parse_from_rfc2822(&valid_until)
+            .context("Некорректный срок действия метаданных APT")?;
+        ensure!(
+            expiry > chrono::Utc::now(),
+            "Подписанные метаданные APT устарели"
+        );
+    }
     let path = format!("main/binary-{arch}/Packages");
     let entry = release
         .lines()
@@ -307,16 +314,30 @@ fn verify_apt_index(release: &str, arch: &str, index: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn deb_package(app: DesktopApp) -> &'static str {
+    match app {
+        DesktopApp::Claude => "claude-desktop",
+        DesktopApp::ChatGpt => "chatgpt",
+    }
+}
+
+fn apt_base(app: DesktopApp) -> &'static str {
+    match app {
+        DesktopApp::Claude => "https://downloads.claude.ai/claude-desktop/apt/stable",
+        DesktopApp::ChatGpt => "https://persistent.oaistatic.com/codex-app-prod/linux/deb",
+    }
+}
+
 fn parse_apt_release(index: &str, arch: &str, target: Target) -> Result<Option<Release>> {
     let mut latest: Option<(Version, &str)> = None;
     for paragraph in index.split("\n\n") {
-        if deb_field(paragraph, "Package").ok() != Some("claude-desktop")
+        if deb_field(paragraph, "Package").ok() != Some(deb_package(target.app))
             || deb_field(paragraph, "Architecture").ok() != Some(arch)
         {
             continue;
         }
         let version = Version::parse(deb_field(paragraph, "Version")?)
-            .context("Некорректная версия Claude в APT")?;
+            .context("Некорректная версия приложения в APT")?;
         if latest
             .as_ref()
             .is_none_or(|(current, _)| version > *current)
@@ -324,7 +345,7 @@ fn parse_apt_release(index: &str, arch: &str, target: Target) -> Result<Option<R
             latest = Some((version, paragraph));
         }
     }
-    let (version, paragraph) = latest.context("В APT нет Claude для этой архитектуры")?;
+    let (version, paragraph) = latest.context("В APT нет приложения для этой архитектуры")?;
     if target
         .version
         .as_ref()
@@ -343,14 +364,14 @@ fn parse_apt_release(index: &str, arch: &str, target: Target) -> Result<Option<R
     );
     let payload = Payload {
         version: version.to_string(),
-        url: format!("{APT_ORIGIN}/apt/stable/{filename}"),
+        url: format!("{}/{filename}", apt_base(target.app)),
         sha256: deb_field(paragraph, "SHA256")?.to_owned(),
         size: deb_field(paragraph, "Size")?.parse()?,
     };
     validate_payload(version, payload, target).map(Some)
 }
 
-async fn check_linux_release(token: &str, target: Target) -> Result<Option<Release>> {
+pub(super) async fn check_linux_release(token: &str, target: Target) -> Result<Option<Release>> {
     let arch = command_output(
         Command::new("/usr/bin/dpkg").arg("--print-architecture"),
         "Не удалось определить архитектуру Debian/Ubuntu",
@@ -358,31 +379,44 @@ async fn check_linux_release(token: &str, target: Target) -> Result<Option<Relea
     let arch = arch.trim();
     ensure!(
         matches!(arch, "amd64" | "arm64"),
-        "Claude требует Ubuntu/Debian amd64 или arm64"
+        "Требуется Ubuntu/Debian amd64 или arm64"
     );
     let client = client(token)?;
     let directory = tempfile::Builder::new()
-        .prefix("wizard-claude-apt-")
+        .prefix("wizard-desktop-apt-")
         .tempdir()?;
     let key = directory.path().join("key.asc");
     let keyring = directory.path().join("keyring.gpg");
     let signed = directory.path().join("InRelease");
     let verified = directory.path().join("Release");
-    fs::write(&key, apt_metadata(&client, "key.asc").await?)?;
+    let app = target.app;
+    let base = apt_base(app);
+    let fingerprint = match app {
+        DesktopApp::Claude => CLAUDE_APT_SIGNER,
+        DesktopApp::ChatGpt => "3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4",
+    };
     fs::write(
         &signed,
-        apt_metadata(&client, "apt/stable/dists/stable/InRelease").await?,
+        apt_metadata(&client, format!("{base}/dists/stable/InRelease")).await?,
     )?;
-    command_output(
-        Command::new("/usr/bin/gpg")
-            .args(["--no-options", "--batch", "--homedir"])
-            .arg(directory.path())
-            .arg("--dearmor")
-            .arg("--output")
-            .arg(&keyring)
-            .arg(&key),
-        "Не удалось прочитать ключ APT; необходим gpg",
-    )?;
+    if app == DesktopApp::ChatGpt {
+        fs::write(&keyring, include_bytes!("chatgpt-archive-keyring.gpg"))?;
+    } else {
+        fs::write(
+            &key,
+            apt_metadata(&client, format!("{CLAUDE_APT_ORIGIN}/key.asc")).await?,
+        )?;
+        command_output(
+            Command::new("/usr/bin/gpg")
+                .args(["--no-options", "--batch", "--homedir"])
+                .arg(directory.path())
+                .arg("--dearmor")
+                .arg("--output")
+                .arg(&keyring)
+                .arg(&key),
+            "Не удалось прочитать ключ APT; необходим gpg",
+        )?;
+    }
     let status = command_output(
         Command::new("/usr/bin/gpgv")
             .arg("--homedir")
@@ -400,16 +434,16 @@ async fn check_linux_release(token: &str, target: Target) -> Result<Option<Relea
             fields.len() > 2
                 && fields[0] == "[GNUPG:]"
                 && fields[1] == "VALIDSIG"
-                && fields[2] == APT_SIGNER
+                && fields[2] == fingerprint
         }),
-        "Репозиторий APT подписан не ключом Anthropic"
+        "Репозиторий APT подписан не ожидаемым ключом"
     );
     let index = apt_metadata(
         &client,
-        &format!("apt/stable/dists/stable/main/binary-{arch}/Packages"),
+        format!("{base}/dists/stable/main/binary-{arch}/Packages"),
     )
     .await?;
-    verify_apt_index(&fs::read_to_string(verified)?, arch, &index)?;
+    verify_apt_index(&fs::read_to_string(verified)?, arch, &index, app)?;
     parse_apt_release(core::str::from_utf8(&index)?, arch, target)
 }
 
@@ -555,3 +589,32 @@ $ErrorActionPreference = 'Stop'
 
 #[cfg(target_os = "windows")]
 const WINDOWS_PUBLISHER: &str = "CN=\"Anthropic, PBC\", O=\"Anthropic, PBC\", L=San Francisco, S=California, C=US, SERIALNUMBER=4860621, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US";
+
+#[cfg(test)]
+mod apt_tests {
+    use super::*;
+
+    #[test]
+    fn openai_index_without_expiry_still_requires_a_matching_digest() -> Result<()> {
+        let index = b"Package: chatgpt\nArchitecture: arm64\nVersion: 26.11.1\nFilename: pool/main/c/chatgpt/chatgpt_26.11.1_arm64.deb\nSize: 100\nSHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+        let signed = format!(
+            "SHA256:\n {:x} {} main/binary-arm64/Packages",
+            Sha256::digest(index),
+            index.len()
+        );
+        verify_apt_index(&signed, "arm64", index, DesktopApp::ChatGpt)?;
+        assert!(verify_apt_index(&signed, "arm64", b"changed", DesktopApp::ChatGpt).is_err());
+        assert!(verify_apt_index(&signed, "arm64", index, DesktopApp::Claude).is_err());
+        let target = |v| Target::new(DesktopApp::ChatGpt, None, v);
+        let index = core::str::from_utf8(index)?;
+        let release =
+            parse_apt_release(index, "arm64", target(None))?.context("expected an update")?;
+        assert_eq!(
+            release.url.as_str(),
+            "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.11.1_arm64.deb"
+        );
+        assert!(parse_apt_release(index, "amd64", target(None)).is_err());
+        assert!(parse_apt_release(index, "arm64", target(Some(release.version)))?.is_none());
+        Ok(())
+    }
+}
