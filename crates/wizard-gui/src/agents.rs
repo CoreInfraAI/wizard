@@ -238,7 +238,7 @@ pub(crate) async fn prepare_agent_change(
         match token {
             Some(TokenChoice::Existing { token }) if !token.is_empty() => token,
             Some(TokenChoice::Create) if matches!(change, AgentChange::CodexSetRouting(_)) => {
-                hub_tokens::codex_token(&app, None).await?.token
+                hub_tokens::codex_token(&app).await?
             }
             Some(TokenChoice::Create) => {
                 hub_tokens::issue(&app, change.token_agent().token_name()).await?
@@ -363,6 +363,7 @@ pub(crate) async fn apply_agent_plan(
         format!("{error:#}")
     })?;
 
+    crate::video::initialize(&app).await;
     log::info!("agent plan applied");
     Ok(())
 }

@@ -1,22 +1,7 @@
 use super::*;
-use crate::video::{Job, VideoHub, VideoKey, install, server};
-use core::{
-    future::{self, Future},
-    time::Duration,
-};
+use crate::video::{VideoHub, install, server};
+use core::time::Duration;
 use tokio::{net::TcpListener, process::Command};
-
-struct CatalogOnly;
-impl server::VideoAccess for CatalogOnly {
-    fn token<'a>(
-        &'a self,
-        _: Option<&'a Job>,
-    ) -> impl Future<Output = Result<VideoKey>> + Send + 'a {
-        future::ready(Err(anyhow::anyhow!(
-            "Public catalog requested a generation key"
-        )))
-    }
-}
 
 #[tokio::test]
 #[ignore = "requires native Claude Code, Python and the public Hub catalog"]
@@ -30,7 +15,7 @@ async fn claude_code_skill_lists_public_video_models() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}/mcp", listener.local_addr()?);
     let registration = video::server(&url, &headers)?;
-    let broker = server::start(listener, VideoHub::new()?, CatalogOnly, move |bearer| {
+    let broker = server::start(listener, VideoHub::new()?, None, move |bearer| {
         install::sync_headers(&headers, Some(bearer))
     })
     .await?;

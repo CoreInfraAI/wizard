@@ -1,4 +1,4 @@
-use super::{Create, GetResult, Job, VideoHub, VideoKey};
+use super::{Create, GetResult, VideoHub, VideoKey};
 use alloc::sync::Arc;
 use anyhow::{Context as _, Result, bail, ensure};
 use core::{convert::Infallible, future::Future, net::SocketAddr};
@@ -32,24 +32,16 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
-/// Wizard resolves its Codex key for each operation. Polling must never issue a key.
-pub trait VideoAccess: Send + Sync + 'static {
-    fn token<'a>(
-        &'a self,
-        job: Option<&'a Job>,
-    ) -> impl Future<Output = Result<VideoKey>> + Send + 'a;
-}
-
-struct Tools<A> {
+struct Tools {
     hub: VideoHub,
-    access: Arc<A>,
+    key: Option<Arc<VideoKey>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct NoArgs {}
 
-impl<A: VideoAccess> Tools<A> {
+impl Tools {
     async fn call(&self, name: &str, args: Value) -> Result<Value> {
         match name {
             "video_models" => {
@@ -60,12 +52,12 @@ impl<A: VideoAccess> Tools<A> {
             "video_create" => {
                 let input: Create =
                     serde_json::from_value(args).context("Invalid video_create arguments")?;
-                self.hub.create(input, self.access.as_ref()).await
+                self.hub.create(input, self.key.as_deref()).await
             }
             "video_result" => {
                 let input: GetResult =
                     serde_json::from_value(args).context("Invalid video_result arguments")?;
-                self.hub.result(input, self.access.as_ref()).await
+                self.hub.result(input, self.key.as_deref()).await
             }
             _ => bail!("Unknown video tool"),
         }
@@ -78,7 +70,7 @@ pub(super) fn server_info() -> ServerConfig {
     )
 }
 
-impl<A: VideoAccess> ServerHandler for Tools<A> {
+impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
         server_info()
     }
@@ -117,11 +109,11 @@ fn empty(status: StatusCode) -> Response<BoxBody<Bytes, Infallible>> {
     response
 }
 
-type Routes<A> = Arc<Vec<(String, StreamableHttpService<Tools<A>, NeverSessionManager>)>>;
+type Routes = Arc<Vec<(String, StreamableHttpService<Tools, NeverSessionManager>)>>;
 
-async fn handle<A: VideoAccess>(
+async fn handle(
     mut request: Request<Incoming>,
-    routes: Routes<A>,
+    routes: Routes,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, Infallible> {
     if request.uri().path() != "/mcp" || request.uri().query().is_some() {
         return Ok(empty(StatusCode::NOT_FOUND));
@@ -157,7 +149,7 @@ pub fn new_bearer() -> String {
 pub async fn start(
     listener: TcpListener,
     hub: VideoHub,
-    access: impl VideoAccess,
+    key: Option<VideoKey>,
     register: impl FnOnce(&str) -> Result<()> + Send + 'static,
 ) -> Result<JoinHandle<()>> {
     let addr = listener.local_addr()?;
@@ -173,7 +165,7 @@ pub async fn start(
         listener,
         addr,
         hub,
-        vec![(bearer, access)],
+        vec![(bearer, key)],
     )))
 }
 
@@ -181,11 +173,11 @@ pub async fn serve(
     listener: TcpListener,
     addr: SocketAddr,
     hub: VideoHub,
-    grants: Vec<(String, impl VideoAccess)>,
+    grants: Vec<(String, Option<VideoKey>)>,
 ) {
     let mut routes = Vec::new();
-    for (grant, access) in grants {
-        let access = Arc::new(access);
+    for (grant, key) in grants {
+        let key = key.map(Arc::new);
         let hub = hub.clone();
         let config = StreamableHttpServerConfig::default()
             .with_allowed_hosts([addr.to_string()])
@@ -197,7 +189,7 @@ pub async fn serve(
             move || {
                 Ok(Tools {
                     hub: hub.clone(),
-                    access: Arc::clone(&access),
+                    key: key.clone(),
                 })
             },
             Arc::new(NeverSessionManager::default()),

@@ -14,7 +14,6 @@ use reqwest::{Client, RequestBuilder, Response, Url};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use server::VideoAccess;
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt as _;
@@ -88,13 +87,13 @@ pub struct Job {
     provider: Provider,
     model: String,
     id: String,
-    pub hub_id: String,
     pub key_id: String,
 }
 
-/// Resolved by Wizard for one operation. The token is never serialized or logged.
+const MISSING_KEY: &str = "В активной конфигурации агента нет ключа CoreInfra";
+
+/// Cached for one agent. Never serialized or logged.
 pub struct VideoKey {
-    pub hub_id: String,
     pub token: String,
 }
 
@@ -194,10 +193,8 @@ impl VideoHub {
         Ok(models)
     }
 
-    async fn create(&self, input: Create, access: &impl VideoAccess) -> Result<Value> {
+    async fn create(&self, input: Create, key: Option<&VideoKey>) -> Result<Value> {
         let (model_id, mut body) = input.into_body()?;
-        // Capture the caller's Hub before catalog I/O. Issue a key only for a known model.
-        let credentials = access.token(None);
         let model = self
             .models()
             .await?
@@ -212,7 +209,7 @@ impl VideoHub {
                 .origin
                 .join(&format!("{FAL}/{}", fal_model(&model.id)?))?,
         };
-        let key = credentials.await?;
+        let key = key.context(MISSING_KEY)?;
         let req = self
             .client
             .post(url)
@@ -231,13 +228,12 @@ impl VideoHub {
             provider: model.provider,
             model: model.id,
             id: id.to_owned(),
-            hub_id: key.hub_id,
             key_id: fingerprint(&key.token),
         };
         Ok(json!({"job":job, "status":response["status"].as_str().unwrap_or("pending")}))
     }
 
-    async fn result(&self, input: GetResult, access: &impl VideoAccess) -> Result<Value> {
+    async fn result(&self, input: GetResult, key: Option<&VideoKey>) -> Result<Value> {
         let job = &input.job;
         ensure!(safe_segment(&job.id), "Invalid job ID");
         let path = match job.provider {
@@ -250,19 +246,19 @@ impl VideoHub {
                 format!("{FAL}/{owner}/{app}/requests/{}", job.id)
             }
         };
-        let key = access.token(Some(job)).await?;
+        let key = key.context(MISSING_KEY)?;
         ensure!(
-            job.hub_id == key.hub_id && job.key_id == fingerprint(&key.token),
+            job.key_id == fingerprint(&key.token),
             "This video job requires its original Hub and API key"
         );
-        let token = key.token;
+        let token = key.token.as_str();
         let url = self.origin.join(&path)?;
         let status_url = if job.provider == Provider::Fal {
             self.origin.join(&format!("{path}/status"))?
         } else {
             url.clone()
         };
-        let status = read_json(self.client.get(status_url).bearer_auth(&token)).await?;
+        let status = read_json(self.client.get(status_url).bearer_auth(token)).await?;
         let state = status["status"]
             .as_str()
             .context("Hub response missing job status")?;
@@ -284,10 +280,10 @@ impl VideoHub {
                 content
                     .query_pairs_mut()
                     .append_pair("index", &input.index.to_string());
-                self.client.get(content).bearer_auth(&token)
+                self.client.get(content).bearer_auth(token)
             }
             Provider::Fal => {
-                let completed = read_json(self.client.get(url).bearer_auth(&token)).await?;
+                let completed = read_json(self.client.get(url).bearer_auth(token)).await?;
                 let signed = completed
                     .pointer("/video/url")
                     .and_then(Value::as_str)

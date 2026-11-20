@@ -1,10 +1,10 @@
-use crate::{hub_tokens, settings};
+use crate::settings;
 use anyhow::{Context as _, Result};
-use core::future::Future;
 use serde::Serialize;
 use tauri::Manager as _;
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
-use wizard_core::video::{self, Job, VideoHub, VideoKey, server::VideoAccess};
+use wizard_core::video::{self, VideoHub, VideoKey, keys::VideoKeys};
+use wizard_settings::{VideoAgent, VideoSettings};
 
 #[derive(Default)]
 pub(crate) struct Runtime {
@@ -13,18 +13,6 @@ pub(crate) struct Runtime {
 }
 
 pub(crate) type State = Mutex<Runtime>;
-
-struct Access(tauri::AppHandle);
-
-impl VideoAccess for Access {
-    fn token<'a>(
-        &'a self,
-        job: Option<&'a Job>,
-    ) -> impl Future<Output = Result<VideoKey>> + Send + 'a {
-        let key = hub_tokens::codex_token(&self.0, job);
-        async move { key.await.map_err(anyhow::Error::msg) }
-    }
-}
 
 impl Runtime {
     fn running(&self) -> bool {
@@ -40,63 +28,45 @@ impl Runtime {
         }
     }
 
-    async fn configure(&mut self, app: &tauri::AppHandle, enabled: bool) -> Result<()> {
-        if !enabled {
-            let previous = settings::get_state(app)?.video.local_bearer;
-            settings::update_state(app, |s| {
-                s.video.enabled = false;
-                s.video.local_bearer = None;
-            })
-            .await?;
-            self.stop().await;
-            return tauri::async_runtime::spawn_blocking(move || {
-                video::install::sync(previous.as_deref(), None)
-            })
-            .await
-            .context("Video cleanup task failed")?;
-        }
-        if self.running() {
+    async fn reload(&mut self, grants: VideoSettings) -> Result<()> {
+        self.stop().await;
+        if grants == VideoSettings::default() {
             return Ok(());
         }
-        let hub = VideoHub::new()?;
+        let keys = tauri::async_runtime::spawn_blocking(VideoKeys::load).await?;
+        let routes = [
+            (grants.codex, keys.codex),
+            (grants.claude, keys.claude),
+            (grants.claude_desktop, keys.claude_desktop),
+        ]
+        .into_iter()
+        .filter_map(|(bearer, key)| Some((bearer?, key.map(|token| VideoKey { token }))))
+        .collect();
         let listener = TcpListener::bind(video::ADDRESS)
             .await
             .context("Не удалось открыть локальный порт видео 33789")?;
-        let handle = app.clone();
-        let access = Access(app.clone());
-        self.listener = Some(
-            video::server::start(listener, hub, access, move |bearer| {
-                let guard = settings::lock_state()?;
-                let previous = settings::get_state(&handle)?.video.local_bearer;
-                video::install::sync(previous.as_deref(), Some(bearer))?;
-                if let Err(error) = settings::update_state_locked(&handle, &guard, |s| {
-                    s.video.enabled = true;
-                    s.video.local_bearer = Some(bearer.to_owned());
-                }) {
-                    video::install::sync(Some(bearer), previous.as_deref())
-                        .context("Не удалось восстановить регистрацию видео")?;
-                    return Err(error);
-                }
-                Ok(())
-            })
-            .await?,
-        );
+        let addr = listener.local_addr()?;
+        self.listener = Some(tokio::spawn(video::server::serve(
+            listener,
+            addr,
+            VideoHub::new()?,
+            routes,
+        )));
         Ok(())
     }
 }
 
 pub(crate) async fn initialize(app: &tauri::AppHandle) {
-    let enabled = settings::get_state(app).map(|s| s.video.enabled);
     let state = app.state::<State>();
     let mut runtime = state.lock().await;
-    let result = match enabled {
-        Ok(enabled) => runtime.configure(app, enabled).await,
-        Err(error) => Err(error),
+    let result = match settings::get_state(app) {
+        Ok(s) => runtime.reload(s.video).await,
+        Err(error) => {
+            runtime.stop().await;
+            Err(error)
+        }
     };
-    if let Err(error) = result {
-        log::warn!("video setup: {error:#}");
-        runtime.error = Some(format!("{error:#}"));
-    }
+    runtime.error = result.err().map(|e| format!("{e:#}"));
 }
 
 pub(crate) async fn shutdown(app: &tauri::AppHandle) {
@@ -111,30 +81,53 @@ pub(crate) struct Status {
 }
 
 #[tauri::command]
-pub(crate) async fn get_video_connection(app: tauri::AppHandle) -> Result<Status, String> {
+pub(crate) async fn get_video_connection(
+    app: tauri::AppHandle,
+    agent: VideoAgent,
+) -> Result<Status, String> {
     let state = app.state::<State>();
     let runtime = state.lock().await;
+    let enabled = settings::get_state(&app)
+        .map_err(|_| "Настройки недоступны")?
+        .video
+        .bearer(agent)
+        .is_some();
     Ok(Status {
-        enabled: settings::get_state(&app)
-            .map_err(|_| "Настройки недоступны")?
-            .video
-            .enabled,
-        running: runtime.running(),
-        error: runtime.error.clone(),
+        enabled,
+        running: enabled && runtime.running(),
+        error: if enabled { runtime.error.clone() } else { None },
     })
 }
 
 #[tauri::command]
 pub(crate) async fn set_video_connection(
     app: tauri::AppHandle,
+    agent: VideoAgent,
     enabled: bool,
 ) -> Result<(), String> {
     let state = app.state::<State>();
     let mut runtime = state.lock().await;
-    let result = runtime
-        .configure(&app, enabled)
-        .await
-        .map_err(|e| format!("{e:#}"));
+    let handle = app.clone();
+    let grants = tauri::async_runtime::spawn_blocking(move || -> Result<VideoSettings> {
+        let guard = settings::lock_state()?;
+        let mut grants = settings::get_state(&handle)?.video;
+        let previous = grants.bearer(agent);
+        let next = enabled.then(|| previous.map_or_else(video::server::new_bearer, str::to_owned));
+        video::install::sync(agent, previous, next.as_deref())?;
+        if let Err(error) =
+            settings::update_state_locked(&handle, &guard, |s| s.video.set(agent, next.clone()))
+        {
+            video::install::sync(agent, next.as_deref(), previous)
+                .context("Не удалось восстановить регистрацию видео")?;
+            return Err(error);
+        }
+        grants.set(agent, next);
+        Ok(grants)
+    })
+    .await
+    .map_err(|_| "Не удалось настроить видео")?
+    .map_err(|e| format!("{e:#}"))?;
+    let result = runtime.reload(grants).await.map_err(|e| format!("{e:#}"));
     runtime.error = result.as_ref().err().cloned();
     result
 }

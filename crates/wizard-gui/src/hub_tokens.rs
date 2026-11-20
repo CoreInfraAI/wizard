@@ -12,7 +12,7 @@ use tauri::Manager as _;
 use wizard_core::{
     agents::TokenAgent,
     hub::{self, AgentTokens, Client, HubError, SessionUpdate},
-    video::{Job, VideoKey, fingerprint},
+    video::fingerprint,
 };
 
 pub(crate) const PROXY_TOKEN_NAME: &str = "coreinfra-ai-wizard";
@@ -326,10 +326,9 @@ static CODEX_TOKEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(
 
 /// Both automatic Codex setup and video use the same default in Wizard's selected Hub.
 /// Capture the selection now, even when the caller awaits this after other I/O.
-pub(crate) fn codex_token<'a>(
-    app: &'a tauri::AppHandle,
-    job: Option<&'a Job>,
-) -> impl Future<Output = Result<VideoKey, String>> + Send + 'a {
+pub(crate) fn codex_token(
+    app: &tauri::AppHandle,
+) -> impl Future<Output = Result<String, String>> + Send + '_ {
     let revision = generation(app);
     let selected = settings::get_state(app)
         .map_err(|_| "Настройки Wizard недоступны")
@@ -357,9 +356,6 @@ pub(crate) fn codex_token<'a>(
             .await
             .map_err(|_| CODEX_LOOKUP_ERROR)?;
         let hub_id = profile.active_hub_id(&selected).to_owned();
-        if job.is_some_and(|j| j.hub_id != hub_id) {
-            return Err("Выберите в Wizard исходный хаб этого видеозадания".into());
-        }
         let client = hub::client().map_err(|_| CODEX_LOOKUP_ERROR)?;
         let list = async {
             let state = current()?;
@@ -370,24 +366,19 @@ pub(crate) fn codex_token<'a>(
             tokens.retain(|t| Some(t.token.as_str()) != state.proxy_token.as_deref());
             Ok((tokens, session))
         };
-        let token =
-            resolve_codex_token(job.map(|j| j.key_id.as_str()), list, async |mut session| {
-                current()?;
-                let response = hub::issue_agent_token(
-                    &client,
-                    &session,
-                    &hub_id,
-                    TokenAgent::Codex.token_name(),
-                )
-                .await;
-                let issued =
-                    accept_token_response(app, &mut session, response, CODEX_LOOKUP_ERROR).await?;
-                HubTokensManager::refresh(app).await;
-                Ok(issued)
-            })
-            .await?;
+        let token = resolve_codex_token(None, list, async |mut session| {
+            current()?;
+            let response =
+                hub::issue_agent_token(&client, &session, &hub_id, TokenAgent::Codex.token_name())
+                    .await;
+            let issued =
+                accept_token_response(app, &mut session, response, CODEX_LOOKUP_ERROR).await?;
+            HubTokensManager::refresh(app).await;
+            Ok(issued)
+        })
+        .await?;
         current()?;
-        Ok(VideoKey { hub_id, token })
+        Ok(token)
     }
 }
 

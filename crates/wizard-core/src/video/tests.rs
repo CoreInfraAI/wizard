@@ -1,11 +1,7 @@
 use super::*;
-use crate::{config_files::toml, video::server::VideoAccess};
+use crate::config_files::toml;
 use alloc::sync::Arc;
-use core::{
-    convert::Infallible,
-    future::Future,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::convert::Infallible;
 use http_body_util::{BodyExt as _, Full};
 use hyper::{
     Request, Response as HttpResponse,
@@ -24,33 +20,9 @@ const KEY: &str = "fixture-upstream-secret";
 const LOCAL: &str = "fixture-local-grant";
 const MP4: &[u8] = include_bytes!("../../tests/fixtures/blue.mp4");
 
-struct Access(&'static str);
-impl VideoAccess for Access {
-    fn token<'a>(
-        &'a self,
-        _: Option<&'a Job>,
-    ) -> impl Future<Output = Result<VideoKey>> + Send + 'a {
-        core::future::ready(Ok(VideoKey {
-            hub_id: "team".into(),
-            token: self.0.into(),
-        }))
-    }
-}
-
-#[derive(Default, Clone)]
-struct SignedOut {
-    lookups: Arc<AtomicUsize>,
-}
-
-impl VideoAccess for SignedOut {
-    fn token<'a>(
-        &'a self,
-        _: Option<&'a Job>,
-    ) -> impl Future<Output = Result<VideoKey>> + Send + 'a {
-        core::future::poll_fn(|_| {
-            self.lookups.fetch_add(1, Ordering::SeqCst);
-            core::task::Poll::Ready(Err(anyhow!("Sign in to Wizard")))
-        })
+fn key(token: &str) -> VideoKey {
+    VideoKey {
+        token: token.into(),
     }
 }
 
@@ -199,12 +171,12 @@ impl Fixture {
         })
     }
 
-    async fn start(&self, access: impl VideoAccess) -> Result<RunningServer> {
+    async fn start(&self, key: Option<VideoKey>) -> Result<RunningServer> {
         let path = self.dir.path().join("profile/config.toml");
         let config = path.clone();
         let local = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}/mcp", local.local_addr()?);
-        let task = server::start(local, self.hub.clone(), access, move |bearer| {
+        let task = server::start(local, self.hub.clone(), key, move |bearer| {
             install::sync_at(&config, None, Some(bearer))
         })
         .await?;
@@ -279,8 +251,8 @@ async fn caller_bearer_selects_paid_key_on_shared_endpoint() -> Result<()> {
             addr,
             f.hub.clone(),
             vec![
-                ("local-codex".into(), Access(KEY)),
-                ("local-claude".into(), Access("fixture-claude")),
+                ("local-codex".into(), Some(key(KEY))),
+                ("local-claude".into(), Some(key("fixture-claude"))),
             ],
         )),
     };
@@ -316,7 +288,7 @@ async fn caller_bearer_selects_paid_key_on_shared_endpoint() -> Result<()> {
 #[tokio::test]
 async fn both_providers_fields_and_resume_across_restart() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let first = fixture.start(Access(KEY)).await?;
+    let first = fixture.start(Some(key(KEY))).await?;
     let catalog = fixture.call(&first, "video_models", json!({})).await?;
     let models = catalog["structuredContent"]["models"]
         .as_array()
@@ -355,7 +327,7 @@ async fn both_providers_fields_and_resume_across_restart() -> Result<()> {
     assert_eq!(pending["structuredContent"]["status"], "in_progress");
     first.task.abort();
     let _ = first.task.await;
-    let second = fixture.start(Access(KEY)).await?;
+    let second = fixture.start(Some(key(KEY))).await?;
     assert_ne!(first.bearer, second.bearer);
     assert_eq!(
         fixture
@@ -416,7 +388,7 @@ async fn both_providers_fields_and_resume_across_restart() -> Result<()> {
 #[tokio::test]
 async fn validates_before_billing_and_confines_credentials() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let server = fixture.start(Access(KEY)).await?;
+    let server = fixture.start(Some(key(KEY))).await?;
     let unauthorized = fixture.hub.client.post(&server.url).send().await?;
     assert_eq!(unauthorized.status(), 401);
     for (header, value) in [
@@ -472,9 +444,8 @@ async fn validates_before_billing_and_confines_credentials() -> Result<()> {
             true
         );
     }
-    let mut job = json!({"id":"f-1","provider":"fal","model":FAL_MODEL,"hub_id":"team","key_id":fingerprint(KEY)});
+    let mut job = json!({"id":"f-1","provider":"fal","model":FAL_MODEL,"key_id":fingerprint(KEY)});
     for (k, v) in [
-        ("hub_id", "another"),
         ("key_id", "different"),
         ("model", "../hub/account"),
         ("id", "../admins"),
@@ -595,8 +566,8 @@ fn install_upgrade_disable_and_collisions() -> Result<()> {
 #[tokio::test]
 async fn rotated_connection_and_interrupted_download_fail_closed() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let server = fixture.start(Access("replacement-key")).await?;
-    let original = json!({"id":"f-1","provider":"fal","model":FAL_MODEL,"hub_id":"team","key_id":fingerprint(KEY)});
+    let server = fixture.start(Some(key("replacement-key"))).await?;
+    let original = json!({"id":"f-1","provider":"fal","model":FAL_MODEL,"key_id":fingerprint(KEY)});
     let response = fixture
         .call(&server, "video_result", json!({"job":original}))
         .await?;
@@ -630,8 +601,7 @@ async fn rotated_connection_and_interrupted_download_fail_closed() -> Result<()>
 #[tokio::test]
 async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let access = SignedOut::default();
-    let server = fixture.start(access.clone()).await?;
+    let server = fixture.start(None).await?;
     assert!(
         fixture
             .dir
@@ -655,7 +625,6 @@ async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
         )
         .await?;
     assert_eq!(missing["isError"], true);
-    assert_eq!(access.lookups.load(Ordering::SeqCst), 0);
     let generation = fixture
         .call(
             &server,
@@ -664,7 +633,6 @@ async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
         )
         .await?;
     assert_eq!(generation["isError"], true);
-    assert_eq!(access.lookups.load(Ordering::SeqCst), 1);
     assert!(
         fixture
             .requests
@@ -683,10 +651,9 @@ async fn codex_skill_lists_public_video_models() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let profile = dir.path().join("codex");
     let config = profile.join("config.toml");
-    let access = SignedOut::default();
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}/mcp", listener.local_addr()?);
-    let server = server::start(listener, VideoHub::new()?, access.clone(), move |bearer| {
+    let server = server::start(listener, VideoHub::new()?, None, move |bearer| {
         install::sync_at(&config, None, Some(bearer))?;
         // Verify the production registration, then point this isolated profile at its own listener.
         let mut doc = toml::read(&config)?;
@@ -717,11 +684,6 @@ async fn codex_skill_lists_public_video_models() -> Result<()> {
         status.success(),
         "Codex skill/catalog E2E failed ({status})"
     );
-    assert_eq!(
-        access.lookups.load(Ordering::SeqCst),
-        0,
-        "catalog requested a Hub key"
-    );
     Ok(())
 }
 
@@ -734,9 +696,12 @@ async fn failed_registration_releases_the_listener_and_preserves_a_foreign_serve
     let register_path = config.clone();
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
-    let result = server::start(listener, fixture.hub.clone(), Access(KEY), move |bearer| {
-        install::sync_at(&register_path, None, Some(bearer))
-    })
+    let result = server::start(
+        listener,
+        fixture.hub.clone(),
+        Some(key(KEY)),
+        move |bearer| install::sync_at(&register_path, None, Some(bearer)),
+    )
     .await;
     assert!(result.is_err());
     let _new_listener = TcpListener::bind(addr).await?;
@@ -777,7 +742,7 @@ async fn native_and_python_clients() -> Result<()> {
     );
 
     // Install while Codex is running. Only the test listener's port is ephemeral.
-    let server = fixture.start(Access(KEY)).await?;
+    let server = fixture.start(Some(key(KEY))).await?;
     let config = std::fs::read_to_string(&path)?;
     assert!(config.contains(URL) && !config.contains(KEY));
     std::fs::write(&path, config.replace(URL, &server.url))?;
