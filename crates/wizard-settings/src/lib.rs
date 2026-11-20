@@ -39,23 +39,39 @@ pub struct Settings {
     pub last_paths: LastPaths,
 }
 
-// No Debug: local_bearer authenticates paid video requests on loopback.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct VideoSettings {
-    /// Install the managed skill and MCP registration when Wizard starts.
-    pub enabled: bool,
-    /// Current listener's local grant, also used when restoring Codex backups.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_bearer: Option<String>,
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoAgent {
+    Codex,
+    Claude,
+    ClaudeDesktop,
 }
 
-impl Default for VideoSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            local_bearer: None,
+/// Local MCP grants only; never serialize upstream API keys.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct VideoSettings {
+    pub codex: Option<String>,
+    pub claude: Option<String>,
+    pub claude_desktop: Option<String>,
+}
+
+impl VideoSettings {
+    #[must_use]
+    pub fn bearer(&self, agent: VideoAgent) -> Option<&str> {
+        match agent {
+            VideoAgent::Codex => &self.codex,
+            VideoAgent::Claude => &self.claude,
+            VideoAgent::ClaudeDesktop => &self.claude_desktop,
         }
+        .as_deref()
+    }
+    pub fn set(&mut self, agent: VideoAgent, bearer: Option<String>) {
+        *match agent {
+            VideoAgent::Codex => &mut self.codex,
+            VideoAgent::Claude => &mut self.claude,
+            VideoAgent::ClaudeDesktop => &mut self.claude_desktop,
+        } = bearer;
     }
 }
 
@@ -224,21 +240,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_connection_round_trips_in_existing_installations() -> Result<()> {
-        let mut settings: Settings = toml_edit::de::from_str("install_id = 'abcdefgh27'")?;
-        assert!(settings.video.enabled && settings.video.local_bearer.is_none());
-        settings = toml_edit::de::from_str(
-            "[video]\naccount_id='account'\nhub_id='team'\nkey_name='studio'\nkey_id='fingerprint'\nlocal_bearer='local-grant'\n",
-        )?;
-        let saved = toml_edit::ser::to_string_pretty(&settings)?;
-        assert!(settings.video.enabled);
-        assert!(saved.contains("local-grant") && !saved.contains("studio"));
-        let restored: Settings = toml_edit::de::from_str(&saved)?;
-        assert!(settings == restored);
-        let opted_out: Settings = toml_edit::de::from_str("[video]\nenabled = false\n")?;
-        let saved = toml_edit::ser::to_string_pretty(&opted_out)?;
-        let restored: Settings = toml_edit::de::from_str(&saved)?;
-        assert!(!restored.video.enabled && restored.video.local_bearer.is_none());
+    fn video_grants_round_trip() -> Result<()> {
+        let mut s = Settings::default();
+        s.video.claude = Some("local".into());
+        let restored: Settings = toml_edit::de::from_str(&toml_edit::ser::to_string_pretty(&s)?)?;
+        assert!(restored.video == s.video);
         Ok(())
     }
 
