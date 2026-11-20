@@ -30,7 +30,7 @@ impl Runtime {
 
     async fn reload(&mut self, grants: VideoSettings) -> Result<()> {
         self.stop().await;
-        if grants == VideoSettings::default() {
+        if !grants.has_grants() {
             return Ok(());
         }
         let keys = tauri::async_runtime::spawn_blocking(VideoKeys::load).await?;
@@ -76,6 +76,8 @@ pub(crate) async fn shutdown(app: &tauri::AppHandle) {
 #[derive(Serialize)]
 pub(crate) struct Status {
     enabled: bool,
+    /// Offered by default: no grant yet, and the user has not turned video off.
+    suggested: bool,
     running: bool,
     error: Option<String>,
 }
@@ -87,13 +89,13 @@ pub(crate) async fn get_video_connection(
 ) -> Result<Status, String> {
     let state = app.state::<State>();
     let runtime = state.lock().await;
-    let enabled = settings::get_state(&app)
+    let video = settings::get_state(&app)
         .map_err(|_| "Настройки недоступны")?
-        .video
-        .bearer(agent)
-        .is_some();
+        .video;
+    let enabled = video.bearer(agent).is_some();
     Ok(Status {
         enabled,
+        suggested: video.suggested(agent),
         running: enabled && runtime.running(),
         error: if enabled { runtime.error.clone() } else { None },
     })

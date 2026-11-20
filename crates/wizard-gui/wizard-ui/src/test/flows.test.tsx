@@ -207,6 +207,35 @@ it("offers Claude Desktop video on a subscription and hides it without CoreInfra
   }
 });
 
+it("offers video by default to configured agents until the user turns it off", async () => {
+  const user = userEvent.setup();
+  launch("all_agents", "/agents/claude", undefined, { videoSuggested: true });
+  const toggle = await screen.findByRole("switch", { name: /coreinfra-video/ });
+  expect(toggle).toBeChecked();
+  const apply = screen.getByRole("button", { name: "Применить" });
+  expect(apply).toBeEnabled();
+  await user.click(toggle);
+  expect(apply).toBeDisabled();
+  await user.click(toggle);
+  await user.click(apply);
+  let plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
+  expect(within(plan).getByText("coreinfra-video", { selector: "code" })).toBeVisible();
+  await user.click(within(plan).getByRole("button", { name: "Применить" }));
+  await finishSettings(user);
+  expect(await screen.findByRole("switch", { name: /coreinfra-video/ })).toBeChecked();
+
+  // Turning video off is remembered: it is not offered again.
+  await user.click(screen.getByRole("switch", { name: /coreinfra-video/ }));
+  await user.click(screen.getByRole("button", { name: "Применить" }));
+  plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
+  await user.click(within(plan).getByRole("button", { name: "Применить" }));
+  await finishSettings(user);
+  await user.click(screen.getByRole("link", { name: "ChatGPT / Codex" }));
+  await user.click(screen.getByRole("link", { name: "Claude Code" }));
+  expect(await screen.findByRole("switch", { name: /coreinfra-video/ })).not.toBeChecked();
+  expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
+});
+
 it("keeps the Claude Code video choice in all three modes and retries only the failed step", async () => {
   const user = userEvent.setup();
   launch("all_agents", "/agents/claude");

@@ -9,7 +9,8 @@ import { StateNotice } from "../components/ui/StateNotice";
 import { ErrorText } from "../components/ErrorText";
 import type { AgentId, ConnectionDraft } from "./agents_state";
 
-type Status = { enabled: boolean; running: boolean; error: string | null };
+// `suggested`: no grant yet and never turned off by the user, so the form offers video by default.
+type Status = { enabled: boolean; suggested: boolean; running: boolean; error: string | null };
 
 export function useVideoConnection(agent: AgentId, available: boolean) {
   const [status, setStatus] = useState<Status>();
@@ -32,7 +33,7 @@ export function useVideoConnection(agent: AgentId, available: boolean) {
     return () => { active = false; };
   }, [agent, available, revision]);
 
-  const enabled = draft ?? status?.enabled;
+  const enabled = draft ?? (status && (status.enabled || status.suggested));
   const needsApply = !!status && (enabled !== status.enabled || (enabled && !status.running) || !!status.error);
   function retry() {
     setError(undefined);

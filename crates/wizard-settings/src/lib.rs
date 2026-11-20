@@ -39,7 +39,7 @@ pub struct Settings {
     pub last_paths: LastPaths,
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VideoAgent {
     Codex,
@@ -54,6 +54,9 @@ pub struct VideoSettings {
     pub codex: Option<String>,
     pub claude: Option<String>,
     pub claude_desktop: Option<String>,
+    /// Agents whose video the user turned off. Others are offered video by default.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub declined: Vec<VideoAgent>,
 }
 
 impl VideoSettings {
@@ -66,7 +69,21 @@ impl VideoSettings {
         }
         .as_deref()
     }
+    #[must_use]
+    pub fn has_grants(&self) -> bool {
+        self.codex.is_some() || self.claude.is_some() || self.claude_desktop.is_some()
+    }
+    /// Whether Wizard offers video for `agent`: not granted and never turned off by the user.
+    #[must_use]
+    pub fn suggested(&self, agent: VideoAgent) -> bool {
+        self.bearer(agent).is_none() && !self.declined.contains(&agent)
+    }
+    /// A grant clears the agent's opt-out; removing one records it.
     pub fn set(&mut self, agent: VideoAgent, bearer: Option<String>) {
+        self.declined.retain(|declined| *declined != agent);
+        if bearer.is_none() {
+            self.declined.push(agent);
+        }
         *match agent {
             VideoAgent::Codex => &mut self.codex,
             VideoAgent::Claude => &mut self.claude,
@@ -242,10 +259,25 @@ mod tests {
     #[test]
     fn video_grants_round_trip() -> Result<()> {
         let mut s = Settings::default();
-        s.video.claude = Some("local".into());
+        s.video.set(VideoAgent::Claude, Some("local".into()));
+        s.video.set(VideoAgent::ClaudeDesktop, None);
         let restored: Settings = toml_edit::de::from_str(&toml_edit::ser::to_string_pretty(&s)?)?;
         assert!(restored.video == s.video);
         Ok(())
+    }
+
+    #[test]
+    fn video_is_suggested_until_the_user_turns_it_off() {
+        let mut video = VideoSettings::default();
+        assert!(video.suggested(VideoAgent::Codex));
+        video.set(VideoAgent::Codex, Some("local".into()));
+        assert!(!video.suggested(VideoAgent::Codex));
+        video.set(VideoAgent::Codex, None);
+        assert!(!video.suggested(VideoAgent::Codex));
+        assert!(!video.has_grants());
+        assert!(video.suggested(VideoAgent::Claude));
+        video.set(VideoAgent::Codex, Some("again".into()));
+        assert!(video.declined.is_empty());
     }
 
     #[test]

@@ -76,7 +76,9 @@ class Snapshots<T extends object> {
   }
 }
 
-export type MockOptions = { onboarding?: boolean };
+// `videoSuggested`: Wizard offers video for every agent, as on a fresh install. Otherwise the
+// fixtures model a user who has already turned video off, so other flows stay unchanged.
+export type MockOptions = { onboarding?: boolean; videoSuggested?: boolean };
 
 export function createMockEnvironment(scenario: Scenario = "update", options: MockOptions = {}) {
   const timeouts = new Set<ReturnType<typeof setTimeout>>();
@@ -208,6 +210,9 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
   });
   const proxy = new Snapshots({ enabled: !onboarding });
   const videoEnabled = new Set<string>();
+  const videoDeclined = new Set<string>(
+    options.videoSuggested ? [] : ["codex", "claude", "claude_desktop"],
+  );
   const update = new Snapshots<UpdateState>(
     scenario === "wizard_update" ? { status: "available", version: "1.0.6" }
       : scenario === "checking" || scenario === "startup"
@@ -488,10 +493,18 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
             return configured.read(revision);
           case "get_proxy_state":
             return proxy.read(revision);
-          case "get_video_connection":
-            return { enabled: videoEnabled.has(String(args.agent)), running: videoEnabled.has(String(args.agent)), error: null };
+          case "get_video_connection": {
+            const enabled = videoEnabled.has(String(args.agent));
+            return { enabled, suggested: !enabled && !videoDeclined.has(String(args.agent)), running: enabled, error: null };
+          }
           case "set_video_connection":
-            if (args.enabled) videoEnabled.add(String(args.agent)); else videoEnabled.delete(String(args.agent));
+            if (args.enabled) {
+              videoEnabled.add(String(args.agent));
+              videoDeclined.delete(String(args.agent));
+            } else {
+              videoEnabled.delete(String(args.agent));
+              videoDeclined.add(String(args.agent));
+            }
             return;
           case "get_update_state":
             return update.read(revision);
