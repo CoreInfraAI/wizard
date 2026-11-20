@@ -458,12 +458,10 @@ async fn validates_before_billing_and_confines_credentials() -> Result<()> {
 #[test]
 fn claude_headers_rotate_with_the_listener_and_are_revoked_on_disable() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let config = temp.path().join("codex/config.toml");
     let headers = temp.path().join("wizard/video-mcp-headers.json");
-    let sync = |previous, next| install::sync_with_headers(&config, &headers, previous, next);
-    let mut previous = None;
+    let sync = |next| install::sync_headers(&headers, next);
     for grant in ["first-test-grant", "second-test-grant"] {
-        sync(previous, Some(grant))?;
+        sync(Some(grant))?;
         let published: Value = serde_json::from_slice(&std::fs::read(&headers)?)?;
         assert_eq!(
             published,
@@ -477,9 +475,8 @@ fn claude_headers_rotate_with_the_listener_and_are_revoked_on_disable() -> Resul
                 0o600
             );
         }
-        previous = Some(grant);
     }
-    sync(previous, None)?;
+    sync(None)?;
     assert!(!headers.exists());
     Ok(())
 }

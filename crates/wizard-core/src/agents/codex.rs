@@ -155,9 +155,9 @@ fn restore_video_registration(
         {
             let bearer = settings
                 .video
-                .local_bearer
+                .codex
                 .as_deref()
-                .filter(|_| settings.video.enabled && change.path() == active);
+                .filter(|_| change.path() == active);
             crate::video::install::update_config(&mut change.after, None, bearer)?;
         }
     }
@@ -693,7 +693,7 @@ mod tests {
         backup.after = FileSnapshot::new(backed_up.into(), 0o644);
         let settings = Settings {
             video: wizard_settings::VideoSettings {
-                local_bearer: Some("fixture-local-grant".into()),
+                codex: Some("fixture-local-grant".into()),
                 ..Default::default()
             },
             ..Settings::default()

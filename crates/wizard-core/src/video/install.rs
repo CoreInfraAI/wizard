@@ -24,53 +24,55 @@ const SKILL: &[(&str, &str)] = &[
     ),
 ];
 
-pub fn sync(previous: Option<&str>, next: Option<&str>) -> Result<()> {
-    let _guard = PreparedAgent::Codex.lock()?;
-    sync_with_headers(&codex::config_path()?, &headers_path()?, previous, next)
-}
-
-pub(crate) fn headers_path() -> Result<PathBuf> {
-    Ok(wizard_settings::paths::config_dir()?.join("video-mcp-headers.json"))
-}
-
-#[cfg(test)]
-pub(super) fn sync_at(path: &Path, previous: Option<&str>, next: Option<&str>) -> Result<()> {
-    sync_with_headers(
-        path,
-        &path.with_file_name("test-video-headers.json"),
-        previous,
-        next,
-    )
-}
-
-pub(crate) fn sync_with_headers(
-    path: &Path,
-    headers: &Path,
+pub fn sync(
+    agent: wizard_settings::VideoAgent,
     previous: Option<&str>,
     next: Option<&str>,
 ) -> Result<()> {
+    use wizard_settings::VideoAgent::{Claude, ClaudeDesktop, Codex};
+    match agent {
+        Codex => {
+            let _guard = PreparedAgent::Codex.lock()?;
+            sync_at(&codex::config_path()?, previous, next)
+        }
+        Claude | ClaudeDesktop => sync_headers(&headers_path(agent == ClaudeDesktop)?, next),
+    }
+}
+
+pub(crate) fn headers_path(desktop: bool) -> Result<PathBuf> {
+    let name = if desktop {
+        "video-claude-desktop-headers.json"
+    } else {
+        "video-claude-code-headers.json"
+    };
+    Ok(wizard_settings::paths::config_dir()?.join(name))
+}
+
+pub(crate) fn sync_headers(path: &Path, bearer: Option<&str>) -> Result<()> {
+    let mut grant = FileChange::read(path.to_owned())?;
+    grant.after = bearer.map_or(FileSnapshot::Missing, |token| {
+        FileSnapshot::new(
+            serde_json::json!({"Authorization": format!("Bearer {token}")}).to_string(),
+            0o600,
+        )
+    });
+    FileChange::apply_all(&[grant])
+}
+
+pub(super) fn sync_at(path: &Path, previous: Option<&str>, next: Option<&str>) -> Result<()> {
     let mut config = FileChange::read(path.to_owned())?;
     update_config(&mut config.after, previous, next)?;
-    // Claude Code reads just these local MCP headers on connection. The Hub key stays in Wizard.
-    let mut grant = FileChange::read(headers.to_owned())?;
-    grant.after = match next {
-        Some(bearer) => FileSnapshot::new(
-            serde_json::json!({"Authorization": format!("Bearer {bearer}")}).to_string(),
-            0o600,
-        ),
-        None => FileSnapshot::Missing,
-    };
     let root = path
         .parent()
         .context("Missing Codex home")?
         .join("skills/coreinfra-video");
     if next.is_none() {
         // Revoke both clients even if a user-edited skill cannot be cleaned up.
-        FileChange::apply_all(&[grant, config])?;
+        FileChange::apply_all(&[config])?;
         return FileChange::apply_all(&skill_changes(&root, SKILL, false)?);
     }
     let mut changes = skill_changes(&root, SKILL, true)?;
-    changes.extend([config, grant]);
+    changes.push(config);
     FileChange::apply_all(&changes)
 }
 

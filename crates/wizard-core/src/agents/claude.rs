@@ -186,7 +186,10 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
 }
 
 fn video_server() -> Result<Value> {
-    video::server(crate::video::URL, &crate::video::install::headers_path()?)
+    video::server(
+        crate::video::URL,
+        &crate::video::install::headers_path(false)?,
+    )
 }
 
 fn prepare_routing_at(

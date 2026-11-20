@@ -30,7 +30,7 @@ impl Registration {
             .unwrap_or(command);
         Ok(Self {
             command,
-            headers: crate::video::install::headers_path()?,
+            headers: crate::video::install::headers_path(true)?,
             port: crate::video::ADDRESS.port(),
         })
     }

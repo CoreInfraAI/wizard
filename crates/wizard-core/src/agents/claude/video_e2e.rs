@@ -30,9 +30,8 @@ async fn claude_code_skill_lists_public_video_models() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}/mcp", listener.local_addr()?);
     let registration = video::server(&url, &headers)?;
-    let config = root.join("codex/config.toml");
     let broker = server::start(listener, VideoHub::new()?, CatalogOnly, move |bearer| {
-        install::sync_with_headers(&config, &headers, None, Some(bearer))
+        install::sync_headers(&headers, Some(bearer))
     })
     .await?;
     prepare_routing_at(
