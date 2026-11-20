@@ -28,8 +28,8 @@ use std::time::Instant;
 #[cfg(target_os = "macos")]
 const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Configuration owns the full close/write/open cycle. Never force-quit an application.
-/// A fresh installation opens only after its configuration has been saved successfully.
+/// Configuration closes the application and writes its settings. Never force-quit an
+/// application. After success the user starts it with «Запустить агента».
 pub(crate) fn with_closed(
     app: DesktopApp,
     last_path: Option<&Path>,
@@ -48,23 +48,17 @@ fn run_closed(
     open: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     let was_running = close()?;
-    let applied = apply();
-    // Restore an already running app after an error, but never launch a first installation
-    // with incomplete settings. Preserve the configuration error if reopening also fails.
-    if !was_running && applied.is_err() {
-        return applied;
-    }
-    let opened = open();
-    match (applied, opened) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => {
-            Err(error.context("Настройки сохранены, но не удалось открыть приложение"))
-        }
-        (Err(error), Err(open_error)) => Err(error.context(format!(
+    let Err(error) = apply() else {
+        return Ok(());
+    };
+    // Restore an app that was running before the failed change, but never launch one that
+    // was closed. Preserve the configuration error if reopening also fails.
+    if was_running && let Err(open_error) = open() {
+        return Err(error.context(format!(
             "Не удалось снова открыть приложение: {open_error:#}"
-        ))),
+        )));
     }
+    Err(error)
 }
 
 pub(super) fn close_existing(app: DesktopApp, last_path: Option<&Path>) -> Result<bool> {
@@ -127,7 +121,8 @@ mod configuration_tests {
     use core::cell::RefCell;
 
     #[test]
-    fn configuration_is_saved_before_first_launch_or_restart() -> anyhow::Result<()> {
+    fn successful_configuration_leaves_the_app_closed_for_the_user_to_launch() -> anyhow::Result<()>
+    {
         for was_running in [false, true] {
             let steps = RefCell::new(Vec::new());
             run_closed(
@@ -139,12 +134,9 @@ mod configuration_tests {
                     steps.borrow_mut().push("configured");
                     Ok(())
                 },
-                || {
-                    steps.borrow_mut().push("opened");
-                    Ok(())
-                },
+                || panic!("only «Запустить агента» launches the app after success"),
             )?;
-            assert_eq!(*steps.borrow(), ["closed", "configured", "opened"]);
+            assert_eq!(*steps.borrow(), ["closed", "configured"]);
         }
         Ok(())
     }
@@ -180,10 +172,14 @@ mod configuration_tests {
     }
 
     #[test]
-    fn launch_failure_does_not_claim_setup_completed() {
-        let result = run_closed(|| Ok(false), || Ok(()), || anyhow::bail!("launch failed"));
+    fn reopen_failure_after_failed_configuration_reports_both_errors() {
+        let result = run_closed(
+            || Ok(true),
+            || anyhow::bail!("configuration failed"),
+            || anyhow::bail!("launch failed"),
+        );
         let message = format!("{:#}", result.expect_err("must fail"));
-        assert!(message.contains("Настройки сохранены"));
+        assert!(message.contains("configuration failed"));
         assert!(message.contains("launch failed"));
     }
 }

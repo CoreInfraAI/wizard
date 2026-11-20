@@ -160,7 +160,7 @@ export function PreparedPlanDialog({
             title="Настройки применены"
             description={launchChoice.desktop
               ? routing?.restarts_desktop
-                ? launchChoice.name + " открыт с новыми настройками."
+                ? "Запустите " + launchChoice.name + ", чтобы продолжить с новыми настройками."
                 : "Можно продолжить работу в " + launchChoice.name + "."
               : launchChoice.name + " откроется в терминале."}
           />
@@ -173,7 +173,7 @@ export function PreparedPlanDialog({
             disabled={busy}
             description={routing?.info.length
               ? routing.restarts_desktop
-                ? "Завершите текущую работу. Wizard закроет приложение, если оно запущено, применит настройки и откроет его."
+                ? "Завершите текущую работу. Wizard закроет приложение, если оно запущено, и применит настройки."
                 : "Завершите текущую работу и закройте агента перед применением."
               : undefined}
           />

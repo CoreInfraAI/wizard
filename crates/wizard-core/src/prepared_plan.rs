@@ -98,7 +98,7 @@ impl PreparedPlan {
         if let Some(desktop) = &self.desktop {
             info.push(PreparedStepInfo {
                 description: format!(
-                    "Применит настройки при закрытом {} и откроет приложение.",
+                    "Применит настройки при закрытом {}. Запустите его после применения.",
                     desktop.app.product()
                 ),
             });
