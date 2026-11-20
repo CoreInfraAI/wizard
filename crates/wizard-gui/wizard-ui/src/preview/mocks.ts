@@ -113,6 +113,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
           status: "found",
           data: {
             ...routing,
+            video_needs_apply: false,
             path: "/Applications/Claude.app",
             version: detectedVersion.claude,
           },
@@ -497,7 +498,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
             const enabled = videoEnabled.has(String(args.agent));
             return { enabled, suggested: !enabled && !videoDeclined.has(String(args.agent)), running: enabled, error: null };
           }
-          case "set_video_connection":
+          case "set_video_connection": {
             if (args.enabled) {
               videoEnabled.add(String(args.agent));
               videoDeclined.delete(String(args.agent));
@@ -505,7 +506,15 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
               videoEnabled.delete(String(args.agent));
               videoDeclined.add(String(args.agent));
             }
+            const agent = args.agent as AgentId;
+            const detection = agents.value[agent];
+            if (detection.status === "found" && "video_needs_apply" in detection.data) {
+              agents.publish({ ...agents.value, [agent]: {
+                ...detection, data: { ...detection.data, video_needs_apply: false },
+              } });
+            }
             return;
+          }
           case "get_update_state":
             return update.read(revision);
           case "get_application_settings":
@@ -554,6 +563,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
                   status: "found",
                   data: {
                     ...(next.claude_desktop.status === "found" ? next.claude_desktop.data : unconfigured),
+                    video_needs_apply: false,
                     path: release(desktop).path,
                     version: versions[desktop],
                   },
@@ -610,6 +620,17 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
             return;
           case "prepare_agent_change": {
             const change = args.change as AgentChange;
+            if ("ClaudeDesktopSetVideo" in change) {
+              const agent = "claude_desktop";
+              const desktop = agents.value.claude_desktop;
+              const changed = videoEnabled.has(agent) !== change.ClaudeDesktopSetVideo ||
+                (desktop.status === "found" && desktop.data.video_needs_apply);
+              return {
+                agent, change, token: null, plan: { preview: true, agent, videoOnly: true },
+                info: changed ? [{ description: "Обновит регистрацию CoreInfra Video в Claude Desktop." }] : [],
+                restarts_desktop: changed,
+              } satisfies PreparedAgentChange;
+            }
             const operation = Object.keys(change)[0] as keyof typeof change;
             const agent = (
               {
@@ -663,9 +684,11 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
               agent: AgentId;
               mode: RoutingMode;
               token: string | null;
+              videoOnly?: boolean;
             };
             if (!plan.preview)
               throw "Превью принимает только демонстрационные планы";
+            if (plan.videoOnly) return;
             const detection = agents.value[plan.agent];
             if (detection.status === "found")
               agents.publish({

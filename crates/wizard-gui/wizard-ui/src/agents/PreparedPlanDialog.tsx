@@ -28,9 +28,16 @@ function PlanSteps({ plan }: { plan: ConnectionPlan }) {
   const steps: ReactNode[] = (plan.routing?.info ?? []).map(step => step.description);
   // Keep the choice from the form visible alongside the first routing action.
   if (plan.videoEnabled !== undefined) {
-    steps.unshift(plan.videoEnabled
-      ? <>Установит скилл <Code>coreinfra-video</Code> для видео-моделей.</>
-      : <>Отключит видео-модели и удалит скилл <Code>coreinfra-video</Code>, установленный Wizard.</>);
+    const video = <Code>coreinfra-video</Code>;
+    if (plan.agent === "claude_desktop") {
+      steps.unshift(plan.videoEnabled
+        ? <>Подключит инструменты {video} в Claude Desktop.</>
+        : <>Отключит видео-модели {video} в Claude Desktop.</>);
+    } else {
+      steps.unshift(plan.videoEnabled
+        ? <>Установит скилл {video} для видео-моделей.</>
+        : <>Отключит видео-модели и удалит скилл {video}, установленный Wizard.</>);
+    }
   }
   const rows = steps.map((step, index) => <li key={index}><Text>{step}</Text></li>);
   return (

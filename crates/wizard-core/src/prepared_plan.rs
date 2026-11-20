@@ -153,9 +153,9 @@ impl PreparedPlan {
                 },
                 PreparedStep::SetClaudeDesktop1pVideo { enabled, .. } => PreparedStepInfo {
                     description: if *enabled {
-                        "Зарегистрирует MCP-сервер coreinfra_video в Claude Desktop для подписки Claude."
+                        "Зарегистрирует локальный MCP-сервер coreinfra_video в Claude Desktop."
                     } else {
-                        "Удалит MCP-сервер coreinfra_video, добавленный Wizard, из настроек Claude Desktop для подписки."
+                        "Удалит локальный MCP-сервер coreinfra_video из настроек Claude Desktop."
                     }.to_owned(),
                 },
                 PreparedStep::SetCodexProxyEnabled { enabled } => PreparedStepInfo {

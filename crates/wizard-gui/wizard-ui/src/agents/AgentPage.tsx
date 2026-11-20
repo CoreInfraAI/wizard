@@ -284,7 +284,7 @@ export function AgentPage({
               key={configurationRevision}
               editing
               agent="claude"
-              needsApply={claude.data.video_needs_apply}
+              videoNeedsApply={claude.data.video_needs_apply}
               modes={routingModes("Claude")}
               mode={claude.data.routing_mode}
               toChange={(mode) => ({ ClaudeSetRouting: mode })}
@@ -344,6 +344,7 @@ export function AgentPage({
                   (!proxyStartup.starting && proxy.proxy?.enabled === false))
               }
               agent="claude_desktop"
+              videoNeedsApply={desktop.data.video_needs_apply}
               modes={routingModes("Claude")}
               mode={desktop.data.routing_mode}
               toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })}

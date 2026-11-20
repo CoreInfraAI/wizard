@@ -34,7 +34,8 @@ export function useVideoConnection(agent: AgentId, available: boolean) {
   }, [agent, available, revision]);
 
   const enabled = draft ?? (status && (status.enabled || status.suggested));
-  const needsApply = !!status && (enabled !== status.enabled || (enabled && !status.running) || !!status.error);
+  // The first Apply also saves an explicit decline of the default suggestion.
+  const needsApply = !!status && (status.suggested || enabled !== status.enabled || (enabled && !status.running) || !!status.error);
   function retry() {
     setError(undefined);
     setRevision(value => value + 1);

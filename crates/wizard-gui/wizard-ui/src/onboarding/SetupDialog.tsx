@@ -113,8 +113,9 @@ function Configure({
               : routingModes(choice.agent === "codex" ? "Codex" : "Claude")
           }
           mode={agent.data.routing_mode}
+          videoNeedsApply={"video_needs_apply" in agent.data && agent.data.video_needs_apply}
           initialMode={
-            agent.data.routing_mode === "disabled" ? "hub" : undefined
+            hub.signedIn && agent.data.routing_mode === "disabled" ? "hub" : undefined
           }
           agentToken={agent.data.token}
           hub={hub}

@@ -1,4 +1,4 @@
-use crate::settings;
+use crate::{agents::AgentRevisionState, revision_signal::RevisionSignal, settings};
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 use tauri::Manager as _;
@@ -72,5 +72,9 @@ pub(crate) async fn set_video_connection(
     .await
     .map_err(|_| "Не удалось настроить видео")?
     .map_err(|e| format!("{e:#}"))?;
+    // Detection compares registrations with the saved grant. A preceding routing plan
+    // may already have triggered a read against the previous grant.
+    app.state::<RevisionSignal<AgentRevisionState>>()
+        .notify(AgentRevisionState);
     crate::proxy::sync(&app).await.map_err(|e| format!("{e:#}"))
 }
