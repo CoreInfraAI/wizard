@@ -265,6 +265,7 @@ export function RoutingFieldset<M extends string>({
   actionsClassName = "",
   editing = false,
   needsApply = false,
+  videoNeedsApply = false,
 }: {
   agent: AgentId;
   modes: ModeOption<M>[];
@@ -281,6 +282,7 @@ export function RoutingFieldset<M extends string>({
   actionsClassName?: string;
   editing?: boolean;
   needsApply?: boolean;
+  videoNeedsApply?: boolean;
 }) {
   const [draft, setDraft] = useState<M | undefined>(initialMode);
   const subscriptionTokenPreview = useContext(SubscriptionTokenPreviewContext);
@@ -294,15 +296,12 @@ export function RoutingFieldset<M extends string>({
     (token.selected?.kind === "create" ||
       (token.selected?.kind === "existing" &&
         token.selected.token !== agentToken));
-  const showVideo = agent === "codex" || agent === "claude" || (agent === "claude_desktop" && selected !== "disabled");
+  const showVideo = agent === "codex" || agent === "claude" || agent === "claude_desktop";
   const video = useVideoConnection(agent, showVideo);
-  const videoChanged = showVideo && video.needsApply;
-  // Claude Desktop registers video in its configuration only through a plan that restarts it.
-  const desktopVideoChanged =
-    agent === "claude_desktop" && showVideo && !!video.status && video.enabled !== video.status.enabled;
+  const videoChanged = showVideo && !!video.status && (video.needsApply || videoNeedsApply);
   const routingChanged =
-    selected !== mode || (enabled && (needsApply || tokenChanged)) || desktopVideoChanged;
-  const prepareRouting = !editing || routingChanged;
+    selected !== mode || (enabled && (needsApply || tokenChanged));
+  const prepareRouting = routingChanged || (!editing && (enabled || agent !== "claude_desktop"));
   const systemProxy = useSystemProxy();
   const [proxyPrompt, setProxyPrompt] = useState(false);
 
@@ -317,7 +316,7 @@ export function RoutingFieldset<M extends string>({
   }
 
   function prepare() {
-    const includeVideo = showVideo && (video.needsApply || (prepareRouting && video.enabled));
+    const includeVideo = videoChanged || (showVideo && prepareRouting && video.enabled);
     onPrepare({
       agent,
       routing: prepareRouting ? {
@@ -369,7 +368,7 @@ export function RoutingFieldset<M extends string>({
                   disabled ||
                   (prepareRouting && enabled && (proxyOnly ? !hub.signedIn : !token.ready)) ||
                   (showVideo && !video.status && !video.error) ||
-                  (!prepareRouting && !videoChanged)
+                  (editing && !prepareRouting && !videoChanged)
                 }
                 onClick={prepare}
               >

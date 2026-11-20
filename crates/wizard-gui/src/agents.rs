@@ -173,6 +173,7 @@ pub(crate) enum AgentChange {
     CodexSetRouting(RoutingMode),
     ClaudeSetRouting(RoutingMode),
     ClaudeDesktopSetRouting(RoutingMode),
+    ClaudeDesktopSetVideo(bool),
     SetPiHub(HubMode),
     SetOpenCodeHub(HubMode),
 }
@@ -190,11 +191,13 @@ pub(crate) struct PreparedAgentChange {
 }
 
 impl AgentChange {
-    const fn enabled(self) -> bool {
+    const fn needs_agent_token(self) -> bool {
         match self {
-            Self::CodexSetRouting(mode)
-            | Self::ClaudeSetRouting(mode)
-            | Self::ClaudeDesktopSetRouting(mode) => !matches!(mode, RoutingMode::Disabled),
+            Self::CodexSetRouting(mode) | Self::ClaudeSetRouting(mode) => {
+                !matches!(mode, RoutingMode::Disabled)
+            }
+            Self::ClaudeDesktopSetRouting(mode) => matches!(mode, RoutingMode::Hub),
+            Self::ClaudeDesktopSetVideo(_) => false,
             Self::SetPiHub(mode) | Self::SetOpenCodeHub(mode) => !matches!(mode, HubMode::Disabled),
         }
     }
@@ -203,7 +206,9 @@ impl AgentChange {
         match self {
             Self::CodexSetRouting(_) => TokenAgent::Codex,
             Self::ClaudeSetRouting(_) => TokenAgent::Claude,
-            Self::ClaudeDesktopSetRouting(_) => TokenAgent::ClaudeDesktop,
+            Self::ClaudeDesktopSetRouting(_) | Self::ClaudeDesktopSetVideo(_) => {
+                TokenAgent::ClaudeDesktop
+            }
             Self::SetPiHub(_) => TokenAgent::Pi,
             Self::SetOpenCodeHub(_) => TokenAgent::OpenCode,
         }
@@ -225,6 +230,7 @@ pub(crate) async fn prepare_agent_change(
         AgentChange::CodexSetRouting(_) => ("CodexSetRouting", "codex"),
         AgentChange::ClaudeSetRouting(_) => ("ClaudeSetRouting", "claude"),
         AgentChange::ClaudeDesktopSetRouting(_) => ("ClaudeDesktopSetRouting", "claude_desktop"),
+        AgentChange::ClaudeDesktopSetVideo(_) => ("ClaudeDesktopSetVideo", "claude_desktop"),
         AgentChange::SetPiHub(_) => ("SetPiHub", "pi"),
         AgentChange::SetOpenCodeHub(_) => ("SetOpenCodeHub", "opencode"),
     };
@@ -232,11 +238,7 @@ pub(crate) async fn prepare_agent_change(
 
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
 
-    let token = if change.enabled()
-        && !matches!(
-            change,
-            AgentChange::ClaudeDesktopSetRouting(RoutingMode::Sub)
-        ) {
+    let token = if change.needs_agent_token() {
         match token {
             Some(TokenChoice::Existing { token }) if !token.is_empty() => token,
             Some(TokenChoice::Create) if matches!(change, AgentChange::CodexSetRouting(_)) => {
@@ -270,6 +272,16 @@ pub(crate) async fn prepare_agent_change(
                 wizard_core::agents::desktop_install::DesktopApp::Claude,
                 settings.last_paths.claude_desktop.as_deref(),
             );
+            Ok(plan)
+        }
+        AgentChange::ClaudeDesktopSetVideo(enabled) => {
+            let mut plan = claude_desktop::prepare_video(enabled)?;
+            if !plan.info().is_empty() {
+                plan.restart_desktop(
+                    wizard_core::agents::desktop_install::DesktopApp::Claude,
+                    settings.last_paths.claude_desktop.as_deref(),
+                );
+            }
             Ok(plan)
         }
         AgentChange::SetPiHub(mode) => pi::prepare_hub(mode, &token, &settings),

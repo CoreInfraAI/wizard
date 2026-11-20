@@ -6,6 +6,7 @@ export type AgentChange =
   | { CodexSetRouting: RoutingMode }
   | { ClaudeSetRouting: RoutingMode }
   | { ClaudeDesktopSetRouting: RoutingMode }
+  | { ClaudeDesktopSetVideo: boolean }
   | { SetPiHub: HubMode }
   | { SetOpenCodeHub: HubMode };
 
@@ -46,8 +47,11 @@ export type ConnectionPlan = {
 };
 
 export async function prepareAgentChange({ agent, routing, videoEnabled }: ConnectionDraft): Promise<ConnectionPlan> {
-  const prepared = routing
-    ? await invoke<PreparedAgentChange>("prepare_agent_change", { ...routing, video: videoEnabled })
+  const request = routing ?? (agent === "claude_desktop" && videoEnabled !== undefined
+    ? { change: { ClaudeDesktopSetVideo: videoEnabled }, token: null }
+    : undefined);
+  const prepared = request
+    ? await invoke<PreparedAgentChange>("prepare_agent_change", { ...request, video: videoEnabled })
     : undefined;
   return { agent, routing: prepared, videoEnabled };
 }
@@ -113,6 +117,7 @@ export type ClaudeDesktop = {
   // CoreInfra token from the agent's configuration. Secret: never log or persist it.
   token: string | null;
   proxy_needs_apply: boolean;
+  video_needs_apply: boolean;
 };
 
 export type OpenCode = {

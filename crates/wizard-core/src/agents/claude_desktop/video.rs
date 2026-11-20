@@ -1,6 +1,6 @@
 //! Claude Desktop's local 3P profile uses native arrays for both managed extensions.
 use crate::video::stdio;
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
@@ -54,49 +54,34 @@ impl Registration {
                         .as_str()
                         .is_some_and(|repo| repo.eq_ignore_ascii_case(REPO))
             },
-            |entry| {
-                entry["source"] == "github"
-                    && entry["repo"] == REPO
-                    && entry["expectedName"] == MARKET
-                    && entry["credentialKind"] == "anonymous"
-                    && entry["installationPreference"] == "auto_install"
-                    && entry.get("path").is_none()
-            },
-            "ref",
         )?;
-        let args = json!([stdio::ARG, self.port.to_string(), self.headers]);
         reconcile(
             profile,
             "managedMcpServers",
             enable,
             json!({
-                "name":SERVER, "transport":"stdio", "command":self.command, "args":args,
+                "name":SERVER, "transport":"stdio", "command":self.command, "args":self.args(),
                 "toolTimeoutSec":240, "toolPolicy":{"video_models":"allow"}
             }),
             |entry| entry["name"] == SERVER,
-            |entry| entry["transport"] == "stdio" && entry["args"] == args,
-            "command",
         )
     }
 
-    /// Subscription (1p) mode: Claude Desktop reads local servers from `mcpServers` in
-    /// `Claude/claude_desktop_config.json`. There is no plugin marketplace or tool policy here.
+    fn args(&self) -> Value {
+        json!([stdio::ARG, self.port.to_string(), self.headers])
+    }
+
+    /// Claude Desktop reads local servers from `mcpServers` in its 1p configuration.
     pub(super) fn update_1p_config(
         &self,
         config: &mut Map<String, Value>,
         enable: bool,
     ) -> Result<()> {
-        let args = json!([stdio::ARG, self.port.to_string(), self.headers]);
-        let owned = |entry: &Value| entry["args"] == args;
         if !enable {
-            let now_empty = match config.get_mut("mcpServers").and_then(Value::as_object_mut) {
-                Some(servers) if servers.get(SERVER).is_some_and(owned) => {
-                    servers.shift_remove(SERVER);
-                    servers.is_empty()
-                }
-                _ => false,
-            };
-            if now_empty {
+            if let Some(servers) = config.get_mut("mcpServers").and_then(Value::as_object_mut)
+                && servers.shift_remove(SERVER).is_some()
+                && servers.is_empty()
+            {
                 config.shift_remove("mcpServers");
             }
             return Ok(());
@@ -106,38 +91,26 @@ impl Registration {
             .or_insert_with(|| json!({}))
             .as_object_mut()
             .context("В настройках Claude Desktop поле mcpServers должно быть объектом")?;
-        if let Some(entry) = servers.get_mut(SERVER) {
-            ensure!(
-                owned(entry),
-                "В Claude Desktop уже зарегистрирован другой MCP-сервер coreinfra_video"
-            );
-            // Refresh only the executable, which moves when Wizard is reinstalled elsewhere.
-            entry["command"] = json!(self.command);
-        } else {
-            servers.insert(
-                SERVER.into(),
-                json!({"command": self.command, "args": args}),
-            );
-        }
+        servers.insert(
+            SERVER.into(),
+            json!({"command": self.command, "args": self.args()}),
+        );
         Ok(())
     }
 }
 
-// Only refresh the pin or executable when a registration already belongs to Wizard.
-// In particular, keep a user's stricter tool policies and other servers in place.
+// Replace all versions of the registration at its first position in the profile.
 fn reconcile(
     profile: &mut Map<String, Value>,
     key: &str,
     enable: bool,
     desired: Value,
     matches: impl Fn(&Value) -> bool,
-    owned: impl Fn(&Value) -> bool,
-    refresh: &str,
 ) -> Result<()> {
     if !enable {
         if let Some(entries) = profile.get_mut(key).and_then(Value::as_array_mut) {
             let previous_len = entries.len();
-            entries.retain(|entry| !(matches(entry) && owned(entry)));
+            entries.retain(|entry| !matches(entry));
             if previous_len != 0 && entries.is_empty() {
                 profile.shift_remove(key);
             }
@@ -150,15 +123,8 @@ fn reconcile(
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .with_context(|| format!("В профиле Claude Desktop поле {key} должно быть массивом"))?;
-    let mut existing = entries.iter_mut().filter(|entry| matches(entry));
-    if let Some(entry) = existing.next() {
-        ensure!(
-            owned(entry) && existing.next().is_none(),
-            "Конфликт регистрации CoreInfra Video в поле {key} профиля Claude Desktop"
-        );
-        entry[refresh] = desired[refresh].clone();
-    } else {
-        entries.push(desired);
-    }
+    let index = entries.iter().position(&matches).unwrap_or(entries.len());
+    entries.retain(|entry| !matches(entry));
+    entries.insert(index, desired);
     Ok(())
 }
