@@ -134,7 +134,10 @@ impl Fixture {
                                 return Ok::<_, Infallible>(HttpResponse::new(Full::new(
                                     Bytes::from_static(MP4),
                                 )));
-                            } else if auth.as_deref() != Some("Bearer fixture-upstream-secret") {
+                            } else if !matches!(
+                                auth.as_deref(),
+                                Some("Bearer fixture-upstream-secret" | "Bearer fixture-claude")
+                            ) {
                                 code = 401;
                                 json!({})
                             } else if path == OPENROUTER && head.method == "POST" {
@@ -261,6 +264,53 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.fake_hub.abort();
     }
+}
+
+#[tokio::test]
+async fn caller_bearer_selects_paid_key_on_shared_endpoint() -> Result<()> {
+    let f = Fixture::new().await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let mut server = RunningServer {
+        url: format!("http://{addr}/mcp"),
+        bearer: "local-codex".into(),
+        task: tokio::spawn(server::serve(
+            listener,
+            addr,
+            f.hub.clone(),
+            vec![
+                ("local-codex".into(), Access(KEY)),
+                ("local-claude".into(), Access("fixture-claude")),
+            ],
+        )),
+    };
+    let args = json!({"model":OR_MODEL,"prompt":"river"});
+    let first =
+        f.call(&server, "video_create", args.clone()).await?["structuredContent"]["job"].clone();
+    server.bearer = "local-claude".into();
+    let second = f.call(&server, "video_create", args).await?["structuredContent"]["job"].clone();
+    assert_eq!(first["key_id"], fingerprint(KEY));
+    assert_eq!(second["key_id"], fingerprint("fixture-claude"));
+    let denied = f
+        .call(&server, "video_result", json!({"job":first}))
+        .await?;
+    assert_eq!(denied["isError"], true);
+    let requests = f.requests.lock().expect("requests");
+    let auth: Vec<_> = requests
+        .iter()
+        .filter(|r| r.path == OPENROUTER)
+        .map(|r| r.auth.as_deref())
+        .collect();
+    assert_eq!(
+        auth,
+        [
+            Some("Bearer fixture-upstream-secret"),
+            Some("Bearer fixture-claude")
+        ]
+    );
+    assert!(!requests.iter().any(|r| r.path.ends_with("/job-1")));
+    server.task.abort();
+    Ok(())
 }
 
 #[tokio::test]

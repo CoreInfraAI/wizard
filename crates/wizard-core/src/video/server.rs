@@ -117,10 +117,11 @@ fn empty(status: StatusCode) -> Response<BoxBody<Bytes, Infallible>> {
     response
 }
 
+type Routes<A> = Arc<Vec<(String, StreamableHttpService<Tools<A>, NeverSessionManager>)>>;
+
 async fn handle<A: VideoAccess>(
     mut request: Request<Incoming>,
-    service: StreamableHttpService<Tools<A>, NeverSessionManager>,
-    local_bearer: Arc<str>,
+    routes: Routes<A>,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, Infallible> {
     if request.uri().path() != "/mcp" || request.uri().query().is_some() {
         return Ok(empty(StatusCode::NOT_FOUND));
@@ -132,20 +133,27 @@ async fn handle<A: VideoAccess>(
         .and_then(|value| value.split_once(' '))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
         .map(|(_, token)| token);
-    if bearer != Some(local_bearer.as_ref()) {
+    let Some((_, service)) = routes
+        .iter()
+        .find(|(grant, _)| Some(grant.as_str()) == bearer)
+    else {
         let mut response = empty(StatusCode::UNAUTHORIZED);
         response.headers_mut().insert(
             hyper::header::WWW_AUTHENTICATE,
             hyper::header::HeaderValue::from_static("Bearer"),
         );
         return Ok(response);
-    }
+    };
     request.headers_mut().remove(AUTHORIZATION);
     Ok(service.handle(request).await)
 }
 
-/// Publish the new listener's grant before it accepts requests. A failed registration
-/// drops the socket and leaves no running service.
+#[must_use]
+pub fn new_bearer() -> String {
+    format!("wizard-video-{}", uuid::Uuid::new_v4())
+}
+
+/// Publish the new listener's grant before accepting requests.
 pub async fn start(
     listener: TcpListener,
     hub: VideoHub,
@@ -155,40 +163,49 @@ pub async fn start(
     let addr = listener.local_addr()?;
     ensure!(addr.ip().is_loopback(), "Video MCP must bind to loopback");
     let bearer = tokio::task::spawn_blocking(move || {
-        let bearer = format!("wizard-video-{}", uuid::Uuid::new_v4());
+        let bearer = new_bearer();
         register(&bearer)?;
         anyhow::Ok(bearer)
     })
     .await
     .context("Video installation task failed")??;
-    Ok(tokio::spawn(serve(listener, addr, hub, bearer, access)))
+    Ok(tokio::spawn(serve(
+        listener,
+        addr,
+        hub,
+        vec![(bearer, access)],
+    )))
 }
 
-async fn serve(
+pub async fn serve(
     listener: TcpListener,
     addr: SocketAddr,
     hub: VideoHub,
-    local_bearer: String,
-    access: impl VideoAccess,
+    grants: Vec<(String, impl VideoAccess)>,
 ) {
-    let local_bearer: Arc<str> = local_bearer.into();
-    let access = Arc::new(access);
-    let config = StreamableHttpServerConfig::default()
-        .with_allowed_hosts([addr.to_string()])
-        .enforce_origin_validation()
-        .with_legacy_session_mode(false)
-        .with_json_response(true)
-        .with_max_request_body_bytes(super::MAX_REQUEST_BYTES);
-    let service = StreamableHttpService::new(
-        move || {
-            Ok(Tools {
-                hub: hub.clone(),
-                access: Arc::clone(&access),
-            })
-        },
-        Arc::new(NeverSessionManager::default()),
-        config,
-    );
+    let mut routes = Vec::new();
+    for (grant, access) in grants {
+        let access = Arc::new(access);
+        let hub = hub.clone();
+        let config = StreamableHttpServerConfig::default()
+            .with_allowed_hosts([addr.to_string()])
+            .enforce_origin_validation()
+            .with_legacy_session_mode(false)
+            .with_json_response(true)
+            .with_max_request_body_bytes(super::MAX_REQUEST_BYTES);
+        let service = StreamableHttpService::new(
+            move || {
+                Ok(Tools {
+                    hub: hub.clone(),
+                    access: Arc::clone(&access),
+                })
+            },
+            Arc::new(NeverSessionManager::default()),
+            config,
+        );
+        routes.push((grant, service));
+    }
+    let routes = Arc::new(routes);
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
@@ -201,10 +218,9 @@ async fn serve(
                         continue;
                     }
                 };
-                let service = service.clone();
-                let bearer = Arc::clone(&local_bearer);
+                let routes = Arc::clone(&routes);
                 clients.spawn(async move {
-                    let handler = service_fn(move |req| handle(req, service.clone(), Arc::clone(&bearer)));
+                    let handler = service_fn(move |req| handle(req, Arc::clone(&routes)));
                     let _ = http1::Builder::new().serve_connection(TokioIo::new(socket), handler).await;
                 });
             }
