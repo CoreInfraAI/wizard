@@ -149,7 +149,7 @@ async function openClaudeCodePlan(canvas: ReturnType<typeof within>, page: Retur
   await userEvent.click(await canvas.findByRole("radio", { name: "Своя подписка Claude" }));
   const proxy = await page.findByRole("dialog", { name: "Включить системный прокси?" });
   await userEvent.click(within(proxy).getByRole("button", { name: "Пропустить" }));
-  await expect(await canvas.findByRole("switch", { name: /coreinfra-video/ })).toBeChecked();
+  await userEvent.click(await canvas.findByRole("switch", { name: /coreinfra-video/ }));
   await userEvent.click(canvas.getByRole("button", { name: "Применить" }));
   return within(await page.findByRole("dialog", { name: "План изменений: Claude Code" }));
 }

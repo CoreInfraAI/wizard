@@ -253,7 +253,7 @@ export function AgentPage({
             />
           )}
           {codex.status !== "found" && (
-            <StandaloneVideoConnection key={configurationRevision} signedIn={account.signedIn}
+            <StandaloneVideoConnection key={configurationRevision} agent="codex"
               disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
           {(codex.status === "not_found" || (codex.status === "found" && codex.data.cli.status === "not_found")) && (

@@ -115,7 +115,7 @@ export function PreparedPlanDialog({
       if (videoEnabled !== undefined) {
         // A routing plan may snapshot the same agent files. Finish it before changing video.
         applyingVideo = true;
-        await applyVideoConnection(videoEnabled);
+        await applyVideoConnection(agent, videoEnabled);
       }
       setApplied(true);
     } catch (cause) {

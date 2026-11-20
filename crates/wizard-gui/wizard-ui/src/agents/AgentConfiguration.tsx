@@ -298,7 +298,7 @@ export function RoutingFieldset<M extends string>({
     selected !== mode || (enabled && (needsApply || tokenChanged));
   const prepareRouting = !editing || routingChanged;
   const showVideo = agent === "codex" || agent === "claude" || (agent === "claude_desktop" && selected === "hub");
-  const video = useVideoConnection(showVideo);
+  const video = useVideoConnection(agent, showVideo);
   const videoChanged = showVideo && video.needsApply;
   const systemProxy = useSystemProxy();
   const [proxyPrompt, setProxyPrompt] = useState(false);
@@ -357,7 +357,7 @@ export function RoutingFieldset<M extends string>({
               )
             )}
             {showVideo && (
-              <VideoConnection video={video} signedIn={hub.signedIn} disabled={disabled} />
+              <VideoConnection video={video} disabled={disabled} />
             )}
             <ActionBar leading={actions} className={actionsClassName}>
               <Button

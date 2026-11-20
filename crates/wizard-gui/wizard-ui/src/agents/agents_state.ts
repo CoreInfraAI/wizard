@@ -56,8 +56,8 @@ export function applyAgentPlan(plan: PreparedPlan): Promise<void> {
   return invoke<void>("apply_agent_plan", { plan });
 }
 
-export function applyVideoConnection(enabled: boolean): Promise<void> {
-  return invoke<void>("set_video_connection", { enabled });
+export function applyVideoConnection(agent: AgentId, enabled: boolean): Promise<void> {
+  return invoke<void>("set_video_connection", { agent, enabled });
 }
 
 export type BackupAgent = "codex" | "claude" | "claude_desktop";

@@ -3,15 +3,15 @@ import { useEffect, useState } from "react";
 import { Button } from "../components/catalyst/button";
 import { Label } from "../components/catalyst/fieldset";
 import { Switch, SwitchField } from "../components/catalyst/switch";
-import { Code, Text } from "../components/catalyst/text";
+import { Code } from "../components/catalyst/text";
 import { ActionBar, Panel } from "../components/ui/Layout";
 import { StateNotice } from "../components/ui/StateNotice";
 import { ErrorText } from "../components/ErrorText";
-import type { ConnectionDraft } from "./agents_state";
+import type { AgentId, ConnectionDraft } from "./agents_state";
 
 type Status = { enabled: boolean; running: boolean; error: string | null };
 
-export function useVideoConnection(available: boolean) {
+export function useVideoConnection(agent: AgentId, available: boolean) {
   const [status, setStatus] = useState<Status>();
   const [draft, setDraft] = useState<boolean>();
   const [error, setError] = useState<string>();
@@ -20,7 +20,7 @@ export function useVideoConnection(available: boolean) {
   useEffect(() => {
     if (!available) return;
     let active = true;
-    void invoke<Status>("get_video_connection").then(result => {
+    void invoke<Status>("get_video_connection", { agent }).then(result => {
       if (!active) return;
       setStatus(result);
       setError(undefined);
@@ -30,7 +30,7 @@ export function useVideoConnection(available: boolean) {
       setError(String(cause));
     });
     return () => { active = false; };
-  }, [available, revision]);
+  }, [agent, available, revision]);
 
   const enabled = draft ?? status?.enabled;
   const needsApply = !!status && (enabled !== status.enabled || (enabled && !status.running) || !!status.error);
@@ -41,9 +41,8 @@ export function useVideoConnection(available: boolean) {
   return { status, enabled, needsApply, error, retry, setEnabled: setDraft };
 }
 
-export function VideoConnection({ video, signedIn, disabled }: {
+export function VideoConnection({ video, disabled }: {
   video: ReturnType<typeof useVideoConnection>;
-  signedIn: boolean;
   disabled: boolean;
 }) {
   const { status, enabled, error } = video;
@@ -62,7 +61,6 @@ export function VideoConnection({ video, signedIn, disabled }: {
         )}
         {!status && !error && <StateNotice tone="loading">Проверяем подключение…</StateNotice>}
         {error && <StateNotice tone="error" actions={<Button plain disabled={disabled} onClick={video.retry}>Повторить</Button>}>{error}</StateNotice>}
-        {status?.running && !signedIn && <Text>Для генерации видео войдите в CoreInfra Hub.</Text>}
         {status?.error && <StateNotice tone="error">{status.error}</StateNotice>}
         {enabled && status?.enabled && !status.running && !status.error && (
           <StateNotice tone="warning">Видеосервис Wizard остановлен. Он запустится при применении настроек.</StateNotice>
@@ -72,19 +70,18 @@ export function VideoConnection({ video, signedIn, disabled }: {
   );
 }
 
-// The shared video setting is also available when Codex is not installed.
-export function StandaloneVideoConnection({ signedIn, disabled, error, onPrepare }: {
-  signedIn: boolean;
+export function StandaloneVideoConnection({ agent, disabled, error, onPrepare }: {
+  agent: AgentId;
   disabled: boolean;
   error?: string;
   onPrepare: (draft: ConnectionDraft) => void;
 }) {
-  const video = useVideoConnection(true);
+  const video = useVideoConnection(agent, true);
   return (
     <div className="mt-6 space-y-6">
-      <VideoConnection video={video} signedIn={signedIn} disabled={disabled} />
+      <VideoConnection video={video} disabled={disabled} />
       <ActionBar>
-        <Button disabled={disabled || !video.needsApply} onClick={() => onPrepare({ agent: "codex", videoEnabled: video.enabled })}>
+        <Button disabled={disabled || !video.needsApply} onClick={() => onPrepare({ agent, videoEnabled: video.enabled })}>
           Применить
         </Button>
       </ActionBar>
