@@ -128,6 +128,11 @@ pub struct LastPaths {
 
 impl Settings {
     #[must_use]
+    pub fn daemon_needed(&self) -> bool {
+        self.local_proxy_enabled() || self.video.has_grants()
+    }
+
+    #[must_use]
     pub fn local_proxy_enabled(&self) -> bool {
         self.claude_proxy_enabled || self.codex_proxy_enabled || self.system_proxy_enabled
     }

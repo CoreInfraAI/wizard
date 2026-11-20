@@ -12,6 +12,20 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_rustls::rustls::RootCertStore;
 
+struct TestVideo(bool);
+impl VideoService for TestVideo {
+    fn running(&self) -> bool {
+        self.0
+    }
+    fn reload(
+        &mut self,
+        grants: wizard_settings::VideoSettings,
+    ) -> core::pin::Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send + '_>> {
+        self.0 = grants.has_grants();
+        Box::pin(core::future::ready(Ok(())))
+    }
+}
+
 fn state() -> Arc<ServerState> {
     let tls = ClientConfig::builder_with_provider(Arc::new(
         tokio_rustls::rustls::crypto::ring::default_provider(),
@@ -20,7 +34,7 @@ fn state() -> Arc<ServerState> {
     .expect("TLS versions")
     .with_root_certificates(RootCertStore::empty())
     .with_no_client_auth();
-    Arc::new(ServerState::new(tls))
+    Arc::new(ServerState::new(tls, Box::new(TestVideo(false))))
 }
 
 #[tokio::test]
@@ -453,6 +467,24 @@ fn isolated_http_management() {
                     shared_generation_preserves_and_drains_tunnels_on_both_ports()
                         .await
                         .expect("shared Wizard token with aggregate proxy demand");
+                    let video_state = state();
+                    settings(None, false, false);
+                    wizard_settings::update_file(|s| s.video.claude = Some("fixture".into()))
+                        .expect("save video grant");
+                    let enabled = video_state.reload_with_lock().await;
+                    assert!(
+                        enabled.error.is_none()
+                            && enabled.status.video_running
+                            && !enabled.status.enabled
+                    );
+                    assert!(!*video_state.stopping.borrow());
+                    settings(None, false, false);
+                    let disabled = video_state.reload_with_lock().await;
+                    assert!(
+                        disabled.error.is_none()
+                            && !disabled.status.video_running
+                            && *video_state.stopping.borrow()
+                    );
                     failed_reload_keeps_working_configuration()
                         .await
                         .expect("failed Reload preserves service and permits recovery");

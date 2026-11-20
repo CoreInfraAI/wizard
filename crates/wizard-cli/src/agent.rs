@@ -309,6 +309,9 @@ fn run_plan(
             .context("plan application task failed")?
     })?;
 
+    if settings::load_from_file()?.video.has_grants() {
+        runtime.block_on(wizard_proxy_daemon::sync_proxy())?;
+    }
     eprintln!("Готово.");
     Ok(())
 }

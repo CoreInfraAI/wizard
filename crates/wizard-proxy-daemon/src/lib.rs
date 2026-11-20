@@ -171,7 +171,7 @@ async fn sync_with_settings() -> io::Result<()> {
                     diagnostics::error("proxy startup demand load", error.as_ref());
                 })
                 .map_err(|_| io::Error::other("failed to load Wizard settings"))?
-                .local_proxy_enabled();
+                .daemon_needed();
             if enabled {
                 // Startup may have failed before registration (for example, while
                 // obtaining a token offline). A later explicit operation must recover.
@@ -199,7 +199,10 @@ async fn wait_for_proxy() -> io::Result<()> {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match wizard_proxy::control::status().await {
-                Ok(_) => {
+                Ok(status) => {
+                    if let Some(error) = status.video_error {
+                        return Err(io::Error::other(error));
+                    }
                     log::info!("proxy daemon HTTP management is ready");
                     return Ok(());
                 }
@@ -211,7 +214,7 @@ async fn wait_for_proxy() -> io::Result<()> {
                             diagnostics::error("proxy readiness demand load", error.as_ref());
                         })
                         .map_err(|_| io::Error::other("failed to load Wizard settings"))?
-                        .local_proxy_enabled()
+                        .daemon_needed()
                     {
                         log::info!("proxy readiness wait ended: no consumers are enabled");
                         return Ok(());
@@ -283,7 +286,7 @@ pub fn uninstall() -> ExitCode {
 /// Run the proxy process without initializing the GUI.
 /// Call once at process startup, before any other logger or Tokio runtime.
 #[must_use]
-pub fn main() -> ExitCode {
+pub fn main(video: impl wizard_proxy::VideoService + 'static) -> ExitCode {
     let result = (|| {
         let _instance = acquire_instance_lock()?;
         logging::initialize()?;
@@ -299,7 +302,7 @@ pub fn main() -> ExitCode {
             .build()
             .inspect_err(|error| diagnostics::error("proxy runtime creation", error))
             .map_err(|_| "failed to create proxy runtime")
-            .and_then(|runtime| runtime.block_on(run()));
+            .and_then(|runtime| runtime.block_on(run(Box::new(video))));
         match &result {
             Ok(()) => log::info!("proxy daemon stopped"),
             Err(operation) => log::error!("{operation}"),
@@ -318,10 +321,10 @@ pub fn main() -> ExitCode {
     }
 }
 
-async fn run() -> Result<(), &'static str> {
+async fn run(video: Box<dyn wizard_proxy::VideoService>) -> Result<(), &'static str> {
     // Register handlers before starting listeners so startup-time events remain pending.
     let shutdown = platform::shutdown_signal()?;
-    wizard_proxy::run_managed(shutdown)
+    wizard_proxy::run_managed(shutdown, video)
         .await
         .inspect_err(|error| diagnostics::error("proxy server", error))
         .map_err(|_| "proxy server failed")

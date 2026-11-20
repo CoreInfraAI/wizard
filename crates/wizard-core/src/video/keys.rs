@@ -2,7 +2,7 @@
 use crate::agents::{claude, claude_desktop, codex};
 use anyhow::Result;
 
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub struct VideoKeys {
     pub codex: Option<String>,
     pub claude: Option<String>,

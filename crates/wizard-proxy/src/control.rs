@@ -15,7 +15,7 @@ const MAX_RESPONSE: usize = 1024;
 
 /// Include the proxy revision so incompatible development builds with the same
 /// application version are replaced once instead of keeping an old daemon alive.
-pub const DAEMON_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+proxy.2");
+pub const DAEMON_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+proxy.3");
 
 /// Current runtime permission to proxy, not upstream health or token validity.
 /// Both ports remain bound while the managed server is running.
@@ -24,6 +24,10 @@ pub const DAEMON_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+proxy.2");
 pub struct Status {
     pub version: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub video_running: bool,
+    #[serde(default)]
+    pub video_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

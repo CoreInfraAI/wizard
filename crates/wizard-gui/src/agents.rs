@@ -370,7 +370,13 @@ pub(crate) async fn apply_agent_plan(
         format!("{error:#}")
     })?;
 
-    crate::video::initialize(&app).await;
+    if settings::get_state(&app)
+        .map_err(|e| format!("{e:#}"))?
+        .video
+        .has_grants()
+    {
+        proxy::sync(&app).await.map_err(|e| format!("{e:#}"))?;
+    }
     log::info!("agent plan applied");
     Ok(())
 }
@@ -430,5 +436,13 @@ pub(crate) async fn apply_direct_change(
     result.map_err(|error| {
         log::error!("direct change {name} failed: {error:#}");
         format!("{error:#}")
-    })
+    })?;
+    if settings::get_state(&app)
+        .map_err(|e| format!("{e:#}"))?
+        .video
+        .has_grants()
+    {
+        proxy::sync(&app).await.map_err(|e| format!("{e:#}"))?;
+    }
+    Ok(())
 }

@@ -164,7 +164,6 @@ pub fn run_application() -> Result<()> {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => request_main_window(app),
         tauri::RunEvent::Exit => {
-            tauri::async_runtime::block_on(video::shutdown(app));
             system_proxy::stop(app);
             proxy::stop_observer(app);
         }
@@ -178,7 +177,6 @@ fn setup(app: &mut tauri::App, minimized: bool) -> Result<(), Box<dyn core::erro
     log::info!("starting CoreInfra Wizard {}", app.package_info().version);
     let first_run = tauri::async_runtime::block_on(settings::initialize_state(app.handle()))?;
     hub_auth::initialize(app.handle());
-    tauri::async_runtime::block_on(video::initialize(app.handle()));
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let tray_enabled = {
         app.manage(tray::TrayState::default());
@@ -199,7 +197,10 @@ fn setup(app: &mut tauri::App, minimized: bool) -> Result<(), Box<dyn core::erro
     let tray_enabled = false;
 
     if let Err(error) = tauri::async_runtime::block_on(async {
-        proxy::prepare_token(app.handle()).await?;
+        // A missing HTTP proxy token must not prevent a video-only listener from starting.
+        if let Err(error) = proxy::prepare_token(app.handle()).await {
+            log::error!("proxy token preparation failed: {error:#}");
+        }
         wizard_proxy_daemon::create_daemon().await?;
         proxy::sync(app.handle()).await
     }) {
