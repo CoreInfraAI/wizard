@@ -4,9 +4,9 @@ An application for configuring agents to use CoreInfra.
 
 ## Video in ChatGPT Work, Codex and Claude Code
 
-Enable **coreinfra-video** on the agent’s page and apply the change. Keep Wizard running and ask for a video in a new ChatGPT Work or Codex chat, or invoke `$coreinfra-video`.
+Enable **coreinfra-video** on the agent’s page and apply the change. Ask for a video in a new ChatGPT Work or Codex chat, or invoke `$coreinfra-video`.
 
-The bundled skill and the `coreinfra_video` MCP registration live in the profile selected by `CODEX_HOME`. Wizard listens at `http://127.0.0.1:33789/mcp` and uses a separate local bearer for each enabled agent. Turning off **Подключить `coreinfra-video` для видео-моделей** under **Дополнительные модели** on the ChatGPT / Codex page revokes local access and removes the managed registration and unmodified skill files. The opt-out persists across restarts.
+The bundled skill and the `coreinfra_video` MCP registration live in the profile selected by `CODEX_HOME`. The Wizard user daemon listens at `http://127.0.0.1:33789/mcp` and uses a separate local bearer for each enabled agent. Turning off **Подключить `coreinfra-video` для видео-моделей** under **Дополнительные модели** on the ChatGPT / Codex page revokes local access and removes the managed registration and unmodified skill files. The opt-out persists across restarts.
 
 `video_models` returns the public catalog and prices in RUB per second. `video_create` submits one paid job. Save the full returned `job` object and pass it to `video_result` to poll, including after restarting Wizard. The original Hub and key must still be available. A completed download returns a local MP4 in **Downloads/CoreInfra Video**. Use `download: false` to poll without creating a file. fal also returns its signed result URL in this mode. Repeating a submission after a network timeout can incur another charge.
 
@@ -14,7 +14,7 @@ Each paid request uses the calling agent’s active CoreInfra key, cached in mem
 
 ### Claude Code
 
-In Wizard choose **Claude Code → API-доступ → Применить** and confirm the configuration plan. Start a new local Claude Code session and ask «Какие видеомодели доступны?» or invoke `/coreinfra-video`. Keep Wizard running. The CLI routing command applies the same configuration.
+In Wizard choose **Claude Code → API-доступ → Применить** and confirm the configuration plan. Start a new local Claude Code session and ask «Какие видеомодели доступны?» or invoke `/coreinfra-video`. Wizard can be closed after configuration. The CLI routing command applies the same configuration.
 
 Wizard installs the bundled skill under `~/.claude/skills/coreinfra-video` and registers the HTTP MCP server `coreinfra_video` in the user’s `~/.claude.json`. Both locations follow `CLAUDE_CONFIG_DIR` when set. Claude Code reads the current local bearer through its native `headersHelper`. Enable the video switch separately for Claude Code. Disabling it revokes its bearer and removes its headers file without affecting Codex or Claude Desktop. Switching Claude Code away from API access removes its managed MCP entry and unmodified skill. Reapplying API access installs the version shipped with Wizard.
 
