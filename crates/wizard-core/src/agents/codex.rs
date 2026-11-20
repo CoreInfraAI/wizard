@@ -85,6 +85,13 @@ pub fn configured_token() -> Result<Option<String>> {
     Ok(read_routing()?.1.map(AgentToken::into_secret))
 }
 
+pub(crate) fn active_token() -> Result<Option<String>> {
+    let (mode, token) = read_routing()?;
+    Ok(token
+        .filter(|_| mode != RoutingMode::Disabled)
+        .map(AgentToken::into_secret))
+}
+
 fn read_routing() -> Result<(RoutingMode, Option<AgentToken>)> {
     let _guard = PreparedAgent::Codex.lock()?;
     let path = config_path()?;

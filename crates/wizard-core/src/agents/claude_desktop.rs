@@ -176,12 +176,20 @@ fn prepare_restore_at(dir: &Path, manager: &BackupManager, id: u32) -> Result<Pr
 
 /// Hub reads the profile's key. Sub has no agent key; Wizard owns proxy credentials.
 fn read_routing() -> Result<(RoutingMode, Option<AgentToken>, bool)> {
-    let _guard = PreparedAgent::ClaudeDesktop.lock()?;
-
-    read_routing_at(&config_library()?)
+    read_profile(&config_library()?, true)
 }
 
-fn read_routing_at(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
+pub(crate) fn configured_token() -> Result<Option<String>> {
+    Ok(read_profile(&config_library()?, false)?
+        .1
+        .map(AgentToken::into_secret))
+}
+
+fn read_profile(
+    dir: &Path,
+    check_registration: bool,
+) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
+    let _guard = PreparedAgent::ClaudeDesktop.lock()?;
     let meta = json::read(&dir.join("_meta.json"))?;
     let Some(id) = applied_id(&meta)? else {
         return Ok((RoutingMode::Disabled, None, false));
@@ -200,7 +208,10 @@ fn read_routing_at(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)
     } else if preferences["deploymentMode"] != "1p" && has_hub_connection(&config) {
         let token = config["inferenceGatewayApiKey"]
             .as_str()
-            .and_then(|token| AgentToken::new(token.to_owned()));
+            .and_then(|s| AgentToken::new(s.to_owned()));
+        if !check_registration {
+            return Ok((RoutingMode::Hub, token, proxy_needs_apply));
+        }
         let mut updated = config.clone();
         let registration = video::Registration::for_wizard()?;
         let needs_video = registration
@@ -362,7 +373,7 @@ mod tests {
                 |_| panic!("unexpected ChatGPT proxy"),
             )?;
             assert!(activated);
-            let (detected, token, needs_apply) = read_routing_at(&dir)?;
+            let (detected, token, needs_apply) = read_profile(&dir, true)?;
             assert_eq!(detected, mode);
             assert!(!needs_apply);
             assert_eq!(
@@ -481,7 +492,7 @@ mod tests {
                 assert!(config.get("inferenceBedrockRegion").is_none());
                 assert!(config.get("egressProxyPacUrl").is_none());
                 assert!(config.get("egressProxyAuth").is_none());
-                assert_eq!(read_routing_at(&fixture.dir)?.0, mode);
+                assert_eq!(read_profile(&fixture.dir, true)?.0, mode);
                 if mode == RoutingMode::Hub {
                     assert_eq!(config["inferenceGatewayApiKey"], "new-token");
                     assert_eq!(config["inferenceGatewayBaseUrl"], HUB_URL);
@@ -528,7 +539,7 @@ mod tests {
             let mut profile = json::read(&fixture.files[0])?;
             profile["egressProxyUrl"] = json!(RETIRED_PROXY_URL);
             std::fs::write(&fixture.files[0], profile.to_string())?;
-            let (detected, agent_token, needs_apply) = read_routing_at(&fixture.dir)?;
+            let (detected, agent_token, needs_apply) = read_profile(&fixture.dir, true)?;
             assert_eq!(detected, mode);
             assert!(needs_apply);
             assert_eq!(agent_token.is_some(), mode == RoutingMode::Hub);
@@ -537,7 +548,7 @@ mod tests {
 
             fixture.apply(prepare_routing_at(&fixture.dir, mode, token)?, true)?;
             assert_eq!(fixture.manager().get_backups()?.len(), 2);
-            assert!(!read_routing_at(&fixture.dir)?.2);
+            assert!(!read_profile(&fixture.dir, true)?.2);
 
             // Restoring the backup of the retired configuration keeps the two-port layout.
             fixture.apply(
@@ -548,7 +559,7 @@ mod tests {
                 json::read(&fixture.files[0])?["egressProxyUrl"],
                 "http://127.0.0.1:33787"
             );
-            let (restored_mode, restored_token, needs_apply) = read_routing_at(&fixture.dir)?;
+            let (restored_mode, restored_token, needs_apply) = read_profile(&fixture.dir, true)?;
             assert_eq!(restored_mode, mode);
             assert!(!needs_apply);
             assert_eq!(
@@ -598,7 +609,7 @@ mod tests {
         )?;
         assert!(!created.exists());
         assert!(fixture.files.iter().all(|path| !path.exists()));
-        assert_eq!(read_routing_at(&fixture.dir)?.0, RoutingMode::Disabled);
+        assert_eq!(read_profile(&fixture.dir, true)?.0, RoutingMode::Disabled);
         Ok(())
     }
 
@@ -727,7 +738,7 @@ mod tests {
                     std::fs::write(&profile_path, original.to_string())?;
                     std::fs::write(&preferences_path, r#"{"deploymentMode":"3p"}"#)?;
 
-                    let (detected, token, proxy_needs_apply) = read_routing_at(&dir)?;
+                    let (detected, token, proxy_needs_apply) = read_profile(&dir, true)?;
                     assert_eq!(detected, RoutingMode::Hub);
                     assert!(proxy_needs_apply);
                     assert_eq!(
@@ -758,7 +769,7 @@ mod tests {
                     );
                     assert_eq!(updated["autoModeEnabled"], true);
                     assert_eq!(json::read(&dir.join("_meta.json"))?, meta);
-                    assert_eq!(read_routing_at(&dir)?.0, mode);
+                    assert_eq!(read_profile(&dir, true)?.0, mode);
                     if mode == RoutingMode::Hub {
                         assert_eq!(updated["inferenceGatewayBaseUrl"], HUB_URL);
                         assert_eq!(updated["inferenceGatewayApiKey"], "wizard-token");

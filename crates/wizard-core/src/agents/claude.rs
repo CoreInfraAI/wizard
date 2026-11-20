@@ -78,14 +78,12 @@ fn global_config_path() -> Result<PathBuf> {
 
 /// The `CoreInfra` token in this agent's configuration, as detection reports it. Never log it.
 pub fn configured_token() -> Result<Option<String>> {
-    Ok(read_routing()?.1.map(AgentToken::into_secret))
+    Ok(read_credentials()?.1.map(AgentToken::into_secret))
 }
 
 fn read_routing() -> Result<(RoutingMode, Option<AgentToken>, bool)> {
-    let _guard = PreparedAgent::Claude.lock()?;
     let dir = config_dir()?;
-    let settings = config_files::json::read(&dir.join("settings.json"))?;
-    let mode = mode_from_config(&settings);
+    let (mode, token) = read_credentials()?;
     let video_needs_apply = if mode == RoutingMode::Hub {
         let mut global = FileChange::read(global_config_path()?)?;
         video::configure(&dir, &mut global, &video_server()?, true).map_or(true, |files| {
@@ -94,7 +92,14 @@ fn read_routing() -> Result<(RoutingMode, Option<AgentToken>, bool)> {
     } else {
         false
     };
-    Ok((mode, token_from_config(&settings, mode), video_needs_apply))
+    Ok((mode, token, video_needs_apply))
+}
+
+fn read_credentials() -> Result<(RoutingMode, Option<AgentToken>)> {
+    let _guard = PreparedAgent::Claude.lock()?;
+    let settings = config_files::json::read(&config_dir()?.join("settings.json"))?;
+    let mode = mode_from_config(&settings);
+    Ok((mode, token_from_config(&settings, mode)))
 }
 
 /// Reads only keys owned by the active mode: a disabled API key may belong to the user.

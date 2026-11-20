@@ -1,5 +1,6 @@
 //! Stateless video tools. Job references are carried by the caller and contain no credential.
 pub mod install;
+pub mod keys;
 pub mod server;
 pub mod stdio;
 
