@@ -19,6 +19,7 @@ import { OverviewBackdrop } from "./OverviewBackdrop";
 import { OverviewCard, OverviewCardContent } from "./OverviewCard";
 import { OverviewVideo } from "./OverviewVideo";
 import { OverviewAgents } from "./OverviewAgents";
+import { SystemProxyBanner } from "./SystemProxyBanner";
 import { useOverviewTransition } from "./useOverviewTransition";
 import "./Overview.css";
 
@@ -114,6 +115,7 @@ export function Overview({
           </div>
           <OverviewVideo />
         </header>
+        {connected && <SystemProxyBanner />}
         {showDashboard && configured && needsHubTopUp(summary.data) && (
           <div className="overview-ready-notice" role="status">
             <div>
@@ -278,12 +280,16 @@ export function Overview({
                   showDashboard ? <>
                     {detectionError && <span>Не все приложения удалось проверить.</span>}
                     <span className="overview-connected-agents" role="list" aria-label="Приложения">
-                      {listedAgents.slice(0, 2).map(choice => (
-                        <span className="overview-connected-agent" role="listitem" key={choice.id}>
-                          <AgentIcon choice={choice} /><span>{choice.name}</span>
+                      {listedAgents.slice(0, 2).map((choice, index) => (
+                        <span className="overview-agent-summary" key={choice.id}>
+                          <span className="overview-connected-agent" role="listitem">
+                            <AgentIcon choice={choice} /><span>{choice.name}</span>
+                          </span>
+                          {index === 1 && listedAgents.length > 2 && (
+                            <span className="overview-agents-more" role="listitem">… ещё {listedAgents.length - 2}</span>
+                          )}
                         </span>
                       ))}
-                      {listedAgents.length > 2 && <span className="overview-agents-more" role="listitem">… ещё {listedAgents.length - 2}</span>}
                     </span>
                     <span className="overview-manage-hint">Приложения, обновления и настройки подключения.</span>
                   </> : !connected

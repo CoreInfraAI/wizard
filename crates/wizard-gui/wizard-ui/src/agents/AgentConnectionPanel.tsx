@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { type AgentChange, type AgentId, type AgentStates, type PreparedAgentChange, type RoutingMode, type TokenChoice, prepareAgentChange } from "./agents_state";
+import { type AgentChange, type AgentId, type AgentStates, type ConnectionDraft, type ConnectionPlan, type RoutingMode, prepareAgentChange } from "./agents_state";
 import { RoutingFieldset, hubModes, routingModes, type Hub } from "./AgentConfiguration";
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { MissingAgent } from "./MissingAgent";
 import { useProxy } from "./proxy";
 import { agentPageNames } from "./navigation";
-import { AgentIcon, choices } from "../onboarding/agents";
+import { AgentIcon, choices, launchChoiceFor } from "../onboarding/agents";
 import { useHubTokens } from "../settings/hub_tokens";
 import type { HubAccountControl } from "../settings/HubAccount";
 import { Identity } from "../components/ui/Identity";
@@ -20,7 +20,7 @@ export function AgentConnectionPanel({ agent, agents, account, onBack }: {
   account: HubAccountControl;
   onBack: () => void;
 }) {
-  const [prepared, setPrepared] = useState<PreparedAgentChange>();
+  const [prepared, setPrepared] = useState<ConnectionPlan>();
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState<string>();
   const inFlight = useRef(false);
@@ -40,12 +40,12 @@ export function AgentConnectionPanel({ agent, agents, account, onBack }: {
   const errors = detection.status === "error" ? [detection.data]
     : agent === "codex" && agents.codex.status === "found" ? [agents.codex.data.cli, agents.codex.data.desktop].flatMap(part => part.status === "error" ? [part.data] : []) : [];
 
-  async function prepare(change: AgentChange, token: TokenChoice | null) {
+  async function prepare(draft: ConnectionDraft) {
     if (inFlight.current || prepared) return;
     inFlight.current = true;
     setPreparing(true);
     setError(undefined);
-    try { setPrepared(await prepareAgentChange(change, token)); }
+    try { setPrepared(await prepareAgentChange(draft)); }
     catch (cause) { setError(typeof cause === "string" ? cause : "Не удалось подготовить изменения. Попробуйте ещё раз."); }
     finally { inFlight.current = false; setPreparing(false); }
   }
@@ -70,12 +70,12 @@ export function AgentConnectionPanel({ agent, agents, account, onBack }: {
       needsApply={needsApply} disabled={busy || account.submitting} error={error}
       note={agent === "codex" ? "Настройка общая для ChatGPT и Codex." : undefined}
       actions={<Button plain disabled={busy || account.submitting} onClick={onBack}>Назад</Button>}
-      onPrepare={(change, token) => void prepare(change, token)}
+      onPrepare={prepare}
     /> : <>
       {detection.status === "not_found" && agent !== "claude_desktop" && <MissingAgent agent={agent} />}
       <ActionBar divider><Button outline onClick={onBack}>Назад</Button></ActionBar>
     </>}
-    {prepared && <PreparedPlanDialog prepared={prepared} onReprepared={setPrepared}
+    {prepared && <PreparedPlanDialog prepared={prepared} launchChoice={launchChoiceFor(agent, agents)} onReprepared={setPrepared}
       onClose={() => setPrepared(undefined)} onApplied={onBack} applyLabel="Применить" />}
   </>;
 }

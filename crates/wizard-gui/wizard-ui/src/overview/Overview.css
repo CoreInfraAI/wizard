@@ -80,11 +80,39 @@
 .overview-balance-label { font-size: 12px; line-height: 20px; }
 .overview-balance-value { color: var(--ui-ink); font-size: 16px; line-height: 28px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .overview-balance-value[data-amount="true"] { font-size: 32px; line-height: 40px; letter-spacing: -.04em; }
-.overview-connected-agents { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin: 16px 0; min-height: 24px; }
-.overview-connected-agent { display: inline-flex; align-items: center; gap: 8px; color: var(--ui-ink); font-size: 13px; line-height: 24px; white-space: nowrap; }
+.overview-connected-agents { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 16px 0; min-height: 24px; font-size: 13px; line-height: 24px; }
+.overview-agent-summary { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; max-width: 100%; }
+.overview-connected-agent { display: inline-flex; align-items: center; gap: 8px; color: var(--ui-ink); white-space: nowrap; }
 .overview-connected-agent svg { width: 22px; height: 22px; }
-.overview-agents-more { font-size: 13px; line-height: 24px; white-space: nowrap; }
+.overview-agents-more { white-space: nowrap; }
 .overview-manage-hint { display: block; font-size: 12px; line-height: 20px; }
+.overview-proxy-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: last baseline;
+  gap: var(--ui-space-3) var(--ui-space-6);
+  margin-block: var(--ui-space-5);
+  padding: var(--ui-space-4) var(--ui-space-5);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-panel);
+  background: var(--ui-surface-muted);
+}
+.overview-proxy-message {
+  flex: 1 1 30rem;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: var(--ui-space-1) var(--ui-space-3);
+}
+.overview-proxy-icon {
+  width: 20px;
+  height: 20px;
+  align-self: start;
+  margin-block-start: 2px;
+  color: var(--brand-coreinfra);
+}
+.overview-proxy-actions { margin-inline-start: auto; }
+.overview-proxy-skip { color: var(--ui-ink-muted); }
 .overview-ready-notice { display: flex; align-items: center; gap: 16px; margin: 24px 0; padding: 20px 24px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-panel); background: var(--ui-surface-muted); }
 .overview-ready-notice > div { flex: 1; min-width: 0; }
 .overview-ready-notice p { margin-top: 4px; }

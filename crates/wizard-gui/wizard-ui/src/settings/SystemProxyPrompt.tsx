@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import { Button } from "../components/catalyst/button";
 import {
   Dialog,
@@ -8,7 +8,7 @@ import {
 import { DialogHeader } from "../components/ui/DialogHeader";
 import { Text } from "../components/catalyst/text";
 import { ErrorText } from "../components/ErrorText";
-import { setSystemProxy, type useSystemProxy } from "./system_proxy";
+import { useEnableSystemProxy, type useSystemProxy } from "./system_proxy";
 
 export function SystemProxyPrompt({
   observation: { state, error: loadError },
@@ -17,9 +17,7 @@ export function SystemProxyPrompt({
   observation: ReturnType<typeof useSystemProxy>;
   onClose: () => void;
 }) {
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string>();
-  const inFlight = useRef(false);
+  const { enable, submitting, error } = useEnableSystemProxy();
   const busy = submitting || state?.busy === true;
   const failure = error || loadError || state?.read_error;
   const canEnable =
@@ -34,27 +32,6 @@ export function SystemProxyPrompt({
     if (state?.status === "on" && !busy && !error && !state.operation_error)
       onClose();
   }, [state, busy, error, onClose]);
-
-  async function enable() {
-    if (inFlight.current || busy || !canEnable) return;
-    inFlight.current = true;
-    setSubmitting(true);
-    setError(undefined);
-    try {
-      // Use the same verified OS operation as Settings; never overwrite another proxy.
-      await setSystemProxy(true);
-      onClose();
-    } catch (cause) {
-      setError(
-        typeof cause === "string"
-          ? cause
-          : "Не удалось включить системный прокси. Попробуйте ещё раз.",
-      );
-    } finally {
-      inFlight.current = false;
-      setSubmitting(false);
-    }
-  }
 
   return (
     <Dialog
@@ -72,6 +49,7 @@ export function SystemProxyPrompt({
         <Text>
           Системный прокси направляет запросы к OpenAI и Anthropic через
           выходные узлы CoreInfra AI Hub для входа и работы со своей подпиской.
+          <br />
           Все остальные ресурсы доступны напрямую.
         </Text>
         <Text>
@@ -116,12 +94,15 @@ export function SystemProxyPrompt({
       </DialogBody>
       <DialogActions>
         <Button plain disabled={busy} onClick={onClose}>
-          Отмена
+          Пропустить
         </Button>
         <Button
+          color="blue"
           disabled={busy || !canEnable}
           aria-busy={busy}
-          onClick={() => void enable()}
+          onClick={async () => {
+            if (await enable()) onClose();
+          }}
         >
           {busy ? "Включаем…" : "Включить"}
         </Button>

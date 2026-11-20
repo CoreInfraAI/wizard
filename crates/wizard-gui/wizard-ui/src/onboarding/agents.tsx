@@ -28,6 +28,12 @@ export function isFound(choice: AgentChoice, agents: AgentStates) {
   return agents[choice.agent].status === "found";
 }
 
+export function launchChoiceFor(agent: AgentId, agents: AgentStates): AgentChoice {
+  const id = agent === "codex" && agents.codex.status === "found" && agents.codex.data.desktop.status === "found"
+    ? "chatgpt" : agent;
+  return choices.find(choice => choice.id === id)!;
+}
+
 export function AgentIcon({ choice, className = "" }: { choice: AgentChoice; className?: string }) {
   return <choice.Icon className={`size-6 shrink-0 text-zinc-700 dark:text-zinc-300 ${className}`} aria-hidden="true" />;
 }

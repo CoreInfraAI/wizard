@@ -1,12 +1,11 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
-  type AgentChange,
   type AgentDetection,
   type AgentId,
   type AgentStates,
   type BackupAgent,
-  type PreparedAgentChange,
-  type TokenChoice,
+  type ConnectionDraft,
+  type ConnectionPlan,
   prepareAgentChange,
 } from "./agents_state";
 import {
@@ -18,7 +17,8 @@ import {
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { DesktopVersion } from "./DesktopInstall";
-import { VideoConnection } from "./VideoConnection";
+import { StandaloneVideoConnection } from "./VideoConnection";
+import { launchChoiceFor } from "../onboarding/agents";
 import { MissingAgent } from "./MissingAgent";
 import { agentPageNames } from "./navigation";
 import { useHubTokens } from "../settings/hub_tokens";
@@ -116,7 +116,7 @@ export function AgentPage({
   proxy: ReturnType<typeof useProxy>;
   account: HubAccountControl;
 }) {
-  const [preparedChange, setPreparedChange] = useState<PreparedAgentChange>();
+  const [preparedChange, setPreparedChange] = useState<ConnectionPlan>();
   const [isPreparingPlan, setIsPreparingPlan] = useState(false);
   const [configurationRevision, setConfigurationRevision] = useState(0);
   const pageContent = useRef<HTMLDivElement>(null);
@@ -155,14 +155,14 @@ export function AgentPage({
       : null,
   );
 
-  async function prepare(change: AgentChange, token: TokenChoice | null) {
+  async function prepare(draft: ConnectionDraft) {
     if (isChangeInProgress) return;
 
     setIsPreparingPlan(true);
     setError(undefined);
 
     try {
-      setPreparedChange(await prepareAgentChange(change, token));
+      setPreparedChange(await prepareAgentChange(draft));
     } catch (cause: unknown) {
       const message = "Не удалось подготовить изменения";
       reportError(message, cause);
@@ -252,7 +252,10 @@ export function AgentPage({
               onPrepare={prepare}
             />
           )}
-          <VideoConnection signedIn={account.signedIn} disabled={isChangeInProgress} />
+          {codex.status !== "found" && (
+            <StandaloneVideoConnection key={configurationRevision} signedIn={account.signedIn}
+              disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
+          )}
           {(codex.status === "not_found" || (codex.status === "found" && codex.data.cli.status === "not_found")) && (
             <MissingAgent agent="codex" />
           )}
@@ -291,9 +294,6 @@ export function AgentPage({
               error={pageError}
               onPrepare={prepare}
             />
-          )}
-          {claude.status === "found" && claude.data.routing_mode === "hub" && (
-            <VideoConnection signedIn={account.signedIn} disabled={isChangeInProgress} />
           )}
         </>
       );
@@ -403,6 +403,7 @@ export function AgentPage({
       {preparedChange && (
         <PreparedPlanDialog
           prepared={preparedChange}
+          launchChoice={launchChoiceFor(preparedChange.agent, agents)}
           onReprepared={setPreparedChange}
           onClose={() => setPreparedChange(undefined)}
           onApplied={() => setConfigurationRevision((value) => value + 1)}
