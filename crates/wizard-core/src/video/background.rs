@@ -116,7 +116,11 @@ mod tests {
             .apply_routes(grants.clone(), VideoKeys::default(), &address)
             .await
             .map_err(anyhow::Error::msg)?;
-        let client = reqwest::Client::builder().no_proxy().build()?;
+        // Reload replaces the listener. Check grants on fresh connections, not pooled ones.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .pool_max_idle_per_host(0)
+            .build()?;
         let list = |bearer| {
             client
                 .post(&url)
