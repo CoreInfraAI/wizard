@@ -267,7 +267,7 @@ DEBIAN_FRONTEND=noninteractive apt-get --assume-yes --no-install-recommends --no
 "#;
 
 #[cfg(target_os = "linux")]
-/// For Claude, `close` permits shutdown after Polkit approval. ChatGPT is closed by the caller.
+/// For Claude, `close` permits shutdown after Polkit approval. `ChatGPT` is closed by the caller.
 pub(super) fn install(archive: &Path, release: &Release, sha256: &str, close: bool) -> Result<()> {
     let product = release.target.app.product();
     let version = release.version.to_string();
