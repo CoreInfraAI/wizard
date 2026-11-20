@@ -1,6 +1,6 @@
 //! Reconcile only the Wizard-owned MCP registration and bundled skill documents.
 use crate::{
-    agents::codex,
+    agents::{claude, codex},
     config_files::{
         changes::{FileChange, FileSnapshot},
         toml,
@@ -35,7 +35,21 @@ pub fn sync(
             let _guard = PreparedAgent::Codex.lock()?;
             sync_at(&codex::config_path()?, previous, next)
         }
-        Claude | ClaudeDesktop => sync_headers(&headers_path(agent == ClaudeDesktop)?, next),
+        Claude => {
+            let headers = headers_path(false)?;
+            if next.is_none() {
+                // Revoke the grant first: a user-edited skill may block removing the registration.
+                sync_headers(&headers, None)?;
+                claude::sync_video(false)
+            } else {
+                // Register first, so a failed registration leaves no usable bearer behind.
+                claude::sync_video(true)?;
+                sync_headers(&headers, next)
+            }
+        }
+        // The routing plan applied just before writes Claude Desktop's registration,
+        // since the app must be closed for it.
+        ClaudeDesktop => sync_headers(&headers_path(true)?, next),
     }
 }
 

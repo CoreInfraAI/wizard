@@ -35,7 +35,11 @@ impl Registration {
         })
     }
 
-    pub(super) fn update(&self, profile: &mut Map<String, Value>, enable: bool) -> Result<()> {
+    pub(super) fn update_3p_profile(
+        &self,
+        profile: &mut Map<String, Value>,
+        enable: bool,
+    ) -> Result<()> {
         reconcile(
             profile,
             "allowedPluginMarketplaces",
@@ -73,6 +77,49 @@ impl Registration {
             |entry| entry["transport"] == "stdio" && entry["args"] == args,
             "command",
         )
+    }
+
+    /// Subscription (1p) mode: Claude Desktop reads local servers from `mcpServers` in
+    /// `Claude/claude_desktop_config.json`. There is no plugin marketplace or tool policy here.
+    pub(super) fn update_1p_config(
+        &self,
+        config: &mut Map<String, Value>,
+        enable: bool,
+    ) -> Result<()> {
+        let args = json!([stdio::ARG, self.port.to_string(), self.headers]);
+        let owned = |entry: &Value| entry["args"] == args;
+        if !enable {
+            let now_empty = match config.get_mut("mcpServers").and_then(Value::as_object_mut) {
+                Some(servers) if servers.get(SERVER).is_some_and(owned) => {
+                    servers.shift_remove(SERVER);
+                    servers.is_empty()
+                }
+                _ => false,
+            };
+            if now_empty {
+                config.shift_remove("mcpServers");
+            }
+            return Ok(());
+        }
+        let servers = config
+            .entry("mcpServers")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .context("В настройках Claude Desktop поле mcpServers должно быть объектом")?;
+        if let Some(entry) = servers.get_mut(SERVER) {
+            ensure!(
+                owned(entry),
+                "В Claude Desktop уже зарегистрирован другой MCP-сервер coreinfra_video"
+            );
+            // Refresh only the executable, which moves when Wizard is reinstalled elsewhere.
+            entry["command"] = json!(self.command);
+        } else {
+            servers.insert(
+                SERVER.into(),
+                json!({"command": self.command, "args": args}),
+            );
+        }
+        Ok(())
     }
 }
 

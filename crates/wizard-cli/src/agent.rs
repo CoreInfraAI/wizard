@@ -124,7 +124,11 @@ pub(crate) fn run(
                 return Ok(());
             };
 
-            run_plan(runtime, yes, move || claude::prepare_routing(mode, &token))?;
+            // Keep the video registration as the GUI's saved grant requires.
+            let video = settings::load_from_file()?.video.claude.is_some();
+            run_plan(runtime, yes, move || {
+                claude::prepare_routing(mode, &token, video)
+            })?;
         }
         AgentCommand::ClaudeDesktop { .. } => {
             anyhow::bail!(

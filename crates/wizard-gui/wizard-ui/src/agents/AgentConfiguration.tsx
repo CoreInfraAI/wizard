@@ -294,12 +294,15 @@ export function RoutingFieldset<M extends string>({
     (token.selected?.kind === "create" ||
       (token.selected?.kind === "existing" &&
         token.selected.token !== agentToken));
-  const routingChanged =
-    selected !== mode || (enabled && (needsApply || tokenChanged));
-  const prepareRouting = !editing || routingChanged;
-  const showVideo = agent === "codex" || agent === "claude" || (agent === "claude_desktop" && selected === "hub");
+  const showVideo = agent === "codex" || agent === "claude" || (agent === "claude_desktop" && selected !== "disabled");
   const video = useVideoConnection(agent, showVideo);
   const videoChanged = showVideo && video.needsApply;
+  // Claude Desktop registers video in its configuration only through a plan that restarts it.
+  const desktopVideoChanged =
+    agent === "claude_desktop" && showVideo && !!video.status && video.enabled !== video.status.enabled;
+  const routingChanged =
+    selected !== mode || (enabled && (needsApply || tokenChanged)) || desktopVideoChanged;
+  const prepareRouting = !editing || routingChanged;
   const systemProxy = useSystemProxy();
   const [proxyPrompt, setProxyPrompt] = useState(false);
 

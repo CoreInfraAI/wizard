@@ -24,7 +24,7 @@ impl VideoKeys {
         Self {
             codex: key("Codex", codex::active_token()),
             claude: key("Claude Code", claude::configured_token()),
-            claude_desktop: key("Claude Desktop", claude_desktop::configured_token()),
+            claude_desktop: key("Claude Desktop", claude_desktop::video_token()),
         }
     }
 }

@@ -45,10 +45,11 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Claude> {
         AgentDetection::NotFound => return AgentDetection::NotFound,
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
-    let (routing_mode, token, video_needs_apply) = match read_routing() {
-        Ok(routing) => routing,
-        Err(error) => return AgentDetection::Error(format!("{error:#}")),
-    };
+    let (routing_mode, token, video_needs_apply) =
+        match read_routing(settings.video.claude.is_some()) {
+            Ok(routing) => routing,
+            Err(error) => return AgentDetection::Error(format!("{error:#}")),
+        };
     AgentDetection::Found(Claude {
         info,
         routing_mode,
@@ -81,18 +82,25 @@ pub fn configured_token() -> Result<Option<String>> {
     Ok(read_credentials()?.1.map(AgentToken::into_secret))
 }
 
-fn read_routing() -> Result<(RoutingMode, Option<AgentToken>, bool)> {
+/// `video` is whether Wizard holds a video grant for Claude Code; it is independent of routing.
+fn read_routing(video: bool) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
     let dir = config_dir()?;
     let (mode, token) = read_credentials()?;
-    let video_needs_apply = if mode == RoutingMode::Hub {
-        let mut global = FileChange::read(global_config_path()?)?;
-        video::configure(&dir, &mut global, &video_server()?, true).map_or(true, |files| {
+    let mut global = FileChange::read(global_config_path()?)?;
+    let video_needs_apply = video::configure(&dir, &mut global, &video_server()?, video)
+        .map_or(true, |files| {
             global.is_changed() || files.iter().any(FileChange::is_changed)
-        })
-    } else {
-        false
-    };
+        });
     Ok((mode, token, video_needs_apply))
+}
+
+/// Registers or removes the video MCP server and skill now, in any routing mode.
+pub(crate) fn sync_video(enable: bool) -> Result<()> {
+    let _guard = PreparedAgent::Claude.lock()?;
+    let mut global = FileChange::read(global_config_path()?)?;
+    let mut changes = video::configure(&config_dir()?, &mut global, &video_server()?, enable)?;
+    changes.push(global);
+    FileChange::apply_all(&changes)
 }
 
 fn read_credentials() -> Result<(RoutingMode, Option<AgentToken>)> {
@@ -128,7 +136,8 @@ pub fn get_backups() -> Result<Vec<super::Backup>> {
     BackupManager::new(AgentKind::Claude)?.get_backups()
 }
 
-pub fn restore_backup(id: u32) -> Result<()> {
+/// `video`: whether Wizard holds a video grant for Claude Code.
+pub fn restore_backup(id: u32, video: bool) -> Result<()> {
     let manager = BackupManager::new(AgentKind::Claude)?;
     let plan = {
         let _guard = PreparedAgent::Claude.lock()?;
@@ -138,6 +147,7 @@ pub fn restore_backup(id: u32) -> Result<()> {
             &video_server()?,
             &manager,
             id,
+            video,
         )?
     };
     plan.apply_with_backup(
@@ -153,27 +163,18 @@ fn prepare_restore_at(
     server: &Value,
     manager: &BackupManager,
     id: u32,
+    video: bool,
 ) -> Result<PreparedPlan> {
     let mut changes = manager.restore_changes(id)?;
-    let path = dir.join("settings.json");
-    let settings = if let Some(change) = changes.iter().find(|change| change.path() == &path) {
-        config_files::json::parse(&change.after)?
-    } else {
-        config_files::json::read(&path)?
-    };
+    // The backup does not hold video files; keep them as the current grant requires.
     let mut global = FileChange::read(global_path.to_owned())?;
-    changes.extend(video::configure(
-        dir,
-        &mut global,
-        server,
-        mode_from_config(&settings) == RoutingMode::Hub,
-    )?);
+    changes.extend(video::configure(dir, &mut global, server, video)?);
     changes.push(global);
     Ok(prepare_plan(changes))
 }
 
-/// `token` is ignored when disabled.
-pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
+/// `token` is ignored when disabled. `video`: whether Wizard holds a video grant for Claude Code.
+pub fn prepare_routing(mode: RoutingMode, token: &str, video: bool) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Claude.lock()?;
 
     prepare_routing_at(
@@ -182,6 +183,7 @@ pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
         &video_server()?,
         mode,
         token,
+        video,
     )
 }
 
@@ -198,6 +200,7 @@ fn prepare_routing_at(
     server: &Value,
     mode: RoutingMode,
     token: &str,
+    video: bool,
 ) -> Result<PreparedPlan> {
     let script_path = dir.join("no-proxy.sh");
 
@@ -239,7 +242,7 @@ fn prepare_routing_at(
     }
 
     // Keep preparation files before activation, and script deletion after it.
-    let mut changes = video::configure(dir, &mut global, server, mode == RoutingMode::Hub)?;
+    let mut changes = video::configure(dir, &mut global, server, video)?;
     changes.extend(if mode == RoutingMode::Sub {
         [global, script, settings]
     } else {
@@ -402,7 +405,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_follows_gateway_mode_and_backup_restores_preserve_other_servers() -> Result<()> {
+    fn video_follows_grant_in_every_mode_and_backup_restores_preserve_other_servers() -> Result<()>
+    {
         let temp = tempfile::tempdir()?;
         let dir = temp.path().join(".claude");
         let global = temp.path().join(".claude.json");
@@ -418,8 +422,9 @@ mod tests {
                 |_| bail!("Unexpected Codex proxy"),
             )
         };
-        let prepare =
-            |mode| prepare_routing_at(&dir, &global, &registration, mode, "inference-key");
+        let prepare = |mode, video| {
+            prepare_routing_at(&dir, &global, &registration, mode, "inference-key", video)
+        };
         let read_global = || config_files::json::read(&global);
         let foreign = json!({"type":"http","url":"https://example.org/mcp"});
         std::fs::write(
@@ -427,7 +432,7 @@ mod tests {
             json!({"mcpServers":{"other":foreign},"theme":"dark"}).to_string(),
         )?;
 
-        let first = prepare(RoutingMode::Hub)?;
+        let first = prepare(RoutingMode::Hub, true)?;
         assert!(!skill.exists());
         apply(first)?;
         assert!(skill.is_file());
@@ -436,7 +441,7 @@ mod tests {
             registration
         );
         assert!(!registration.to_string().contains("inference-key"));
-        assert!(prepare(RoutingMode::Hub)?.steps().iter().all(
+        assert!(prepare(RoutingMode::Hub, true)?.steps().iter().all(
             |step| matches!(step, PreparedStep::ChangeFile { change } if !change.is_changed())
         ));
         assert_eq!(manager().get_backups()?.len(), 1);
@@ -451,16 +456,36 @@ mod tests {
             &registration,
             &manager(),
             1,
+            false,
         )?)?;
         assert!(!skill.exists());
         assert_eq!(read_global()?["theme"], "light");
         assert_eq!(read_global()?["mcpServers"], json!({"other":foreign}));
 
-        apply(prepare(RoutingMode::Hub)?)?;
+        // The grant, not the routing mode, decides the registration.
+        for mode in [RoutingMode::Sub, RoutingMode::Disabled, RoutingMode::Hub] {
+            apply(prepare(mode, true)?)?;
+            assert!(skill.is_file());
+            assert_eq!(
+                read_global()?["mcpServers"]["coreinfra_video"],
+                registration
+            );
+            assert_eq!(read_global()?["mcpServers"]["other"], foreign);
+        }
+        apply(prepare_restore_at(
+            &dir,
+            &global,
+            &registration,
+            &manager(),
+            1,
+            true,
+        )?)?;
+        assert!(skill.is_file());
+
         std::fs::write(&skill, "my edited skill")?;
-        assert!(prepare(RoutingMode::Hub).is_err());
-        for mode in [RoutingMode::Sub, RoutingMode::Disabled] {
-            apply(prepare(mode)?)?;
+        assert!(prepare(RoutingMode::Sub, true).is_err());
+        for mode in [RoutingMode::Hub, RoutingMode::Sub, RoutingMode::Disabled] {
+            apply(prepare(mode, false)?)?;
             assert_eq!(std::fs::read_to_string(&skill)?, "my edited skill");
             assert_eq!(read_global()?["mcpServers"], json!({"other":foreign}));
         }
@@ -475,10 +500,12 @@ mod tests {
         let server = video::server(crate::video::URL, &temp.path().join("headers.json"))?;
         let existing = json!({"mcpServers":{"coreinfra_video":{"type":"http","url":crate::video::URL,"headersHelper":"user-helper"}}});
         std::fs::write(&global, existing.to_string())?;
-        assert!(prepare_routing_at(&dir, &global, &server, RoutingMode::Hub, "key").is_err());
+        for mode in [RoutingMode::Hub, RoutingMode::Sub] {
+            assert!(prepare_routing_at(&dir, &global, &server, mode, "key", true).is_err());
+        }
         assert!(!dir.exists());
         assert_eq!(config_files::json::read(&global)?, existing);
-        let plan = prepare_routing_at(&dir, &global, &server, RoutingMode::Disabled, "")?;
+        let plan = prepare_routing_at(&dir, &global, &server, RoutingMode::Disabled, "", false)?;
         assert!(plan.steps().iter().all(
             |step| matches!(step, PreparedStep::ChangeFile { change } if !change.is_changed())
         ));

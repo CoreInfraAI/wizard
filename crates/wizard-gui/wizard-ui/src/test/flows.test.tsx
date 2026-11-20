@@ -158,6 +158,55 @@ it("offers one Apply to install video in an existing Claude Code gateway profile
   expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
 });
 
+it("applies a Claude Desktop video change through a plan that restarts Desktop, then saves the grant", async () => {
+  const user = userEvent.setup();
+  const prepare = vi.spyOn(agentCommands, "prepareAgentChange");
+  try {
+    launch("all_agents", "/agents/claude-desktop");
+    const toggle = await screen.findByRole("switch", { name: /coreinfra-video/ });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    await user.click(screen.getByRole("button", { name: "Применить" }));
+    const plan = await screen.findByRole("dialog", { name: /План изменений/ });
+    // The mode is unchanged, but Desktop still gets a routing plan with the draft's video choice.
+    expect(prepare).toHaveBeenLastCalledWith(expect.objectContaining({
+      agent: "claude_desktop",
+      routing: expect.objectContaining({ change: { ClaudeDesktopSetRouting: "hub" } }),
+      videoEnabled: true,
+    }));
+    await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    await screen.findByRole("dialog", { name: "Настройки применены" });
+    const applied = environment.calls.indexOf("apply_agent_plan");
+    expect(applied).toBeGreaterThanOrEqual(0);
+    expect(environment.calls.indexOf("set_video_connection")).toBeGreaterThan(applied);
+  } finally {
+    prepare.mockRestore();
+  }
+});
+
+it("offers Claude Desktop video on a subscription and hides it without CoreInfra", async () => {
+  const user = userEvent.setup();
+  const prepare = vi.spyOn(agentCommands, "prepareAgentChange");
+  try {
+    launch("all_agents", "/agents/claude-desktop");
+    await screen.findByRole("switch", { name: /coreinfra-video/ });
+    await user.click(screen.getByRole("radio", { name: "Без CoreInfra AI Hub" }));
+    expect(screen.queryByRole("switch", { name: /coreinfra-video/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: "Своя подписка Claude" }));
+    await user.click(await screen.findByRole("button", { name: "Пропустить" }));
+    await user.click(await screen.findByRole("switch", { name: /coreinfra-video/ }));
+    await user.click(screen.getByRole("button", { name: "Применить" }));
+    await screen.findByRole("dialog", { name: /План изменений/ });
+    expect(prepare).toHaveBeenLastCalledWith(expect.objectContaining({
+      agent: "claude_desktop",
+      routing: expect.objectContaining({ change: { ClaudeDesktopSetRouting: "sub" } }),
+      videoEnabled: true,
+    }));
+  } finally {
+    prepare.mockRestore();
+  }
+});
+
 it("keeps the Claude Code video choice in all three modes and retries only the failed step", async () => {
   const user = userEvent.setup();
   launch("all_agents", "/agents/claude");

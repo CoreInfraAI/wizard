@@ -151,6 +151,13 @@ impl PreparedPlan {
                         "Удалит настройки прокси Wizard из ChatGPT."
                     }.to_owned(),
                 },
+                PreparedStep::SetClaudeDesktop1pVideo { enabled, .. } => PreparedStepInfo {
+                    description: if *enabled {
+                        "Зарегистрирует MCP-сервер coreinfra_video в Claude Desktop для подписки Claude."
+                    } else {
+                        "Удалит MCP-сервер coreinfra_video, добавленный Wizard, из настроек Claude Desktop для подписки."
+                    }.to_owned(),
+                },
                 PreparedStep::SetCodexProxyEnabled { enabled } => PreparedStepInfo {
                     description: if *enabled {
                         "Включит локальный прокси ChatGPT в Wizard."
@@ -252,6 +259,10 @@ impl PreparedPlan {
                 *step = PreparedStep::ChangeFile {
                     change: codex::prepare_desktop_proxy(path.clone(), *enabled)?,
                 };
+            } else if let PreparedStep::SetClaudeDesktop1pVideo { path, enabled } = step {
+                *step = PreparedStep::ChangeFile {
+                    change: claude_desktop::prepare_1p_video(path.clone(), *enabled)?,
+                };
             }
         }
 
@@ -338,6 +349,13 @@ pub enum PreparedStep {
         path: PathBuf,
         enabled: bool,
     },
+    /// Read Claude Desktop's 1p configuration after shutdown; change only the
+    /// Wizard-owned `coreinfra_video` server.
+    #[serde(rename = "set_claude_desktop_1p_video")]
+    SetClaudeDesktop1pVideo {
+        path: PathBuf,
+        enabled: bool,
+    },
     /// Saves `ChatGPT`'s demand for the local proxy, without an agent credential.
     SetCodexProxyEnabled {
         enabled: bool,
@@ -411,6 +429,9 @@ impl PreparedStep {
         match self {
             Self::SetChatGptProxy { .. } => {
                 anyhow::bail!("ChatGPT Preferences must be prepared after closing the app")
+            }
+            Self::SetClaudeDesktop1pVideo { .. } => {
+                anyhow::bail!("Claude Desktop configuration must be prepared after closing the app")
             }
             Self::SetClaudeProxyEnabled { .. } | Self::SetCodexProxyEnabled { .. } => {
                 anyhow::bail!("Desktop proxy requires the GUI")

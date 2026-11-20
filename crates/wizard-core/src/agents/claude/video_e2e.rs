@@ -25,6 +25,7 @@ async fn claude_code_skill_lists_public_video_models() -> Result<()> {
         &registration,
         RoutingMode::Hub,
         "fixture-inference-key",
+        true,
     )?
     .apply_with_backup(
         None,

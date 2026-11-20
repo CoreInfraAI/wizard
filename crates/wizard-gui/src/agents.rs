@@ -217,6 +217,8 @@ impl AgentChange {
 pub(crate) async fn prepare_agent_change(
     change: AgentChange,
     token: Option<TokenChoice>,
+    // The draft's video choice, applied right after this plan; otherwise the saved grant.
+    video: Option<bool>,
     app: tauri::AppHandle,
 ) -> Result<PreparedAgentChange, String> {
     let (name, agent) = match &change {
@@ -256,9 +258,14 @@ pub(crate) async fn prepare_agent_change(
         AgentChange::CodexSetRouting(mode) => {
             codex::prepare_routing_for_gui(mode, &token, &settings)
         }
-        AgentChange::ClaudeSetRouting(mode) => claude::prepare_routing(mode, &token),
+        AgentChange::ClaudeSetRouting(mode) => claude::prepare_routing(
+            mode,
+            &token,
+            video.unwrap_or(settings.video.claude.is_some()),
+        ),
         AgentChange::ClaudeDesktopSetRouting(mode) => {
-            let mut plan = claude_desktop::prepare_routing(mode, &token)?;
+            let video = video.unwrap_or(settings.video.claude_desktop.is_some());
+            let mut plan = claude_desktop::prepare_routing(mode, &token, video)?;
             plan.restart_desktop(
                 wizard_core::agents::desktop_install::DesktopApp::Claude,
                 settings.last_paths.claude_desktop.as_deref(),
@@ -404,7 +411,10 @@ pub(crate) async fn apply_direct_change(
                     let _guard = settings::lock_state()?;
                     codex::restore_backup(id, &settings::get_state(&restore_app)?)
                 }
-                BackupAgent::Claude => claude::restore_backup(id),
+                BackupAgent::Claude => {
+                    let video = settings::get_state(&restore_app)?.video.claude.is_some();
+                    claude::restore_backup(id, video)
+                }
                 BackupAgent::ClaudeDesktop => unreachable!(),
             })
             .await

@@ -47,7 +47,7 @@ export type ConnectionPlan = {
 
 export async function prepareAgentChange({ agent, routing, videoEnabled }: ConnectionDraft): Promise<ConnectionPlan> {
   const prepared = routing
-    ? await invoke<PreparedAgentChange>("prepare_agent_change", routing)
+    ? await invoke<PreparedAgentChange>("prepare_agent_change", { ...routing, video: videoEnabled })
     : undefined;
   return { agent, routing: prepared, videoEnabled };
 }

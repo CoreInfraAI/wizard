@@ -45,7 +45,8 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         AgentDetection::Error(error) => return AgentDetection::Error(error),
     };
 
-    let (routing_mode, token, proxy_needs_apply) = match read_routing() {
+    let video = settings.video.claude_desktop.is_some();
+    let (routing_mode, token, proxy_needs_apply) = match read_routing(video) {
         Ok(routing) => routing,
         Err(error) => return AgentDetection::Error(format!("{error:#}")),
     };
@@ -55,6 +56,43 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         token,
         proxy_needs_apply,
     })
+}
+
+/// The 1p configuration, where Claude Desktop in 1p mode reads local MCP servers.
+fn config_1p_path() -> Result<PathBuf> {
+    // macOS: ~/Library/Application Support, Windows: %APPDATA%, Linux: ~/.config.
+    std::path::absolute(
+        dirs::config_dir()
+            .context("failed to resolve Claude Desktop configuration directory")?
+            .join("Claude/claude_desktop_config.json"),
+    )
+    .context("failed to resolve Claude Desktop configuration path")
+}
+
+/// Reads the 1p configuration now; call it while Claude Desktop is closed when it may run.
+/// Only the Wizard-owned `coreinfra_video` entry changes.
+pub(crate) fn prepare_1p_video(path: PathBuf, enable: bool) -> Result<FileChange> {
+    video_1p_change(path, enable, &video::Registration::for_wizard()?)
+}
+
+fn video_1p_change(
+    path: PathBuf,
+    enable: bool,
+    registration: &video::Registration,
+) -> Result<FileChange> {
+    let mut change = FileChange::read(path)?;
+    if !enable && change.before().content().is_none() {
+        return Ok(change);
+    }
+    json::update(&mut change.after, |config| {
+        registration.update_1p_config(
+            config
+                .as_object_mut()
+                .context("Claude Desktop configuration must be an object")?,
+            enable,
+        )
+    })?;
+    Ok(change)
 }
 
 fn config_library() -> Result<PathBuf> {
@@ -175,19 +213,32 @@ fn prepare_restore_at(dir: &Path, manager: &BackupManager, id: u32) -> Result<Pr
 }
 
 /// Hub reads the profile's key. Sub has no agent key; Wizard owns proxy credentials.
-fn read_routing() -> Result<(RoutingMode, Option<AgentToken>, bool)> {
-    read_profile(&config_library()?, true)
+/// `video`: whether Wizard holds a video grant for Claude Desktop.
+fn read_routing(video: bool) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
+    let (mode, token, needs_apply) = read_profile(&config_library()?, Some(video))?;
+    let config_1p_needs_apply =
+        prepare_1p_video(config_1p_path()?, video && mode == RoutingMode::Sub)
+            .map_or(true, |change| change.is_changed());
+    Ok((mode, token, needs_apply || config_1p_needs_apply))
 }
 
-pub(crate) fn configured_token() -> Result<Option<String>> {
-    Ok(read_profile(&config_library()?, false)?
-        .1
-        .map(AgentToken::into_secret))
+/// The key for paid video calls: the profile's key in Hub; in Sub, which has no agent key,
+/// Wizard's own proxy key from its personal Hub. Never log it.
+pub(crate) fn video_token() -> Result<Option<String>> {
+    let (mode, token, _) = read_profile(&config_library()?, None)?;
+    Ok(match mode {
+        RoutingMode::Hub => token.map(AgentToken::into_secret),
+        RoutingMode::Sub => wizard_settings::load_from_file()?
+            .proxy_token
+            .filter(|token| !token.is_empty()),
+        RoutingMode::Disabled => None,
+    })
 }
 
+/// `video_grant`: `Some` also checks the Hub video registration against the grant.
 fn read_profile(
     dir: &Path,
-    check_registration: bool,
+    video_grant: Option<bool>,
 ) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
     let meta = json::read(&dir.join("_meta.json"))?;
@@ -209,17 +260,17 @@ fn read_profile(
         let token = config["inferenceGatewayApiKey"]
             .as_str()
             .and_then(|s| AgentToken::new(s.to_owned()));
-        if !check_registration {
+        let Some(video_grant) = video_grant else {
             return Ok((RoutingMode::Hub, token, proxy_needs_apply));
-        }
+        };
         let mut updated = config.clone();
         let registration = video::Registration::for_wizard()?;
         let needs_video = registration
-            .update(
+            .update_3p_profile(
                 updated
                     .as_object_mut()
                     .context("Invalid Claude Desktop profile")?,
-                true,
+                video_grant,
             )
             .is_err()
             || updated != config;
@@ -231,20 +282,43 @@ fn read_profile(
 
 /// Prepare a local profile update without writing files or restarting Claude. Hub writes `token`
 /// to the profile; Hub and Sub enable local proxy demand; Disabled ignores it.
-pub fn prepare_routing(mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
+/// `video`: whether Wizard holds a video grant for Claude Desktop.
+pub fn prepare_routing(mode: RoutingMode, token: &str, video: bool) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
-    prepare_routing_at(&config_library()?, mode, token)
+    prepare_with_video(
+        &config_library()?,
+        &config_1p_path()?,
+        mode,
+        token,
+        video,
+        &video::Registration::for_wizard()?,
+    )
 }
 
+#[cfg(test)]
 fn prepare_routing_at(dir: &Path, mode: RoutingMode, token: &str) -> Result<PreparedPlan> {
-    prepare_with_video(dir, mode, token, &video::Registration::for_wizard()?)
+    let config_1p = dir
+        .parent()
+        .and_then(Path::parent)
+        .context("Missing test profile directory")?
+        .join("Claude/claude_desktop_config.json");
+    prepare_with_video(
+        dir,
+        &config_1p,
+        mode,
+        token,
+        false,
+        &video::Registration::for_wizard()?,
+    )
 }
 
 fn prepare_with_video(
     dir: &Path,
+    config_1p: &Path,
     mode: RoutingMode,
     token: &str,
+    video_grant: bool,
     video: &video::Registration,
 ) -> Result<PreparedPlan> {
     let mut meta = FileChange::read(dir.join("_meta.json"))?;
@@ -287,7 +361,7 @@ fn prepare_with_video(
                 .as_object_mut()
                 .context("Claude Desktop configuration must be an object")?;
 
-            video.update(object, mode == RoutingMode::Hub)?;
+            video.update_3p_profile(object, video_grant && mode == RoutingMode::Hub)?;
             // The complete previous profile is backed up before applying this plan.
             // Clear provider-specific credentials and proxy overrides before setting the mode.
             object
@@ -320,19 +394,26 @@ fn prepare_with_video(
     })?;
 
     // Publish a newly created profile before selecting it. Keep unchanged steps too.
-    Ok(PreparedPlan::new(
-        PreparedAgent::ClaudeDesktop,
-        vec![
-            PreparedStep::ChangeFile { change: config },
-            PreparedStep::ChangeFile { change: meta },
-            PreparedStep::ChangeFile {
-                change: preferences,
-            },
-            PreparedStep::SetClaudeProxyEnabled {
-                enabled: mode != RoutingMode::Disabled,
-            },
-        ],
-    ))
+    let mut steps = vec![
+        PreparedStep::ChangeFile { change: config },
+        PreparedStep::ChangeFile { change: meta },
+        PreparedStep::ChangeFile {
+            change: preferences,
+        },
+    ];
+    // Claude Desktop rewrites its 1p configuration while running: read it again after
+    // closing the app. Preparing here only rejects a foreign entry and skips a no-op.
+    let enabled = video_grant && mode == RoutingMode::Sub;
+    if video_1p_change(config_1p.to_owned(), enabled, video)?.is_changed() {
+        steps.push(PreparedStep::SetClaudeDesktop1pVideo {
+            path: config_1p.to_owned(),
+            enabled,
+        });
+    }
+    steps.push(PreparedStep::SetClaudeProxyEnabled {
+        enabled: mode != RoutingMode::Disabled,
+    });
+    Ok(PreparedPlan::new(PreparedAgent::ClaudeDesktop, steps))
 }
 
 #[cfg(test)]
@@ -373,7 +454,7 @@ mod tests {
                 |_| panic!("unexpected ChatGPT proxy"),
             )?;
             assert!(activated);
-            let (detected, token, needs_apply) = read_profile(&dir, true)?;
+            let (detected, token, needs_apply) = read_profile(&dir, Some(false))?;
             assert_eq!(detected, mode);
             assert!(!needs_apply);
             assert_eq!(
@@ -462,6 +543,141 @@ mod tests {
     }
 
     #[test]
+    fn subscription_video_lives_in_the_1p_config_and_follows_the_mode() -> Result<()> {
+        let fixture = Fixture::new("gateway")?;
+        let config_1p = fixture
+            .root
+            .path()
+            .join("Claude/claude_desktop_config.json");
+        std::fs::create_dir_all(config_1p.parent().context("1p configuration directory")?)?;
+        let other = json!({"command": "other-mcp", "args": []});
+        std::fs::write(
+            &config_1p,
+            json!({"preferences": {"sidebarMode": "a"}, "mcpServers": {"other": other}})
+                .to_string(),
+        )?;
+        let registration = video::Registration::for_wizard()?;
+        let ours = json!({
+            "command": registration.command,
+            "args": [crate::video::stdio::ARG, registration.port.to_string(), registration.headers],
+        });
+        let prepare = |mode, video| {
+            prepare_with_video(
+                &fixture.dir,
+                &config_1p,
+                mode,
+                "token",
+                video,
+                &registration,
+            )
+        };
+        let video_step = |plan: &PreparedPlan| {
+            plan.steps().iter().find_map(|step| match step {
+                PreparedStep::SetClaudeDesktop1pVideo { enabled, .. } => Some(*enabled),
+                _ => None,
+            })
+        };
+        let read_config_1p = || json::read(&config_1p);
+
+        // No grant, no change: the 1p configuration is not touched.
+        assert_eq!(video_step(&prepare(RoutingMode::Sub, false)?), None);
+
+        let plan = prepare(RoutingMode::Sub, true)?;
+        assert_eq!(video_step(&plan), Some(true));
+        // Claude Desktop rewrites its 1p configuration while it runs.
+        std::fs::write(
+            &config_1p,
+            json!({"preferences": {"sidebarMode": "b"}, "mcpServers": {"other": other}})
+                .to_string(),
+        )?;
+        fixture.apply(plan, true)?;
+        assert_eq!(
+            read_config_1p()?["mcpServers"],
+            json!({"other": other, "coreinfra_video": ours})
+        );
+        assert_eq!(read_config_1p()?["preferences"]["sidebarMode"], "b");
+        assert_eq!(video_step(&prepare(RoutingMode::Sub, true)?), None);
+        // The 1p configuration is Claude's own state, never part of a Wizard backup.
+        assert!(!AgentKind::ClaudeDesktop.backs_up(&config_1p));
+
+        // Hub keeps its registration in the profile instead.
+        let plan = prepare(RoutingMode::Hub, true)?;
+        assert_eq!(video_step(&plan), Some(false));
+        fixture.apply(plan, true)?;
+        assert_eq!(read_config_1p()?["mcpServers"], json!({"other": other}));
+        assert_eq!(read_config_1p()?["preferences"]["sidebarMode"], "b");
+
+        let foreign = json!({"command": "user-video", "args": []});
+        std::fs::write(
+            &config_1p,
+            json!({"mcpServers": {"coreinfra_video": foreign}}).to_string(),
+        )?;
+        assert!(prepare(RoutingMode::Sub, true).is_err());
+        assert_eq!(video_step(&prepare(RoutingMode::Disabled, false)?), None);
+        assert_eq!(read_config_1p()?["mcpServers"]["coreinfra_video"], foreign);
+
+        std::fs::remove_file(&config_1p)?;
+        assert_eq!(video_step(&prepare(RoutingMode::Hub, true)?), None);
+        assert!(!config_1p.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn hub_video_registration_follows_the_grant() -> Result<()> {
+        let fixture = Fixture::new("gateway")?;
+        let config_1p = fixture
+            .root
+            .path()
+            .join("Claude/claude_desktop_config.json");
+        let registration = video::Registration::for_wizard()?;
+        let prepare = |grant| {
+            prepare_with_video(
+                &fixture.dir,
+                &config_1p,
+                RoutingMode::Hub,
+                "token",
+                grant,
+                &registration,
+            )
+        };
+        let example = json!({"name":"example", "transport":"http", "url":"https://mcp.example"});
+        // (MCP servers named coreinfra_video, Wizard marketplaces) in the profile.
+        let video_entries = || -> Result<(usize, usize)> {
+            let profile = json::read(&fixture.files[0])?;
+            let count = |key: &str, field: &str, value: &str| {
+                profile[key].as_array().map_or(0, |entries| {
+                    entries.iter().filter(|e| e[field] == value).count()
+                })
+            };
+            assert_eq!(profile["managedMcpServers"][0], example);
+            Ok((
+                count("managedMcpServers", "name", "coreinfra_video"),
+                count(
+                    "allowedPluginMarketplaces",
+                    "expectedName",
+                    "coreinfra-wizard",
+                ),
+            ))
+        };
+
+        // Hub without a grant registers nothing, and detection agrees.
+        fixture.apply(prepare(false)?, true)?;
+        assert_eq!(video_entries()?, (0, 0));
+        assert!(!read_profile(&fixture.dir, Some(false))?.2);
+        assert!(read_profile(&fixture.dir, Some(true))?.2);
+
+        fixture.apply(prepare(true)?, true)?;
+        assert_eq!(video_entries()?, (1, 1));
+        assert!(!read_profile(&fixture.dir, Some(true))?.2);
+        assert!(read_profile(&fixture.dir, Some(false))?.2);
+
+        // Revoking the grant removes only Wizard's entries.
+        fixture.apply(prepare(false)?, true)?;
+        assert_eq!(video_entries()?, (0, 0));
+        Ok(())
+    }
+
+    #[test]
     fn foreign_connections_are_replaced_and_full_configuration_can_be_restored() -> Result<()> {
         for provider in ["gateway", "bedrock", "vertex"] {
             for mode in [RoutingMode::Hub, RoutingMode::Sub, RoutingMode::Disabled] {
@@ -492,7 +708,7 @@ mod tests {
                 assert!(config.get("inferenceBedrockRegion").is_none());
                 assert!(config.get("egressProxyPacUrl").is_none());
                 assert!(config.get("egressProxyAuth").is_none());
-                assert_eq!(read_profile(&fixture.dir, true)?.0, mode);
+                assert_eq!(read_profile(&fixture.dir, Some(false))?.0, mode);
                 if mode == RoutingMode::Hub {
                     assert_eq!(config["inferenceGatewayApiKey"], "new-token");
                     assert_eq!(config["inferenceGatewayBaseUrl"], HUB_URL);
@@ -539,7 +755,7 @@ mod tests {
             let mut profile = json::read(&fixture.files[0])?;
             profile["egressProxyUrl"] = json!(RETIRED_PROXY_URL);
             std::fs::write(&fixture.files[0], profile.to_string())?;
-            let (detected, agent_token, needs_apply) = read_profile(&fixture.dir, true)?;
+            let (detected, agent_token, needs_apply) = read_profile(&fixture.dir, Some(false))?;
             assert_eq!(detected, mode);
             assert!(needs_apply);
             assert_eq!(agent_token.is_some(), mode == RoutingMode::Hub);
@@ -548,7 +764,7 @@ mod tests {
 
             fixture.apply(prepare_routing_at(&fixture.dir, mode, token)?, true)?;
             assert_eq!(fixture.manager().get_backups()?.len(), 2);
-            assert!(!read_profile(&fixture.dir, true)?.2);
+            assert!(!read_profile(&fixture.dir, Some(false))?.2);
 
             // Restoring the backup of the retired configuration keeps the two-port layout.
             fixture.apply(
@@ -559,7 +775,8 @@ mod tests {
                 json::read(&fixture.files[0])?["egressProxyUrl"],
                 "http://127.0.0.1:33787"
             );
-            let (restored_mode, restored_token, needs_apply) = read_profile(&fixture.dir, true)?;
+            let (restored_mode, restored_token, needs_apply) =
+                read_profile(&fixture.dir, Some(false))?;
             assert_eq!(restored_mode, mode);
             assert!(!needs_apply);
             assert_eq!(
@@ -609,7 +826,10 @@ mod tests {
         )?;
         assert!(!created.exists());
         assert!(fixture.files.iter().all(|path| !path.exists()));
-        assert_eq!(read_profile(&fixture.dir, true)?.0, RoutingMode::Disabled);
+        assert_eq!(
+            read_profile(&fixture.dir, Some(false))?.0,
+            RoutingMode::Disabled
+        );
         Ok(())
     }
 
@@ -738,7 +958,8 @@ mod tests {
                     std::fs::write(&profile_path, original.to_string())?;
                     std::fs::write(&preferences_path, r#"{"deploymentMode":"3p"}"#)?;
 
-                    let (detected, token, proxy_needs_apply) = read_profile(&dir, true)?;
+                    // With a video grant, a manual Hub profile also lacks Wizard's registration.
+                    let (detected, token, proxy_needs_apply) = read_profile(&dir, Some(true))?;
                     assert_eq!(detected, RoutingMode::Hub);
                     assert!(proxy_needs_apply);
                     assert_eq!(
@@ -769,7 +990,7 @@ mod tests {
                     );
                     assert_eq!(updated["autoModeEnabled"], true);
                     assert_eq!(json::read(&dir.join("_meta.json"))?, meta);
-                    assert_eq!(read_profile(&dir, true)?.0, mode);
+                    assert_eq!(read_profile(&dir, Some(false))?.0, mode);
                     if mode == RoutingMode::Hub {
                         assert_eq!(updated["inferenceGatewayBaseUrl"], HUB_URL);
                         assert_eq!(updated["inferenceGatewayApiKey"], "wizard-token");
