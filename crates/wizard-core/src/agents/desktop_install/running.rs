@@ -67,7 +67,7 @@ fn run_closed(
     }
 }
 
-fn close_existing(app: DesktopApp, last_path: Option<&Path>) -> Result<bool> {
+pub(super) fn close_existing(app: DesktopApp, last_path: Option<&Path>) -> Result<bool> {
     #[cfg(not(target_os = "linux"))]
     let _ = last_path;
     #[cfg(target_os = "macos")]
@@ -204,7 +204,10 @@ pub fn running_apps(target: &Target) -> Vec<&'static str> {
         Vec::new()
     };
     #[cfg(target_os = "linux")]
-    let running = if target.app == super::DesktopApp::Claude && !linux::processes().is_empty() {
+    let running = if match target.app {
+        DesktopApp::Claude => !linux::claude_processes().is_empty(),
+        DesktopApp::ChatGpt => linux::chatgpt_running(),
+    } {
         vec![target.app.product()]
     } else {
         Vec::new()
@@ -280,9 +283,11 @@ impl Reopen {
         };
         #[cfg(target_os = "linux")]
         let reopen = Self {
-            command: (target.app == super::DesktopApp::Claude)
-                .then(linux::main_command)
-                .flatten(),
+            command: match target.app {
+                DesktopApp::Claude => linux::claude_main_command(),
+                DesktopApp::ChatGpt => linux::chatgpt_running()
+                    .then(|| (PathBuf::from("/usr/bin/chatgpt"), Vec::new())),
+            },
         };
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         let reopen = {
@@ -343,7 +348,7 @@ impl Reopen {
 
         #[cfg(target_os = "linux")]
         if let Some((executable, arguments)) = self.command
-            && linux::processes().is_empty()
+            && running_apps(target).is_empty()
         {
             match linux::open(&executable, &arguments) {
                 Ok(()) => log::info!("{} opened again after installation", target.app.product()),
@@ -419,7 +424,8 @@ fn open_application(app: DesktopApp, path: Option<&Path>) -> anyhow::Result<()> 
     let opened = {
         let path = match path {
             Some(path) => path,
-            None if app == DesktopApp::Claude => Path::new(linux::LAUNCHER),
+            None if app == DesktopApp::Claude => Path::new(linux::CLAUDE_LAUNCHER),
+            None if app == DesktopApp::ChatGpt => Path::new("/usr/bin/chatgpt"),
             None => anyhow::bail!("Не указан путь приложения"),
         };
         linux::open(path, &[])
@@ -625,9 +631,9 @@ mod linux {
     };
 
     /// Where the Claude Desktop package installs; the installation script checks the same place.
-    const DIRECTORY: &str = "/usr/lib/claude-desktop";
+    const CLAUDE_DIRECTORY: &str = "/usr/lib/claude-desktop";
     /// What the package's menu entry runs, as `Exec=claude-desktop %U`.
-    pub(super) const LAUNCHER: &str = "/usr/bin/claude-desktop";
+    pub(super) const CLAUDE_LAUNCHER: &str = "/usr/bin/claude-desktop";
 
     pub(super) struct Process {
         handle: Option<fs::File>,
@@ -645,9 +651,12 @@ mod linux {
         })
     }
 
-    /// Inspect only Claude processes with the same real UID as Wizard. A readable
-    /// executable link alone does not establish ownership (e.g. a privileged GUI).
-    pub(super) fn processes() -> Vec<Process> {
+    pub(super) fn chatgpt_running() -> bool {
+        find_current_user_app_processes(&|p| p == Path::new("/usr/lib/chatgpt/ChatGPT"))
+            .is_ok_and(|v| !v.is_empty())
+    }
+
+    pub(super) fn claude_processes() -> Vec<Process> {
         find_current_user_app_processes(&claude_executable).unwrap_or_else(|_| {
             log::warn!("process list could not be read");
             Vec::new()
@@ -655,7 +664,7 @@ mod linux {
     }
 
     pub(super) fn claude_executable(path: &Path) -> bool {
-        path.starts_with(DIRECTORY)
+        path.starts_with(CLAUDE_DIRECTORY)
     }
 
     pub(super) fn chatgpt_executable(launcher: &Path) -> Result<PathBuf> {
@@ -684,6 +693,7 @@ mod linux {
         }
     }
 
+    /// A readable executable link alone does not establish ownership; check the real UID too.
     fn find_current_user_app_processes(matches: &impl Fn(&Path) -> bool) -> Result<Vec<Process>> {
         use std::os::fd::AsRawFd as _;
 
@@ -767,8 +777,8 @@ mod linux {
     }
 
     /// Executable and arguments of the Electron main process.
-    pub(super) fn main_command() -> Option<(PathBuf, Vec<OsString>)> {
-        processes().iter().find_map(command)
+    pub(super) fn claude_main_command() -> Option<(PathBuf, Vec<OsString>)> {
+        claude_processes().iter().find_map(command)
     }
 
     /// Executable and arguments of a main process. Helper processes have `--type=`, possibly

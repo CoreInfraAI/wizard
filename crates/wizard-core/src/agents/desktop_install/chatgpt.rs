@@ -2,7 +2,7 @@
 //! `OpenAI`'s Sparkle appcast, Windows release feed and installation layout.
 //! `ChatGPT` Classic (`com.openai.chat`) is a different application.
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", test))]
 use super::DesktopApp;
 #[cfg(target_os = "windows")]
 use super::command_output;
@@ -62,7 +62,12 @@ pub(super) const SPEC: AppSpec = AppSpec {
 };
 
 pub(super) fn unsupported_reason() -> Option<String> {
-    (!cfg!(any(target_os = "macos", target_os = "windows"))).then(|| UNSUPPORTED.to_owned())
+    (!cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux"
+    )))
+    .then(|| UNSUPPORTED.to_owned())
 }
 
 /// Whether this Mac has Apple Silicon, also when an x64 Wizard runs under Rosetta.
@@ -225,12 +230,33 @@ if ($null -eq $package) { 'null' } else {
     Ok(Target::new(DesktopApp::ChatGpt, None, version))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+pub(super) fn detect_target() -> Result<Target> {
+    use crate::agents::{
+        AgentDetection,
+        detection::{self, DesktopAgent},
+    };
+    let version = match detection::detect_desktop(DesktopAgent::Codex, None) {
+        AgentDetection::Found(info) => Some(Version::parse(
+            &info
+                .version
+                .context("Не удалось определить версию пакета ChatGPT")?,
+        )?),
+        AgentDetection::NotFound => None,
+        AgentDetection::Error(message) => bail!("{message}"),
+    };
+    Ok(Target::new(DesktopApp::ChatGpt, None, version))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub(super) fn detect_target() -> Result<Target> {
     bail!(UNSUPPORTED)
 }
 
 pub(super) async fn check_release(token: &str, target: Target) -> Result<Option<Release>> {
+    if cfg!(target_os = "linux") {
+        return super::apt::check_release(token, target).await;
+    }
     let client = client(token)?;
     if cfg!(target_os = "windows") {
         let architecture = windows_architecture()?;

@@ -1,5 +1,6 @@
 //! Desktop application release checks, downloads and installation. No settings writes or UI state.
 
+mod apt;
 mod chatgpt;
 mod claude;
 mod download;
@@ -14,7 +15,7 @@ pub use running::{open_existing, open_first_install, running_apps};
 
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{app_is_running, read_app_version};
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 use anyhow::bail;
 use anyhow::{Context as _, Result, anyhow, ensure};
 use core::time::Duration;
@@ -312,6 +313,58 @@ async fn fetch_feed(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>>
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+#[derive(Deserialize)]
+struct Sha256Payload {
+    version: String,
+    url: String,
+    sha256: String,
+    size: u64,
+}
+
+fn validate_payload(
+    version: Version,
+    mut payload: Sha256Payload,
+    target: Target,
+) -> Result<Release> {
+    ensure!(
+        payload.version == version.to_string(),
+        "Версии в ответе сервера не совпадают"
+    );
+
+    let url = Url::parse(&payload.url).context("Некорректный адрес архива")?;
+    ensure!(
+        url.scheme() == "https"
+            && url.host_str()
+                == Some(match target.app {
+                    DesktopApp::Claude => "downloads.claude.ai",
+                    DesktopApp::ChatGpt => "persistent.oaistatic.com",
+                })
+            && url.port().is_none()
+            && url.username().is_empty()
+            && url.password().is_none(),
+        "Недопустимый адрес архива"
+    );
+
+    ensure!(
+        payload.sha256.len() == 64 && payload.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Некорректный SHA-256 архива"
+    );
+    ensure!(
+        (1..=MAX_DOWNLOAD).contains(&payload.size),
+        "Недопустимый размер архива"
+    );
+
+    payload.sha256.make_ascii_lowercase();
+    Ok(Release {
+        display_version: version.to_string(),
+        version,
+        target,
+        url,
+        integrity: Integrity::Sha256(payload.sha256),
+        size: Some(payload.size),
+    })
 }
 
 /// Accepts only an HTTPS URL on `host`, without credentials or a custom port, whose path starts
@@ -1074,9 +1127,14 @@ fn install_release_inner(
     #[cfg(target_os = "linux")]
     match download.release.target.app {
         DesktopApp::Claude => {
-            claude::install_linux(&archive, &download.release, &download.sha256, close)?;
+            apt::install(&archive, &download.release, &download.sha256, close)?;
         }
-        DesktopApp::ChatGpt => bail!("ChatGPT не выпускается для этой системы"),
+        DesktopApp::ChatGpt => {
+            if close && !running::running_apps(&download.release.target).is_empty() {
+                running::close_existing(DesktopApp::ChatGpt, None)?;
+            }
+            apt::install(&archive, &download.release, &download.sha256, false)?;
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     bail!(
