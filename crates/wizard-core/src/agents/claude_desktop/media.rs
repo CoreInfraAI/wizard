@@ -11,7 +11,7 @@ const REPO: &str = "CoreInfraAI/wizard";
 // Until then Desktop installs the 1.0.10 `coreinfra-video` plugin from this revision.
 const REVISION: &str = "b75477dadb850f059279c5a7b46ec5ed291b5e13";
 const SERVER: &str = "coreinfra_media";
-const CATALOG_TOOLS: &[&str] = &["video_models"];
+const CATALOG_TOOLS: &[&str] = &["video_models", "speech_models", "transcription_models"];
 
 pub(super) struct Registration {
     pub(super) command: PathBuf,

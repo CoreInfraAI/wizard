@@ -9,8 +9,9 @@ import subprocess
 import sys
 import threading
 
-MEDIA_SKILLS = {"coreinfra-video"}
-MEDIA_TOOLS = {"video_models", "video_create", "video_result"}
+MEDIA_SKILLS = {"coreinfra-video", "coreinfra-speech", "coreinfra-transcription"}
+MEDIA_TOOLS = {"video_models", "video_create", "video_result", "speech_models", "speech_create",
+               "transcription_models", "transcription_create"}
 
 
 def receive(channel, timeout, operation):
@@ -110,6 +111,7 @@ def native_client(profile):
 
 
 async def python_client(profile, existing_job):
+    import base64
     import tomllib
     import httpx2
     from mcp import Client
@@ -123,6 +125,21 @@ async def python_client(profile, existing_job):
             assert {t.name for t in (await wizard.list_tools()).tools} == MEDIA_TOOLS
             models = await wizard.call_tool("video_models", {})
             assert len(models.structured_content["models"]) == 2
+            voices = await wizard.call_tool("speech_models", {})
+            assert not voices.is_error, voices
+            speech = voices.structured_content["models"]
+            assert len(speech) == 2 and speech[0]["id"] == "example/voice" and speech[0]["voice_count"] == 3, speech
+            spoken = await wizard.call_tool("speech_create", {"model": "example/voice", "input": "python speech"})
+            assert not spoken.is_error and Path(spoken.structured_content["path"]).is_file(), spoken
+            scribes = await wizard.call_tool("transcription_models", {})
+            assert not scribes.is_error, scribes
+            assert [m["id"] for m in scribes.structured_content["models"]] == ["example/scribe"], scribes
+            transcript = await wizard.call_tool("transcription_create", {
+                "model": "example/scribe",
+                "audio_base64": base64.b64encode(b"RIFF fixture wav").decode(),
+                "format": "wav",
+            })
+            assert not transcript.is_error and transcript.structured_content["text"] == "привет", transcript
             for _ in range(2):
                 result = await wizard.call_tool("video_result", {"job": existing_job, "index": 1})
             assert Path(result.structured_content["path"]).read_bytes() == mp4

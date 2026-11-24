@@ -57,7 +57,7 @@ export function MediaConnection({ media, disabled }: {
       <div className="agent-connection-options">
         {status && (
           <SwitchField disabled={disabled}>
-            <Label>Подключить <Code className="whitespace-nowrap">coreinfra-media</Code> для видео-моделей</Label>
+            <Label>Подключить <Code className="whitespace-nowrap">coreinfra-media</Code> для видео, озвучки и распознавания речи</Label>
             <Switch checked={enabled} onChange={media.setEnabled} />
           </SwitchField>
         )}

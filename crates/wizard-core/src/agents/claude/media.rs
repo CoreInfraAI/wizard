@@ -8,13 +8,31 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 const SERVER: &str = "coreinfra_media";
-const SKILLS: &Skills = &[(
-    "coreinfra-video",
-    &[(
-        "SKILL.md",
-        include_str!("../../../../../plugins/coreinfra-media/skills/coreinfra-video/SKILL.md"),
-    )],
-)];
+const SKILLS: &Skills = &[
+    (
+        "coreinfra-video",
+        &[(
+            "SKILL.md",
+            include_str!("../../../../../plugins/coreinfra-media/skills/coreinfra-video/SKILL.md"),
+        )],
+    ),
+    (
+        "coreinfra-speech",
+        &[(
+            "SKILL.md",
+            include_str!("../../../../../plugins/coreinfra-media/skills/coreinfra-speech/SKILL.md"),
+        )],
+    ),
+    (
+        "coreinfra-transcription",
+        &[(
+            "SKILL.md",
+            include_str!(
+                "../../../../../plugins/coreinfra-media/skills/coreinfra-transcription/SKILL.md"
+            ),
+        )],
+    ),
+];
 
 /// The registration Wizard writes, and the helper of the 1.0.10 one it replaces.
 #[cfg_attr(test, derive(Debug))]

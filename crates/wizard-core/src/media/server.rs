@@ -1,4 +1,7 @@
-use super::{Create, GetResult, MediaHub, MediaKey};
+use super::{
+    Create, GetResult, MediaHub, MediaKey,
+    audio::{SpeechCreate, SpeechModels, TranscriptionCreate},
+};
 use alloc::sync::Arc;
 use anyhow::{Context as _, Result, bail, ensure};
 use core::{convert::Infallible, future::Future, net::SocketAddr};
@@ -59,6 +62,27 @@ impl Tools {
                     serde_json::from_value(args).context("Invalid video_result arguments")?;
                 self.hub.result(input, self.key.as_deref()).await
             }
+            "speech_models" => {
+                let input: SpeechModels =
+                    serde_json::from_value(args).context("Invalid speech_models arguments")?;
+                self.hub.speech_models(input).await
+            }
+            "speech_create" => {
+                let input: SpeechCreate =
+                    serde_json::from_value(args).context("Invalid speech_create arguments")?;
+                self.hub.speech_create(input, self.key.as_deref()).await
+            }
+            "transcription_models" => {
+                serde_json::from_value::<NoArgs>(args)?;
+                self.hub.transcription_models().await
+            }
+            "transcription_create" => {
+                let input: TranscriptionCreate = serde_json::from_value(args)
+                    .context("Invalid transcription_create arguments")?;
+                self.hub
+                    .transcription_create(input, self.key.as_deref())
+                    .await
+            }
             _ => bail!("Unknown media tool"),
         }
     }
@@ -86,6 +110,14 @@ impl ServerHandler for Tools {
             Tool::new("video_create", "Submit one paid video generation. Keep the returned job to poll or resume. Never retry a submission with an uncertain outcome automatically.", schema_for_type::<Create>())
                 .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
             Tool::new("video_result", "Poll an existing job using its original connection. A completed download returns an absolute MP4 path.", schema_for_type::<GetResult>()),
+            Tool::new("speech_models", "List Hub text-to-speech models with formats and RUB per 1000 characters. Pass model to get its voices and parameters.", schema_for_type::<SpeechModels>())
+                .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new("speech_create", "Synthesize speech once (paid). Saves the audio to the user's Downloads and returns its absolute path. Never retry an uncertain request automatically.", schema_for_type::<SpeechCreate>())
+                .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
+            Tool::new("transcription_models", "List Hub speech-to-text models with RUB per minute of audio.", schema_for_type::<NoArgs>())
+                .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new("transcription_create", "Transcribe inline base64 audio once (paid) and return the transcript. Never retry an uncertain request automatically.", schema_for_type::<TranscriptionCreate>())
+                .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
         ])))
     }
 

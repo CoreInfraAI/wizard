@@ -11,7 +11,8 @@ from media_clients import MEDIA_SKILLS, codex_session, receive
 SERVER = "coreinfra_media"
 NAMESPACE = "mcp__" + SERVER
 # Read-only catalog tools requested one per inference round-trip, keyed by distinct call IDs.
-CATALOGS = [("call_video", "video_models")]
+CATALOGS = [("call_video", "video_models"), ("call_speech", "speech_models"),
+            ("call_transcription", "transcription_models")]
 
 
 class CatalogTurn(BaseHTTPRequestHandler):

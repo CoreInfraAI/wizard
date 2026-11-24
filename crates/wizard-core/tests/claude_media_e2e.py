@@ -9,7 +9,8 @@ import threading
 
 MODEL = "claude-sonnet-4-6"
 # Each skill is loaded before its read-only catalog tool, one per inference round-trip.
-MEDIA = [("video", "coreinfra-video", "video_models")]
+MEDIA = [("video", "coreinfra-video", "video_models"), ("speech", "coreinfra-speech", "speech_models"),
+         ("transcription", "coreinfra-transcription", "transcription_models")]
 TOOLS = ["mcp__coreinfra_media__" + tool for _, _, tool in MEDIA]
 
 
