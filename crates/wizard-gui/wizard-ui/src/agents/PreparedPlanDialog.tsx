@@ -29,15 +29,17 @@ function PlanSteps({ plan }: { plan: ConnectionPlan }) {
   // Keep the choice from the form visible alongside the first routing action.
   if (plan.mediaEnabled !== undefined) {
     const server = <Code>coreinfra_media</Code>;
-    const skill = <Code>coreinfra-video</Code>;
+    const skills = <>
+      <Code>coreinfra-video</Code>, <Code>coreinfra-speech</Code> и <Code>coreinfra-transcription</Code>
+    </>;
     if (plan.agent === "claude_desktop") {
       steps.unshift(plan.mediaEnabled
-        ? <>Подключит MCP-сервер {server} в Claude Desktop.</>
+        ? <>Подключит MCP-сервер {server} в Claude Desktop для видео, озвучки и распознавания речи.</>
         : <>Отключит MCP-сервер {server} в Claude Desktop.</>);
     } else {
       steps.unshift(plan.mediaEnabled
-        ? <>Установит скилл {skill} и подключит MCP-сервер {server}.</>
-        : <>Отключит MCP-сервер {server} и удалит скилл {skill}, установленный Wizard.</>);
+        ? <>Установит скиллы {skills} и подключит MCP-сервер {server}.</>
+        : <>Отключит MCP-сервер {server} и удалит скиллы {skills}, установленные Wizard.</>);
     }
   }
   const rows = steps.map((step, index) => <li key={index}><Text>{step}</Text></li>);

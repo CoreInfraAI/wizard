@@ -84,7 +84,7 @@ export const AdditionalModels: Story = {
   parameters: { scenario: "current", route: "/agents/codex" },
   play: async ({ canvas }) => {
     const panel = await canvas.findByRole("region", { name: "Дополнительные модели" });
-    const toggle = await within(panel).findByRole("switch", { name: "Подключить coreinfra-media для видео-моделей" });
+    const toggle = await within(panel).findByRole("switch", { name: "Подключить coreinfra-media для видео, озвучки и распознавания речи" });
     await expect(toggle).toBeChecked();
     panel.scrollIntoView({ block: "center" });
   },

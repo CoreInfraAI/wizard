@@ -915,7 +915,7 @@ mod tests {
         assert_eq!(servers[0]["name"], "coreinfra_media");
         assert_eq!(
             servers[0]["toolPolicy"],
-            json!({"video_create":"deny", "video_models":"deny"})
+            json!({"video_create":"deny", "video_models":"deny", "speech_models":"allow", "transcription_models":"allow"})
         );
         assert_eq!(servers[1], stdio_foreign);
         assert_eq!(servers.as_array().map(Vec::len), Some(2));

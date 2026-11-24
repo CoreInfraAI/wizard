@@ -411,6 +411,12 @@ mod tests {
         let dir = temp.path().join(".claude");
         let global = temp.path().join(".claude.json");
         let skill = dir.join("skills/coreinfra-video/SKILL.md");
+        let skills = [
+            "coreinfra-video",
+            "coreinfra-speech",
+            "coreinfra-transcription",
+        ]
+        .map(|name| dir.join("skills").join(name).join("SKILL.md"));
         let registration =
             media::server(crate::media::URL, &temp.path().join("media headers.json"))?;
         let manager =
@@ -435,7 +441,7 @@ mod tests {
         let first = prepare(RoutingMode::Hub, true)?;
         assert!(!skill.exists());
         apply(first)?;
-        assert!(skill.is_file());
+        assert!(skills.iter().all(|skill| skill.is_file()));
         assert_eq!(
             read_global()?["mcpServers"]["coreinfra_media"],
             registration.entry
@@ -458,7 +464,7 @@ mod tests {
             1,
             false,
         )?)?;
-        assert!(!skill.exists());
+        assert!(!skills.iter().any(|skill| skill.exists()));
         assert_eq!(read_global()?["theme"], "light");
         assert_eq!(read_global()?["mcpServers"], json!({"other":foreign}));
 
@@ -487,6 +493,7 @@ mod tests {
         for mode in [RoutingMode::Hub, RoutingMode::Sub, RoutingMode::Disabled] {
             apply(prepare(mode, false)?)?;
             assert_eq!(std::fs::read_to_string(&skill)?, "my edited skill");
+            assert!(!skills[1].exists() && !skills[2].exists());
             assert_eq!(read_global()?["mcpServers"], json!({"other":foreign}));
         }
         Ok(())
@@ -532,6 +539,11 @@ mod tests {
         assert_ne!(
             std::fs::read_to_string(old_skill.join("SKILL.md"))?,
             "1.0.10 skill"
+        );
+        assert!(dir.join("skills/coreinfra-speech/SKILL.md").is_file());
+        assert!(
+            dir.join("skills/coreinfra-transcription/SKILL.md")
+                .is_file()
         );
 
         // A foreign server under the old name is never touched.

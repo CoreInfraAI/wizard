@@ -19,6 +19,9 @@ const FAL_MODEL: &str = "example/flux/image-to-video";
 const KEY: &str = "fixture-upstream-secret";
 const LOCAL: &str = "fixture-local-grant";
 const MP4: &[u8] = include_bytes!("../../tests/fixtures/blue.mp4");
+const TTS_MODEL: &str = "example/voice";
+const STT_MODEL: &str = "example/scribe";
+const MP3: &[u8] = b"ID3\x04fixture-mp3";
 
 fn key(token: &str) -> MediaKey {
     MediaKey {
@@ -50,8 +53,50 @@ fn catalog() -> Value {
     json!({"providers":{"test":{"models":{
         OR_MODEL:{"category":"videos","display_name":"Cinema","endpoints":[OPENROUTER],"prices":{"video_seconds":2_500_000},"lowest_prices":{"video_seconds":1_000_000}},
         FAL_MODEL:{"category":"videos","endpoints":[FAL],"prices":{"video_seconds":12_000_000}},
-        "ignored":{"category":"text","endpoints":["/text"],"prices":{}}
+        "ignored":{"category":"text","endpoints":["/text"],"prices":{}},
+        TTS_MODEL:{"category":"speech","display_name":"Voice","endpoints":[audio::SPEECH],"prices":{"input_characters":5000},"lowest_prices":{"input_characters":2500}},
+        STT_MODEL:{"category":"speech_recognition","display_name":"Scribe","endpoints":[audio::TRANSCRIPTIONS],"prices":{"audio_seconds":10_000}},
+        "other/tts":{"category":"speech","endpoints":["/openai/api/v1/audio/speech"],"prices":{"input_characters":1}}
     }}}})
+}
+
+fn speech_model(id: &str) -> Value {
+    let parameters = json!({
+        "response_format":{"type":"enum","values":["mp3","pcm"]},
+        "speed":{"type":"range","min":0.5,"max":2},
+        "voice":{"type":"enum","values":["alice","bob","carol"]}
+    });
+    json!({"id":id,"name":"Example: Voice","description":"Fixture speech model",
+        "input_modalities":[{"type":"text","turns":"optional"}],
+        "output_modalities":[{"type":"speech","supported_parameters":parameters}],
+        "endpoints":[{"provider_slug":"coreinfra","output_modalities":[{"type":"speech","supported_parameters":parameters}]}]})
+}
+
+/// Audio responses of the fake Hub, selected by the request.
+fn audio_answer(path: &str, body: &Value) -> Option<(&'static str, Vec<u8>)> {
+    if path == audio::SPEECH {
+        return Some(match body["input"].as_str() {
+            Some("html") => ("text/html; charset=utf-8", b"<html>error</html>".to_vec()),
+            Some("json") => ("application/json", br#"{"error":"fixture"}"#.to_vec()),
+            Some("octet") => ("application/octet-stream", MP3.to_vec()),
+            Some("empty") => ("audio/mpeg", Vec::new()),
+            _ if body["response_format"] == "pcm" => ("audio/pcm;rate=24000", vec![0, 1, 2, 3]),
+            _ => ("audio/mpeg", MP3.to_vec()),
+        });
+    }
+    if path == audio::TRANSCRIPTIONS {
+        let payload = if body["response_format"] == "verbose_json" {
+            json!({
+                "text": "привет",
+                "segments": [{"start": 0.0, "end": 1.0, "text": "привет"}],
+                "usage": {"cost_rub": 0.25, "seconds": 3}
+            })
+        } else {
+            json!({"text":"привет","usage":{"cost_rub":0.25,"seconds":3}})
+        };
+        return Some(("application/json", payload.to_string().into_bytes()));
+    }
+    None
 }
 
 impl Fixture {
@@ -97,8 +142,28 @@ impl Fixture {
                             });
                             let mut code = 200;
                             let mut redirect = false;
+                            let authorized = matches!(
+                                auth.as_deref(),
+                                Some("Bearer fixture-upstream-secret" | "Bearer fixture-claude")
+                            );
+                            if authorized
+                                && head.method == "POST"
+                                && let Some((mime, bytes)) = audio_answer(&path, &body)
+                            {
+                                return Ok(HttpResponse::builder()
+                                    .header("content-type", mime)
+                                    .body(Full::new(Bytes::from(bytes)))
+                                    .expect("audio response"));
+                            }
                             let answer = if path == "/hub/api/prices" && auth.is_none() {
                                 catalog()
+                            } else if path == format!("{}/models", audio::SPEECH) && auth.is_none()
+                            {
+                                json!({"data":[speech_model(TTS_MODEL), speech_model("example/unpriced")]})
+                            } else if path == format!("{}/models/{TTS_MODEL}", audio::SPEECH)
+                                && auth.is_none()
+                            {
+                                speech_model(TTS_MODEL)
                             } else if path.ends_with("/content?t=fixture") && auth.is_none()
                                 || path.ends_with("/content?index=1")
                                     && auth.as_deref() == Some("Bearer fixture-upstream-secret")
@@ -756,20 +821,28 @@ async fn native_and_python_clients() -> Result<()> {
     ensure!(status.success(), "external client test failed");
     assert_eq!(std::fs::read_to_string(profile.join(".env"))?, dotenv);
     let requests = fixture.requests.lock().expect("requests");
-    let bodies: Vec<_> = requests
+    let video_bodies: Vec<_> = requests
         .iter()
-        .filter(|r| r.method == "POST")
+        .filter(|r| {
+            r.method == "POST" && r.path != audio::SPEECH && r.path != audio::TRANSCRIPTIONS
+        })
         .map(|r| &r.body)
         .collect();
-    assert_eq!(bodies.len(), 2);
+    assert_eq!(video_bodies.len(), 2);
     assert_eq!(
-        bodies[0],
+        video_bodies[0],
         &json!({"model":OR_MODEL,"prompt":"native client","provider":{"options":{"test":{"seed":0,"flag":false,"values":[null,2.75]}}}})
     );
     assert_eq!(
-        bodies[1],
+        video_bodies[1],
         &json!({"prompt":"python client","image_url":"data:image/png;base64,AAAA","extra":[false,null,3]})
     );
+    assert!(requests.iter().any(|r| r.method == "POST"
+        && r.path == audio::SPEECH
+        && r.body["input"] == "python speech"));
+    assert!(requests.iter().any(|r| r.method == "POST"
+        && r.path == audio::TRANSCRIPTIONS
+        && r.body["model"] == STT_MODEL));
     Ok(())
 }
 
@@ -787,7 +860,56 @@ async fn public_media_catalog() -> Result<()> {
         "Live public catalog: {} OpenRouter and {fal} fal video models",
         models.len() - fal
     );
+    let hub = MediaHub::new()?;
+    let speech = hub
+        .speech_models(serde_json::from_value(json!({}))?)
+        .await?;
+    let speech = speech["models"].as_array().context("speech models")?;
+    ensure!(!speech.is_empty(), "Hub returned no speech models");
+    let first = speech[0]["id"].as_str().context("speech model ID")?;
+    let detail = hub
+        .speech_models(serde_json::from_value(json!({"model":first}))?)
+        .await?;
+    ensure!(
+        detail["model"]["id"] == first,
+        "Speech detail ID did not match {first}"
+    );
+    let params = detail["model"]["supported_parameters"]
+        .as_object()
+        .context("Hub returned no speech parameters")?;
+    ensure!(
+        !params.is_empty(),
+        "Hub returned empty speech parameters for {first}"
+    );
+    let transcription = hub.transcription_models().await?;
+    let transcription = transcription["models"]
+        .as_array()
+        .context("transcription models")?;
+    ensure!(
+        !transcription.is_empty(),
+        "Hub returned no transcription models"
+    );
+    println!(
+        "Live public catalog: {} speech and {} transcription models",
+        speech.len(),
+        transcription.len()
+    );
     Ok(())
+}
+
+fn extension(saved: &Value) -> Option<&str> {
+    Path::new(saved["path"].as_str()?).extension()?.to_str()
+}
+
+fn posts(fixture: &Fixture, path: &str) -> Vec<Value> {
+    fixture
+        .requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .filter(|r| r.method == "POST" && r.path == path)
+        .map(|r| r.body.clone())
+        .collect()
 }
 
 #[test]
@@ -795,6 +917,295 @@ fn downloads_share_one_media_directory() -> Result<()> {
     let hub = MediaHub::new()?;
     let dir = hub.output_dir.context("Downloads directory")?;
     assert!(dir.ends_with("CoreInfra Media"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn speech_catalog_joins_prices_and_details_validate_the_model() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let server = fixture.start(None).await?;
+    let tools = fixture
+        .request(&server.url, "tools/list", &json!({}))
+        .bearer_auth(&server.bearer)
+        .send()
+        .await?;
+    let tools: Value = serde_json::from_slice(&tools.bytes().await?)?;
+    let names: Vec<_> = tools["result"]["tools"]
+        .as_array()
+        .context("tools")?
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "video_models",
+            "video_create",
+            "video_result",
+            "speech_models",
+            "speech_create",
+            "transcription_models",
+            "transcription_create"
+        ]
+    );
+
+    let list =
+        fixture.call(&server, "speech_models", json!({})).await?["structuredContent"].clone();
+    assert_eq!(
+        list["models"][0],
+        json!({"id":TTS_MODEL,"name":"Example: Voice","response_formats":["mp3","pcm"],
+            "voice_count":3,"speed":{"min":0.5,"max":2},"parameters":["response_format","speed","voice"],
+            "min_rub_per_1k_characters":2.5,"max_rub_per_1k_characters":5.0})
+    );
+    assert_eq!(list["models"][1]["id"], "example/unpriced");
+    assert!(list["models"][1]["max_rub_per_1k_characters"].is_null());
+    // The compact list leaves voice names to the per-model detail.
+    assert!(!list.to_string().contains("alice"));
+
+    let detail = fixture
+        .call(&server, "speech_models", json!({"model":TTS_MODEL}))
+        .await?["structuredContent"]["model"]
+        .clone();
+    assert_eq!(detail["id"], TTS_MODEL);
+    assert_eq!(detail["description"], "Fixture speech model");
+    assert_eq!(
+        detail["input_modalities"],
+        json!([{"type":"text","turns":"optional"}])
+    );
+    assert_eq!(
+        detail["supported_parameters"]["voice"]["values"],
+        json!(["alice", "bob", "carol"])
+    );
+    assert_eq!(detail["max_rub_per_1k_characters"], 5.0);
+
+    let before = fixture.requests.lock().expect("requests").len();
+    for model in [
+        "../hub",
+        "example",
+        "example/voice/extra",
+        "example/..",
+        "/voice",
+        "a b/c",
+    ] {
+        let invalid = fixture
+            .call(&server, "speech_models", json!({"model":model}))
+            .await?;
+        assert_eq!(invalid["isError"], true, "{model}");
+    }
+    assert_eq!(fixture.requests.lock().expect("requests").len(), before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn speech_is_saved_without_overwriting_and_never_streams() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let server = fixture.start(Some(key(KEY))).await?;
+    let downloads = fixture.dir.path().join("downloads");
+    let args = json!({"model":TTS_MODEL,"input":"Привет","voice":"alice","speed":1.25,
+        "fields":{"instructions":"calm","provider":{"options":{"coreinfra":{"seed":0}}}}});
+    let first =
+        fixture.call(&server, "speech_create", args.clone()).await?["structuredContent"].clone();
+    let second = fixture.call(&server, "speech_create", args).await?["structuredContent"].clone();
+    for saved in [&first, &second] {
+        let path = Path::new(saved["path"].as_str().context("speech path")?);
+        assert!(path.starts_with(&downloads));
+        let name = path.file_name().and_then(|n| n.to_str()).context("name")?;
+        assert!(
+            name.starts_with("speech-") && extension(saved) == Some("mp3"),
+            "{name}"
+        );
+        assert_eq!(std::fs::read(path)?, MP3);
+        assert_eq!(saved["content_type"], "audio/mpeg");
+        assert_eq!(saved["size_bytes"], MP3.len());
+    }
+    assert_ne!(first["path"], second["path"]);
+    let pcm = fixture
+        .call(
+            &server,
+            "speech_create",
+            json!({"model":TTS_MODEL,"input":"raw","response_format":"pcm"}),
+        )
+        .await?["structuredContent"]
+        .clone();
+    assert_eq!(extension(&pcm), Some("pcm"));
+    assert_eq!(pcm["content_type"], "audio/pcm");
+    let octet = fixture
+        .call(
+            &server,
+            "speech_create",
+            json!({"model":TTS_MODEL,"input":"octet","response_format":"mp3"}),
+        )
+        .await?["structuredContent"]
+        .clone();
+    assert_eq!(extension(&octet), Some("mp3"));
+    // Unknown caller format names never become file extensions on binary responses.
+    let unknown_ext = fixture
+        .call(
+            &server,
+            "speech_create",
+            json!({"model":TTS_MODEL,"input":"octet","response_format":"exe"}),
+        )
+        .await?["structuredContent"]
+        .clone();
+    assert_eq!(extension(&unknown_ext), Some("bin"));
+    // Multi-speaker turns serialize into the upstream `input` array.
+    let dialogue = fixture
+        .call(
+            &server,
+            "speech_create",
+            json!({"model":TTS_MODEL,"turns":[
+                {"text":"Привет","voice":"alice","instructions":"warm"},
+                {"text":"Пока","voice":"bob"}
+            ]}),
+        )
+        .await?["structuredContent"]
+        .clone();
+    assert_eq!(extension(&dialogue), Some("mp3"));
+    let bodies = posts(&fixture, audio::SPEECH);
+    assert_eq!(
+        bodies[0],
+        json!({"instructions":"calm","provider":{"options":{"coreinfra":{"seed":0}}},
+            "model":TTS_MODEL,"input":"Привет","voice":"alice","speed":1.25})
+    );
+    assert_eq!(
+        bodies.last(),
+        Some(&json!({"model":TTS_MODEL,"input":[
+            {"text":"Привет","voice":"alice","instructions":"warm"},
+            {"text":"Пока","voice":"bob"}
+        ]}))
+    );
+    assert!(
+        fixture
+            .requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|r| r.path == audio::SPEECH)
+            .all(|r| r.auth.as_deref() == Some("Bearer fixture-upstream-secret"))
+    );
+
+    let submitted = bodies.len();
+    for invalid in [
+        json!({"model":TTS_MODEL,"input":"x","fields":{"stream":true}}),
+        json!({"model":TTS_MODEL,"input":"x","fields_json":"{\"stream_format\":\"sse\"}"}),
+        json!({"model":TTS_MODEL,"input":"x","fields":{"voice":"bob"}}),
+        json!({"model":TTS_MODEL,"input":"x","fields":{"model":"other/model"}}),
+        json!({"model":TTS_MODEL,"input":"x","fields":{},"fields_json":"{}"}),
+        json!({"model":TTS_MODEL,"input":"  "}),
+        json!({"model":TTS_MODEL}),
+        json!({"model":TTS_MODEL,"input":"x","turns":[{"text":"y","voice":"alice"}]}),
+        json!({"model":TTS_MODEL,"turns":[]}),
+        json!({"model":TTS_MODEL,"turns":[{"text":" ","voice":"alice"}]}),
+        json!({"model":"../hub","input":"x"}),
+        json!({"model":TTS_MODEL,"input":"x","response_format":"../mp3"}),
+        json!({"model":TTS_MODEL,"input":"x","speed":-1}),
+        json!({"model":TTS_MODEL,"input":"x","path":"/tmp/out.mp3"}),
+    ] {
+        let response = fixture
+            .call(&server, "speech_create", invalid.clone())
+            .await?;
+        assert_eq!(response["isError"], true, "{invalid}");
+    }
+    assert_eq!(posts(&fixture, audio::SPEECH).len(), submitted);
+
+    let files = std::fs::read_dir(&downloads)?.count();
+    for input in ["html", "json", "empty"] {
+        let response = fixture
+            .call(
+                &server,
+                "speech_create",
+                json!({"model":TTS_MODEL,"input":input}),
+            )
+            .await?;
+        assert_eq!(response["isError"], true, "{input}");
+    }
+    // Rejected responses leave neither audio nor partial files behind.
+    assert_eq!(std::fs::read_dir(&downloads)?.count(), files);
+
+    let unkeyed = fixture.start(None).await?;
+    let missing = fixture
+        .call(
+            &unkeyed,
+            "speech_create",
+            json!({"model":TTS_MODEL,"input":"x"}),
+        )
+        .await?;
+    assert_eq!(missing["isError"], true);
+    assert_eq!(posts(&fixture, audio::SPEECH).len(), submitted + 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn transcription_sends_inline_audio_and_returns_json() -> Result<()> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let fixture = Fixture::new().await?;
+    let server = fixture.start(Some(key(KEY))).await?;
+    let models = fixture
+        .call(&server, "transcription_models", json!({}))
+        .await?["structuredContent"]["models"]
+        .clone();
+    assert_eq!(
+        models,
+        json!([{"id":STT_MODEL,"name":"Scribe","min_rub_per_minute":0.6,"max_rub_per_minute":0.6}])
+    );
+
+    let audio = STANDARD.encode(b"RIFF fixture wav");
+    let result = fixture
+        .call(
+            &server,
+            "transcription_create",
+            json!({"model":STT_MODEL,"audio_base64":audio,"format":"WAV","language":"ru",
+                "prompt":"CoreInfra","fields_json":"{\"temperature\":0}"}),
+        )
+        .await?["structuredContent"]
+        .clone();
+    assert_eq!(result["text"], "привет");
+    assert_eq!(result["usage"], json!({"cost_rub":0.25,"seconds":3}));
+    assert_eq!(result["cost_rub"], 0.25);
+    let verbose = fixture
+        .call(
+            &server,
+            "transcription_create",
+            json!({"model":STT_MODEL,"audio_base64":format!("data:audio/mpeg;base64,{audio}"),
+                "format":"mp3","response_format":"verbose_json",
+                "fields":{"provider":{"only":["coreinfra"]}}}),
+        )
+        .await?["structuredContent"]
+        .clone();
+    assert_eq!(verbose["text"], "привет");
+    assert_eq!(
+        verbose["segments"],
+        json!([{"start":0.0,"end":1.0,"text":"привет"}])
+    );
+
+    let bodies = posts(&fixture, audio::TRANSCRIPTIONS);
+    assert_eq!(
+        bodies[0],
+        json!({"temperature":0,"model":STT_MODEL,"input_audio":{"data":audio,"format":"wav"},
+            "language":"ru","prompt":"CoreInfra"})
+    );
+    assert_eq!(
+        bodies[1]["input_audio"],
+        json!({"data":audio,"format":"mp3"})
+    );
+    assert_eq!(bodies[1]["provider"], json!({"only":["coreinfra"]}));
+
+    for invalid in [
+        json!({"model":STT_MODEL,"audio_base64":"not base64!","format":"wav"}),
+        json!({"model":STT_MODEL,"audio_base64":"","format":"wav"}),
+        json!({"model":STT_MODEL,"audio_base64":audio,"format":"../wav"}),
+        json!({"model":STT_MODEL,"audio_base64":audio,"format":"wav","fields":{"input_audio":{}}}),
+        json!({"model":STT_MODEL,"audio_base64":audio,"format":"wav","fields":{"stream":true}}),
+        json!({"model":STT_MODEL,"audio_base64":audio,"format":"wav","fields_json":"[]"}),
+        json!({"model":STT_MODEL,"path":"/etc/passwd","format":"wav"}),
+        json!({"model":"whisper","audio_base64":audio,"format":"wav"}),
+    ] {
+        let response = fixture
+            .call(&server, "transcription_create", invalid.clone())
+            .await?;
+        assert_eq!(response["isError"], true, "{invalid}");
+    }
+    assert_eq!(posts(&fixture, audio::TRANSCRIPTIONS).len(), 2);
     Ok(())
 }
 
@@ -851,13 +1262,20 @@ fn codex_upgrade_from_1_0_10_preserves_restrictions_and_foreign_servers() -> Res
         ),
         Some(format!("Bearer {bearer}").as_str())
     );
-    let text = fs::read_to_string(video.join("SKILL.md"))?;
-    assert!(text.contains("coreinfra_media"));
-    assert!(video.join("agents/openai.yaml").is_file());
-    assert!(video.join(".wizard-managed.json").is_file());
+    for skill in [
+        "coreinfra-video",
+        "coreinfra-speech",
+        "coreinfra-transcription",
+    ] {
+        let root = dir.path().join("skills").join(skill);
+        let text = fs::read_to_string(root.join("SKILL.md"))?;
+        assert!(text.contains("coreinfra_media"), "{skill}");
+        assert!(root.join("agents/openai.yaml").is_file());
+        assert!(root.join(".wizard-managed.json").is_file());
+    }
     install::sync_at(&config, Some(&bearer), None)?;
     assert_eq!(fs::read_to_string(&config)?, "model = 'gpt'\n");
-    assert!(!video.join("SKILL.md").exists());
+    assert!(!dir.path().join("skills/coreinfra-speech/SKILL.md").exists());
 
     // Disabling with a foreign coreinfra_media still cleans up an owned 1.0.10 entry.
     let mixed = format!(

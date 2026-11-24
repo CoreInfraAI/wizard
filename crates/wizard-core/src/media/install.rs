@@ -17,19 +17,47 @@ const SERVER: &str = "coreinfra_media";
 pub(crate) const LEGACY_SERVER: &str = "coreinfra_video";
 /// Skill documents bundled for one agent: directory name, then relative paths and contents.
 pub(crate) type Skills = [(&'static str, &'static [(&'static str, &'static str)])];
-const SKILLS: &Skills = &[(
-    "coreinfra-video",
-    &[
-        (
-            "SKILL.md",
-            include_str!("../../../../skills/coreinfra-video/SKILL.md"),
-        ),
-        (
-            "agents/openai.yaml",
-            include_str!("../../../../skills/coreinfra-video/agents/openai.yaml"),
-        ),
-    ],
-)];
+const SKILLS: &Skills = &[
+    (
+        "coreinfra-video",
+        &[
+            (
+                "SKILL.md",
+                include_str!("../../../../skills/coreinfra-video/SKILL.md"),
+            ),
+            (
+                "agents/openai.yaml",
+                include_str!("../../../../skills/coreinfra-video/agents/openai.yaml"),
+            ),
+        ],
+    ),
+    (
+        "coreinfra-speech",
+        &[
+            (
+                "SKILL.md",
+                include_str!("../../../../skills/coreinfra-speech/SKILL.md"),
+            ),
+            (
+                "agents/openai.yaml",
+                include_str!("../../../../skills/coreinfra-speech/agents/openai.yaml"),
+            ),
+        ],
+    ),
+    (
+        "coreinfra-transcription",
+        &[
+            (
+                "SKILL.md",
+                include_str!("../../../../skills/coreinfra-transcription/SKILL.md"),
+            ),
+            (
+                "agents/openai.yaml",
+                include_str!("../../../../skills/coreinfra-transcription/agents/openai.yaml"),
+            ),
+        ],
+    ),
+];
 
 pub fn sync(
     agent: wizard_settings::MediaAgent,
