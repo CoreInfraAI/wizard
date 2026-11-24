@@ -49,7 +49,7 @@ export function OverviewAgents({ account, agents }: {
               const found = detection.status === "found";
               const error = hasAgentDetectionError(detection);
               const needsApply = found && (("proxy_needs_apply" in detection.data && detection.data.proxy_needs_apply) ||
-                ("video_needs_apply" in detection.data && detection.data.video_needs_apply));
+                ("media_needs_apply" in detection.data && detection.data.media_needs_apply));
               const name = agentPageNames[id];
               const status = error ? "Не удалось проверить" : !found ? "Не установлен"
                 : needsApply ? "Требует настройки" : currentModeLabels[detection.data.routing_mode];

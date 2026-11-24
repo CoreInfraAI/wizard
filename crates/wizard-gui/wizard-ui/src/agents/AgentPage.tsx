@@ -17,7 +17,7 @@ import {
 import { PreparedPlanDialog } from "./PreparedPlanDialog";
 import { BackupDialog } from "./BackupDialog";
 import { DesktopVersion } from "./DesktopInstall";
-import { StandaloneVideoConnection } from "./VideoConnection";
+import { StandaloneMediaConnection } from "./MediaConnection";
 import { launchChoiceFor } from "../onboarding/agents";
 import { MissingAgent } from "./MissingAgent";
 import { agentPageNames } from "./navigation";
@@ -241,6 +241,7 @@ export function AgentPage({
               editing
               needsApply={codex.data.proxy_needs_apply || chatGptProxyStopped}
               agent="codex"
+              mediaNeedsApply={codex.data.media_needs_apply}
               modes={routingModes("Codex")}
               mode={codex.data.routing_mode}
               toChange={(mode) => ({ CodexSetRouting: mode })}
@@ -253,7 +254,7 @@ export function AgentPage({
             />
           )}
           {codex.status !== "found" && (
-            <StandaloneVideoConnection key={configurationRevision} agent="codex"
+            <StandaloneMediaConnection key={configurationRevision} agent="codex"
               disabled={isChangeInProgress} error={pageError} onPrepare={prepare} />
           )}
           {(codex.status === "not_found" || (codex.status === "found" && codex.data.cli.status === "not_found")) && (
@@ -284,7 +285,7 @@ export function AgentPage({
               key={configurationRevision}
               editing
               agent="claude"
-              videoNeedsApply={claude.data.video_needs_apply}
+              mediaNeedsApply={claude.data.media_needs_apply}
               modes={routingModes("Claude")}
               mode={claude.data.routing_mode}
               toChange={(mode) => ({ ClaudeSetRouting: mode })}
@@ -344,7 +345,7 @@ export function AgentPage({
                   (!proxyStartup.starting && proxy.proxy?.enabled === false))
               }
               agent="claude_desktop"
-              videoNeedsApply={desktop.data.video_needs_apply}
+              mediaNeedsApply={desktop.data.media_needs_apply}
               modes={routingModes("Claude")}
               mode={desktop.data.routing_mode}
               toChange={(mode) => ({ ClaudeDesktopSetRouting: mode })}

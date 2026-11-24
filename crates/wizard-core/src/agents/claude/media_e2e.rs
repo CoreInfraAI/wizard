@@ -1,21 +1,21 @@
 use super::*;
-use crate::video::{VideoHub, install, server};
+use crate::media::{MediaHub, install, server};
 use core::time::Duration;
 use tokio::{net::TcpListener, process::Command};
 
 #[tokio::test]
 #[ignore = "requires native Claude Code, Python and the public Hub catalog"]
-async fn claude_code_skill_lists_public_video_models() -> Result<()> {
+async fn claude_code_skill_lists_public_media_models() -> Result<()> {
     let _ = crate::hub::install_crypto_provider();
     let temp = tempfile::tempdir()?;
     let root = std::path::absolute(temp.path())?;
     let profile = root.join("claude config");
     let global = profile.join(".claude.json");
-    let headers = root.join("wizard's app data & ${HOME}/video-mcp-headers.json");
+    let headers = root.join("wizard's app data & ${HOME}/media-mcp-headers.json");
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}/mcp", listener.local_addr()?);
-    let registration = video::server(&url, &headers)?;
-    let broker = server::start(listener, VideoHub::new()?, None, move |bearer| {
+    let registration = media::server(&url, &headers)?;
+    let broker = server::start(listener, MediaHub::new()?, None, move |bearer| {
         install::sync_headers(&headers, Some(bearer))
     })
     .await?;
@@ -36,13 +36,13 @@ async fn claude_code_skill_lists_public_video_models() -> Result<()> {
         .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
     let mut child = Command::new(python)
         .args(["-E", "-B"])
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/claude_video_e2e.py"))
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/claude_media_e2e.py"))
         .arg(&profile)
         .current_dir(root)
         .kill_on_drop(true)
         .spawn()?;
     let status = tokio::time::timeout(Duration::from_secs(120), child.wait()).await??;
     broker.abort();
-    ensure!(status.success(), "Claude Code video E2E failed ({status})");
+    ensure!(status.success(), "Claude Code media E2E failed ({status})");
     Ok(())
 }

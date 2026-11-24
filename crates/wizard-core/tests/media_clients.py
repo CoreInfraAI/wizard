@@ -9,6 +9,9 @@ import subprocess
 import sys
 import threading
 
+MEDIA_SKILLS = {"coreinfra-video"}
+MEDIA_TOOLS = {"video_models", "video_create", "video_result"}
+
 
 def receive(channel, timeout, operation):
     try:
@@ -82,23 +85,24 @@ def native_client(profile):
         options = {"cwd":str(profile.parent),"ephemeral":True,"sandbox":"workspace-write"}
         old_thread = call("thread/start", options)["thread"]["id"]
         before = call("mcpServerStatus/list", {"threadId":old_thread})
-        assert all(s["name"] != "coreinfra_video" for s in before["data"])
+        assert all(s["name"] != "coreinfra_media" for s in before["data"])
         skill_query = {"cwds":[str(profile.parent)]}
         previous_skills = call("skills/list", skill_query)
-        assert not any(s["name"] == "coreinfra-video" for group in previous_skills["data"] for s in group["skills"])
+        assert not any(s["name"] in MEDIA_SKILLS for group in previous_skills["data"] for s in group["skills"])
         print("codex-ready", flush=True)
         assert sys.stdin.readline() == "installed\n"
         thread = call("thread/start", options)["thread"]["id"]
         skills = call("skills/list", skill_query)
-        assert any(s["name"] == "coreinfra-video" and s["enabled"] for group in skills["data"] for s in group["skills"])
-        inventory = call("mcpServerStatus/list", {"threadId":thread,"serverName":"coreinfra_video"})
-        tools = next(s["tools"] for s in inventory["data"] if s["name"] == "coreinfra_video")
-        assert set(tools) == {"video_models","video_create","video_result"}
+        enabled = {s["name"] for group in skills["data"] for s in group["skills"] if s["enabled"]}
+        assert MEDIA_SKILLS <= enabled, enabled
+        inventory = call("mcpServerStatus/list", {"threadId":thread,"serverName":"coreinfra_media"})
+        tools = next(s["tools"] for s in inventory["data"] if s["name"] == "coreinfra_media")
+        assert set(tools) == MEDIA_TOOLS, tools
         shell = call("command/exec", {"command":[sys.executable,"-I","-c",
                      "import os; print(any(k in os.environ for k in ('WIZARD_VIDEO_TEST_FILTER', 'COREINFRA_API_KEY')))"],
                      "cwd":str(profile.parent), "sandboxPolicy":{"type":"workspaceWrite","networkAccess":False}})
         assert shell["exitCode"] == 0 and shell["stdout"].strip() == "False", shell
-        result = call("mcpServer/tool/call", {"threadId":thread,"server":"coreinfra_video",
+        result = call("mcpServer/tool/call", {"threadId":thread,"server":"coreinfra_media",
                       "tool":"video_create","arguments":{"model":"example/cinema","prompt":"native client",
                       "fields":{"provider":{"options":{"test":{"seed":0,"flag":False,"values":[None,2.75]}}}}}})
         assert not result.get("isError"), result
@@ -113,10 +117,10 @@ async def python_client(profile, existing_job):
 
     mp4 = (Path(__file__).parent / "fixtures/blue.mp4").read_bytes()
     with (profile / "config.toml").open("rb") as file:
-        local = tomllib.load(file)["mcp_servers"]["coreinfra_video"]
+        local = tomllib.load(file)["mcp_servers"]["coreinfra_media"]
     async with httpx2.AsyncClient(headers=local["http_headers"], trust_env=False) as http:
         async with Client(streamable_http_client(local["url"], http_client=http)) as wizard:
-            assert len((await wizard.list_tools()).tools) == 3
+            assert {t.name for t in (await wizard.list_tools()).tools} == MEDIA_TOOLS
             models = await wizard.call_tool("video_models", {})
             assert len(models.structured_content["models"]) == 2
             for _ in range(2):

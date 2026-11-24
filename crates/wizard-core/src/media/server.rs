@@ -1,4 +1,4 @@
-use super::{Create, GetResult, VideoHub, VideoKey};
+use super::{Create, GetResult, MediaHub, MediaKey};
 use alloc::sync::Arc;
 use anyhow::{Context as _, Result, bail, ensure};
 use core::{convert::Infallible, future::Future, net::SocketAddr};
@@ -33,8 +33,8 @@ use tokio::{
 };
 
 struct Tools {
-    hub: VideoHub,
-    key: Option<Arc<VideoKey>>,
+    hub: MediaHub,
+    key: Option<Arc<MediaKey>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -59,14 +59,14 @@ impl Tools {
                     serde_json::from_value(args).context("Invalid video_result arguments")?;
                 self.hub.result(input, self.key.as_deref()).await
             }
-            _ => bail!("Unknown video tool"),
+            _ => bail!("Unknown media tool"),
         }
     }
 }
 
 pub(super) fn server_info() -> ServerConfig {
     ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
-        Implementation::new("CoreInfra Wizard Video", env!("CARGO_PKG_VERSION")),
+        Implementation::new("CoreInfra Wizard Media", env!("CARGO_PKG_VERSION")),
     )
 }
 
@@ -142,25 +142,25 @@ async fn handle(
 
 #[must_use]
 pub fn new_bearer() -> String {
-    format!("wizard-video-{}", uuid::Uuid::new_v4())
+    format!("wizard-media-{}", uuid::Uuid::new_v4())
 }
 
 /// Publish the new listener's grant before accepting requests.
 pub async fn start(
     listener: TcpListener,
-    hub: VideoHub,
-    key: Option<VideoKey>,
+    hub: MediaHub,
+    key: Option<MediaKey>,
     register: impl FnOnce(&str) -> Result<()> + Send + 'static,
 ) -> Result<JoinHandle<()>> {
     let addr = listener.local_addr()?;
-    ensure!(addr.ip().is_loopback(), "Video MCP must bind to loopback");
+    ensure!(addr.ip().is_loopback(), "Media MCP must bind to loopback");
     let bearer = tokio::task::spawn_blocking(move || {
         let bearer = new_bearer();
         register(&bearer)?;
         anyhow::Ok(bearer)
     })
     .await
-    .context("Video installation task failed")??;
+    .context("Media installation task failed")??;
     Ok(tokio::spawn(serve(
         listener,
         addr,
@@ -172,8 +172,8 @@ pub async fn start(
 pub async fn serve(
     listener: TcpListener,
     addr: SocketAddr,
-    hub: VideoHub,
-    grants: Vec<(String, Option<VideoKey>)>,
+    hub: MediaHub,
+    grants: Vec<(String, Option<MediaKey>)>,
 ) {
     let mut routes = Vec::new();
     for (grant, key) in grants {
@@ -205,7 +205,7 @@ pub async fn serve(
                 let (socket, _) = match result {
                     Ok(connection) => connection,
                     Err(error) => {
-                        log::warn!("video listener accept failed: {error}");
+                        log::warn!("media listener accept failed: {error}");
                         tokio::time::sleep(core::time::Duration::from_millis(500)).await;
                         continue;
                     }

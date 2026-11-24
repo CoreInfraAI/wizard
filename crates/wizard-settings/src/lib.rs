@@ -32,7 +32,9 @@ pub struct Settings {
     /// Random id that tells Wizard installations apart in Hub update metrics. Not a secret.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub install_id: String,
-    pub video: VideoSettings,
+    /// Saved as `[video]` up to 1.0.10; loaded in memory and written as `[media]` on save.
+    #[serde(alias = "video")]
+    pub media: MediaSettings,
     /// Application lifecycle preferences, independent of proxy demand.
     pub application: ApplicationSettings,
     /// Kept last: it serializes as a TOML table, written after plain keys.
@@ -41,7 +43,7 @@ pub struct Settings {
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum VideoAgent {
+pub enum MediaAgent {
     Codex,
     Claude,
     ClaudeDesktop,
@@ -50,22 +52,22 @@ pub enum VideoAgent {
 /// Local MCP grants only; never serialize upstream API keys.
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
-pub struct VideoSettings {
+pub struct MediaSettings {
     pub codex: Option<String>,
     pub claude: Option<String>,
     pub claude_desktop: Option<String>,
-    /// Agents whose video the user turned off. Others are offered video by default.
+    /// Agents whose media the user turned off. Others are offered media by default.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub declined: Vec<VideoAgent>,
+    pub declined: Vec<MediaAgent>,
 }
 
-impl VideoSettings {
+impl MediaSettings {
     #[must_use]
-    pub fn bearer(&self, agent: VideoAgent) -> Option<&str> {
+    pub fn bearer(&self, agent: MediaAgent) -> Option<&str> {
         match agent {
-            VideoAgent::Codex => &self.codex,
-            VideoAgent::Claude => &self.claude,
-            VideoAgent::ClaudeDesktop => &self.claude_desktop,
+            MediaAgent::Codex => &self.codex,
+            MediaAgent::Claude => &self.claude,
+            MediaAgent::ClaudeDesktop => &self.claude_desktop,
         }
         .as_deref()
     }
@@ -73,21 +75,21 @@ impl VideoSettings {
     pub fn has_grants(&self) -> bool {
         self.codex.is_some() || self.claude.is_some() || self.claude_desktop.is_some()
     }
-    /// Whether Wizard offers video for `agent`: not granted and never turned off by the user.
+    /// Whether Wizard offers media for `agent`: not granted and never turned off by the user.
     #[must_use]
-    pub fn suggested(&self, agent: VideoAgent) -> bool {
+    pub fn suggested(&self, agent: MediaAgent) -> bool {
         self.bearer(agent).is_none() && !self.declined.contains(&agent)
     }
     /// A grant clears the agent's opt-out; removing one records it.
-    pub fn set(&mut self, agent: VideoAgent, bearer: Option<String>) {
+    pub fn set(&mut self, agent: MediaAgent, bearer: Option<String>) {
         self.declined.retain(|declined| *declined != agent);
         if bearer.is_none() {
             self.declined.push(agent);
         }
         *match agent {
-            VideoAgent::Codex => &mut self.codex,
-            VideoAgent::Claude => &mut self.claude,
-            VideoAgent::ClaudeDesktop => &mut self.claude_desktop,
+            MediaAgent::Codex => &mut self.codex,
+            MediaAgent::Claude => &mut self.claude,
+            MediaAgent::ClaudeDesktop => &mut self.claude_desktop,
         } = bearer;
     }
 }
@@ -129,7 +131,7 @@ pub struct LastPaths {
 impl Settings {
     #[must_use]
     pub fn daemon_needed(&self) -> bool {
-        self.local_proxy_enabled() || self.video.has_grants()
+        self.local_proxy_enabled() || self.media.has_grants()
     }
 
     #[must_use]
@@ -173,6 +175,14 @@ pub fn migrate() -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).context("failed to read Wizard settings for migration"),
     };
+    if let Some(serialized) = migrate_text(&text)? {
+        save_text(&path, &serialized)?;
+    }
+    Ok(())
+}
+
+/// The migrated document, or `None` when it needs no changes.
+fn migrate_text(text: &str) -> Result<Option<String>> {
     // Parser diagnostics may contain credentials; expose only static messages.
     let mut document: toml_edit::DocumentMut = text
         .parse()
@@ -187,14 +197,14 @@ pub fn migrate() -> Result<()> {
             changed = true;
         }
     }
-    if changed {
-        let serialized = document.to_string();
-        // Do not partially migrate a file with other invalid settings.
-        let _: Settings = toml_edit::de::from_str(&serialized)
-            .map_err(|_| anyhow!("failed to validate migrated Wizard settings"))?;
-        save_text(&path, &serialized)?;
+    if !changed {
+        return Ok(None);
     }
-    Ok(())
+    let serialized = document.to_string();
+    // Do not partially migrate a file with other invalid settings.
+    let _: Settings = toml_edit::de::from_str(&serialized)
+        .map_err(|_| anyhow!("failed to validate migrated Wizard settings"))?;
+    Ok(Some(serialized))
 }
 
 pub fn load_from_file() -> Result<Settings> {
@@ -262,27 +272,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_grants_round_trip() -> Result<()> {
+    fn media_grants_round_trip() -> Result<()> {
         let mut s = Settings::default();
-        s.video.set(VideoAgent::Claude, Some("local".into()));
-        s.video.set(VideoAgent::ClaudeDesktop, None);
+        s.media.set(MediaAgent::Claude, Some("local".into()));
+        s.media.set(MediaAgent::ClaudeDesktop, None);
         let restored: Settings = toml_edit::de::from_str(&toml_edit::ser::to_string_pretty(&s)?)?;
-        assert!(restored.video == s.video);
+        assert!(restored.media == s.media);
         Ok(())
     }
 
     #[test]
-    fn video_is_suggested_until_the_user_turns_it_off() {
-        let mut video = VideoSettings::default();
-        assert!(video.suggested(VideoAgent::Codex));
-        video.set(VideoAgent::Codex, Some("local".into()));
-        assert!(!video.suggested(VideoAgent::Codex));
-        video.set(VideoAgent::Codex, None);
-        assert!(!video.suggested(VideoAgent::Codex));
-        assert!(!video.has_grants());
-        assert!(video.suggested(VideoAgent::Claude));
-        video.set(VideoAgent::Codex, Some("again".into()));
-        assert!(video.declined.is_empty());
+    fn media_is_suggested_until_the_user_turns_it_off() {
+        let mut media = MediaSettings::default();
+        assert!(media.suggested(MediaAgent::Codex));
+        media.set(MediaAgent::Codex, Some("local".into()));
+        assert!(!media.suggested(MediaAgent::Codex));
+        media.set(MediaAgent::Codex, None);
+        assert!(!media.suggested(MediaAgent::Codex));
+        assert!(!media.has_grants());
+        assert!(media.suggested(MediaAgent::Claude));
+        media.set(MediaAgent::Codex, Some("again".into()));
+        assert!(media.declined.is_empty());
+    }
+
+    #[test]
+    fn legacy_video_table_carries_grants_and_opt_outs() -> Result<()> {
+        let legacy = "install_id = 'abcdefgh27'\n\n[video]\nclaude = 'wizard-video-grant'\ndeclined = ['codex']\n";
+        let read: Settings = toml_edit::de::from_str(legacy)?;
+        assert_eq!(read.media.claude.as_deref(), Some("wizard-video-grant"));
+        assert_eq!(read.media.declined.len(), 1);
+        assert!(!read.media.suggested(MediaAgent::Codex));
+        // Startup migration must not force a write (e.g. on a symlinked 1.0.10 settings file).
+        assert!(migrate_text(legacy)?.is_none());
+        let saved = toml_edit::ser::to_string_pretty(&read)?;
+        assert!(!saved.contains("[video]") && saved.contains("[media]"));
+        let restored: Settings = toml_edit::de::from_str(&saved)?;
+        assert!(restored == read);
+        Ok(())
     }
 
     #[test]

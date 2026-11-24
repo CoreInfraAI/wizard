@@ -1,0 +1,6 @@
+{
+  "name": "coreinfra-media",
+  "version": "2.0.0",
+  "author": { "name": "CoreInfra" },
+  "description": "Media generation through the CoreInfra Wizard desktop connector."
+}

@@ -149,7 +149,7 @@ async function openClaudeCodePlan(canvas: ReturnType<typeof within>, page: Retur
   await userEvent.click(await canvas.findByRole("radio", { name: "Своя подписка Claude" }));
   const proxy = await page.findByRole("dialog", { name: "Включить системный прокси?" });
   await userEvent.click(within(proxy).getByRole("button", { name: "Пропустить" }));
-  await userEvent.click(await canvas.findByRole("switch", { name: /coreinfra-video/ }));
+  await userEvent.click(await canvas.findByRole("switch", { name: /coreinfra-media/ }));
   await userEvent.click(canvas.getByRole("button", { name: "Применить" }));
   return within(await page.findByRole("dialog", { name: "План изменений: Claude Code" }));
 }
@@ -159,7 +159,7 @@ export const AgentChangePlan: Story = {
   parameters: { scenario: "all_agents", route: "/agents/claude" },
   play: async ({ canvas, canvasElement }) => {
     const plan = await openClaudeCodePlan(canvas, within(canvasElement.ownerDocument.body));
-    await expect(plan.getByText("coreinfra-video", { selector: "code" })).toBeVisible();
+    await expect(plan.getByText("coreinfra_media", { selector: "code" })).toBeVisible();
     const details = plan.getByRole("button", { name: /Ещё .*шаг/ });
     await expect(details).toHaveAttribute("aria-expanded", "false");
   },

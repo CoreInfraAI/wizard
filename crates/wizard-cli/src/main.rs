@@ -44,7 +44,7 @@ fn main() -> ExitCode {
     if let Some(arg1) = std::env::args_os().nth(1)
         && arg1 == "--proxy"
     {
-        return wizard_proxy_daemon::main(wizard_core::video::background::Service::default());
+        return wizard_proxy_daemon::main(wizard_core::media::background::Service::default());
     }
 
     let cli = Cli::parse();

@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   type ConnectionPlan,
   applyAgentPlan,
-  applyVideoConnection,
+  applyMediaConnection,
   prepareAgentChange,
 } from "./agents_state";
 import { reportError } from "../logs/log";
@@ -27,16 +27,17 @@ function stepCount(count: number) {
 function PlanSteps({ plan }: { plan: ConnectionPlan }) {
   const steps: ReactNode[] = (plan.routing?.info ?? []).map(step => step.description);
   // Keep the choice from the form visible alongside the first routing action.
-  if (plan.videoEnabled !== undefined) {
-    const video = <Code>coreinfra-video</Code>;
+  if (plan.mediaEnabled !== undefined) {
+    const server = <Code>coreinfra_media</Code>;
+    const skill = <Code>coreinfra-video</Code>;
     if (plan.agent === "claude_desktop") {
-      steps.unshift(plan.videoEnabled
-        ? <>Подключит инструменты {video} в Claude Desktop.</>
-        : <>Отключит видео-модели {video} в Claude Desktop.</>);
+      steps.unshift(plan.mediaEnabled
+        ? <>Подключит MCP-сервер {server} в Claude Desktop.</>
+        : <>Отключит MCP-сервер {server} в Claude Desktop.</>);
     } else {
-      steps.unshift(plan.videoEnabled
-        ? <>Установит скилл {video} для видео-моделей.</>
-        : <>Отключит видео-модели и удалит скилл {video}, установленный Wizard.</>);
+      steps.unshift(plan.mediaEnabled
+        ? <>Установит скилл {skill} и подключит MCP-сервер {server}.</>
+        : <>Отключит MCP-сервер {server} и удалит скилл {skill}, установленный Wizard.</>);
     }
   }
   const rows = steps.map((step, index) => <li key={index}><Text>{step}</Text></li>);
@@ -71,8 +72,8 @@ export function PreparedPlanDialog({
   onApplied?: () => void;
   applyLabel?: "Применить" | "Завершить настройку";
 }) {
-  const { agent, routing, videoEnabled } = prepared;
-  const hasChanges = Boolean(routing?.info.length) || videoEnabled !== undefined;
+  const { agent, routing, mediaEnabled } = prepared;
+  const hasChanges = Boolean(routing?.info.length) || mediaEnabled !== undefined;
   const [operation, setOperation] = useState<"apply" | "prepare" | "launch">();
   const [routingApplied, setRoutingApplied] = useState(false);
   const [applied, setApplied] = useState(false);
@@ -96,7 +97,7 @@ export function PreparedPlanDialog({
     setOperation("prepare");
     try {
       const token = routing.token === null ? null : { kind: "existing" as const, token: routing.token };
-      const next = await prepareAgentChange({ agent, routing: { change: routing.change, token }, videoEnabled });
+      const next = await prepareAgentChange({ agent, routing: { change: routing.change, token }, mediaEnabled });
       onReprepared(next);
       setError(undefined);
     } catch (cause) {
@@ -113,20 +114,20 @@ export function PreparedPlanDialog({
     inFlight.current = true;
     setOperation("apply");
     setError(undefined);
-    let applyingVideo = false;
+    let applyingMedia = false;
     try {
       if (routing?.info.length && !routingApplied) {
         await applyAgentPlan(routing.plan);
         setRoutingApplied(true);
       }
-      if (videoEnabled !== undefined) {
-        // A routing plan may snapshot the same agent files. Finish it before changing video.
-        applyingVideo = true;
-        await applyVideoConnection(agent, videoEnabled);
+      if (mediaEnabled !== undefined) {
+        // A routing plan may snapshot the same agent files. Finish it before changing media.
+        applyingMedia = true;
+        await applyMediaConnection(agent, mediaEnabled);
       }
       setApplied(true);
     } catch (cause) {
-      const message = applyingVideo ? "Не удалось применить настройку видео." : "Не удалось применить изменения. Часть изменений могла быть применена.";
+      const message = applyingMedia ? "Не удалось применить настройку медиа." : "Не удалось применить изменения. Часть изменений могла быть применена.";
       reportError(message, cause);
       setError(message + " " + String(cause));
     } finally {

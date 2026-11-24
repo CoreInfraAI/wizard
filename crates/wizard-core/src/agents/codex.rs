@@ -34,6 +34,8 @@ pub(crate) struct Codex {
     pub routing_mode: RoutingMode,
     pub token: Option<AgentToken>,
     pub proxy_needs_apply: bool,
+    /// The saved media grant differs from the profile, such as a 1.0.10 registration.
+    pub media_needs_apply: bool,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
@@ -63,12 +65,23 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
     let proxy_needs_apply = routing_mode != RoutingMode::Disabled
         && matches!(desktop, AgentDetection::Found(_))
         && (!settings.codex_proxy_enabled || desktop_proxy_needs_apply());
+    let media_needs_apply = media_needs_apply(settings.media.codex.as_deref());
     AgentDetection::Found(Codex {
         cli,
         desktop,
         routing_mode,
         token,
         proxy_needs_apply,
+        media_needs_apply,
+    })
+}
+
+fn media_needs_apply(grant: Option<&str>) -> bool {
+    let Ok(_guard) = PreparedAgent::Codex.lock() else {
+        return true;
+    };
+    config_path().map_or(true, |path| {
+        crate::media::install::needs_apply_at(&path, grant)
     })
 }
 
@@ -122,7 +135,7 @@ pub fn restore_backup(id: u32, settings: &Settings) -> Result<()> {
     let path = std::path::absolute(config_path()?)?;
     let backups = BackupManager::new(AgentKind::Codex)?;
     let mut changes = backups.restore_changes(id)?;
-    restore_video_registration(&mut changes, &path, settings)?;
+    restore_media_registration(&mut changes, &path, settings)?;
     backups.apply_changes(&changes)?;
     // Backups hold files only; the restored mode decides whether ChatGPT updates itself.
     #[cfg(target_os = "macos")]
@@ -139,7 +152,7 @@ pub fn restore_backup(id: u32, settings: &Settings) -> Result<()> {
     Ok(())
 }
 
-fn restore_video_registration(
+fn restore_media_registration(
     changes: &mut Vec<FileChange>,
     active: &Path,
     settings: &Settings,
@@ -154,11 +167,11 @@ fn restore_video_registration(
             .is_some_and(|n| n == "config.toml")
         {
             let bearer = settings
-                .video
+                .media
                 .codex
                 .as_deref()
                 .filter(|_| change.path() == active);
-            crate::video::install::update_config(&mut change.after, None, bearer)?;
+            crate::media::install::update_config(&mut change.after, None, bearer)?;
         }
     }
     Ok(())
@@ -683,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn restoring_video_registration_preserves_shell_policy() -> Result<()> {
+    fn restoring_media_registration_preserves_shell_policy() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let active = dir.path().join("config.toml");
         let old = dir.path().join("previous-home/config.toml");
@@ -692,14 +705,14 @@ mod tests {
             "model_provider='coreinfra'\n[shell_environment_policy]\nexclude=['PRIVATE_SETTING']\n";
         backup.after = FileSnapshot::new(backed_up.into(), 0o644);
         let settings = Settings {
-            video: wizard_settings::VideoSettings {
+            media: wizard_settings::MediaSettings {
                 codex: Some("fixture-local-grant".into()),
                 ..Default::default()
             },
             ..Settings::default()
         };
         let mut changes = vec![backup];
-        restore_video_registration(&mut changes, &active, &settings)?;
+        restore_media_registration(&mut changes, &active, &settings)?;
         FileChange::apply_all(&changes)?;
         assert_eq!(std::fs::read_to_string(old)?, backed_up);
         let active_config = std::fs::read_to_string(active)?;

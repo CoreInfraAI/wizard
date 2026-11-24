@@ -15,7 +15,7 @@ const MAX_RESPONSE: usize = 1024;
 
 /// Include the proxy revision so incompatible development builds with the same
 /// application version are replaced once instead of keeping an old daemon alive.
-pub const DAEMON_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+proxy.3");
+pub const DAEMON_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+proxy.4");
 
 /// Current runtime permission to proxy, not upstream health or token validity.
 /// Both ports remain bound while the managed server is running.
@@ -24,10 +24,11 @@ pub const DAEMON_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+proxy.3");
 pub struct Status {
     pub version: String,
     pub enabled: bool,
-    #[serde(default)]
-    pub video_running: bool,
-    #[serde(default)]
-    pub video_error: Option<String>,
+    // Keep legacy wire field names so 1.0.10 CLI and daemon remain mutually compatible.
+    #[serde(default, rename = "video_running", alias = "media_running")]
+    pub media_running: bool,
+    #[serde(default, rename = "video_error", alias = "media_error")]
+    pub media_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -141,5 +142,34 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Status>(response).is_err());
         }
+    }
+
+    #[test]
+    fn status_is_wire_compatible_with_1_0_10_in_both_directions() -> serde_json::Result<()> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyStatus {
+            version: String,
+            enabled: bool,
+            #[serde(default)]
+            video_running: bool,
+            #[serde(default)]
+            video_error: Option<String>,
+        }
+        let legacy: Status = serde_json::from_str(
+            r#"{"version":"1.0.10+proxy.3","enabled":false,"video_running":true,"video_error":"stopped"}"#,
+        )?;
+        assert!(legacy.media_running);
+        assert_eq!(legacy.media_error.as_deref(), Some("stopped"));
+        let emitted = serde_json::to_string(&legacy)?;
+        let decoded: LegacyStatus = serde_json::from_str(&emitted)?;
+        assert_eq!(decoded.version, "1.0.10+proxy.3");
+        assert!(!decoded.enabled && decoded.video_running);
+        assert_eq!(decoded.video_error.as_deref(), Some("stopped"));
+        let renamed: Status = serde_json::from_str(
+            r#"{"version":"1.0.11+proxy.4","enabled":true,"media_running":true,"media_error":null}"#,
+        )?;
+        assert!(renamed.media_running && renamed.media_error.is_none());
+        Ok(())
     }
 }

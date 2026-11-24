@@ -7,9 +7,9 @@ use std::sync::LazyLock;
 pub mod agents;
 mod config_files;
 pub mod hub;
+pub mod media;
 mod platform;
 pub mod prepared_plan;
-pub mod video;
 
 pub fn validate_token(token: &str) -> anyhow::Result<()> {
     static TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {

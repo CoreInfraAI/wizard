@@ -200,7 +200,7 @@ async fn wait_for_proxy() -> io::Result<()> {
         loop {
             match wizard_proxy::control::status().await {
                 Ok(status) => {
-                    if let Some(error) = status.video_error {
+                    if let Some(error) = status.media_error {
                         return Err(io::Error::other(error));
                     }
                     log::info!("proxy daemon HTTP management is ready");
@@ -286,7 +286,7 @@ pub fn uninstall() -> ExitCode {
 /// Run the proxy process without initializing the GUI.
 /// Call once at process startup, before any other logger or Tokio runtime.
 #[must_use]
-pub fn main(video: impl wizard_proxy::VideoService + 'static) -> ExitCode {
+pub fn main(media: impl wizard_proxy::MediaService + 'static) -> ExitCode {
     let result = (|| {
         let _instance = acquire_instance_lock()?;
         logging::initialize()?;
@@ -302,7 +302,7 @@ pub fn main(video: impl wizard_proxy::VideoService + 'static) -> ExitCode {
             .build()
             .inspect_err(|error| diagnostics::error("proxy runtime creation", error))
             .map_err(|_| "failed to create proxy runtime")
-            .and_then(|runtime| runtime.block_on(run(Box::new(video))));
+            .and_then(|runtime| runtime.block_on(run(Box::new(media))));
         match &result {
             Ok(()) => log::info!("proxy daemon stopped"),
             Err(operation) => log::error!("{operation}"),
@@ -321,10 +321,10 @@ pub fn main(video: impl wizard_proxy::VideoService + 'static) -> ExitCode {
     }
 }
 
-async fn run(video: Box<dyn wizard_proxy::VideoService>) -> Result<(), &'static str> {
+async fn run(media: Box<dyn wizard_proxy::MediaService>) -> Result<(), &'static str> {
     // Register handlers before starting listeners so startup-time events remain pending.
     let shutdown = platform::shutdown_signal()?;
-    wizard_proxy::run_managed(shutdown, video)
+    wizard_proxy::run_managed(shutdown, media)
         .await
         .inspect_err(|error| diagnostics::error("proxy server", error))
         .map_err(|_| "proxy server failed")

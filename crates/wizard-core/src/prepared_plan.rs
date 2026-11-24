@@ -151,11 +151,11 @@ impl PreparedPlan {
                         "Удалит настройки прокси Wizard из ChatGPT."
                     }.to_owned(),
                 },
-                PreparedStep::SetClaudeDesktop1pVideo { enabled, .. } => PreparedStepInfo {
+                PreparedStep::SetClaudeDesktop1pMedia { enabled, .. } => PreparedStepInfo {
                     description: if *enabled {
-                        "Зарегистрирует локальный MCP-сервер coreinfra_video в Claude Desktop."
+                        "Зарегистрирует локальный MCP-сервер coreinfra_media в Claude Desktop."
                     } else {
-                        "Удалит локальный MCP-сервер coreinfra_video из настроек Claude Desktop."
+                        "Удалит локальный MCP-сервер coreinfra_media из настроек Claude Desktop."
                     }.to_owned(),
                 },
                 PreparedStep::SetCodexProxyEnabled { enabled } => PreparedStepInfo {
@@ -259,9 +259,18 @@ impl PreparedPlan {
                 *step = PreparedStep::ChangeFile {
                     change: codex::prepare_desktop_proxy(path.clone(), *enabled)?,
                 };
-            } else if let PreparedStep::SetClaudeDesktop1pVideo { path, enabled } = step {
+            } else if let PreparedStep::SetClaudeDesktop1pMedia {
+                path,
+                enabled,
+                headers,
+            } = step
+            {
                 *step = PreparedStep::ChangeFile {
-                    change: claude_desktop::prepare_1p_video(path.clone(), *enabled)?,
+                    change: claude_desktop::prepare_1p_media(
+                        path.clone(),
+                        *enabled,
+                        headers.clone(),
+                    )?,
                 };
             }
         }
@@ -350,11 +359,13 @@ pub enum PreparedStep {
         enabled: bool,
     },
     /// Read Claude Desktop's 1p configuration after shutdown; change only the
-    /// Wizard-owned `coreinfra_video` server.
-    #[serde(rename = "set_claude_desktop_1p_video")]
-    SetClaudeDesktop1pVideo {
+    /// Wizard-owned `coreinfra_media` server.
+    #[serde(rename = "set_claude_desktop_1p_media")]
+    SetClaudeDesktop1pMedia {
         path: PathBuf,
         enabled: bool,
+        /// The grant file the registration passes to the connector.
+        headers: PathBuf,
     },
     /// Saves `ChatGPT`'s demand for the local proxy, without an agent credential.
     SetCodexProxyEnabled {
@@ -430,7 +441,7 @@ impl PreparedStep {
             Self::SetChatGptProxy { .. } => {
                 anyhow::bail!("ChatGPT Preferences must be prepared after closing the app")
             }
-            Self::SetClaudeDesktop1pVideo { .. } => {
+            Self::SetClaudeDesktop1pMedia { .. } => {
                 anyhow::bail!("Claude Desktop configuration must be prepared after closing the app")
             }
             Self::SetClaudeProxyEnabled { .. } | Self::SetCodexProxyEnabled { .. } => {

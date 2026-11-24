@@ -1,4 +1,4 @@
-mod video;
+mod media;
 
 use super::{
     AgentDetection, AgentToken, RoutingMode,
@@ -33,7 +33,7 @@ pub(crate) struct ClaudeDesktop {
     pub routing_mode: RoutingMode,
     pub token: Option<AgentToken>,
     pub proxy_needs_apply: bool,
-    pub video_needs_apply: bool,
+    pub media_needs_apply: bool,
 }
 
 pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
@@ -50,19 +50,19 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         let _guard = PreparedAgent::ClaudeDesktop.lock()?;
         let dir = config_library()?;
         let (routing_mode, token, proxy_needs_apply) = read_profile(&dir)?;
-        let plan = prepare_with_video(
+        let plan = prepare_with_media(
             &dir,
             &config_1p_path()?,
             None,
-            settings.video.claude_desktop.is_some(),
-            &video::Registration::for_wizard()?,
+            settings.media.claude_desktop.is_some(),
+            &media::Registration::for_wizard()?,
         );
         Ok(ClaudeDesktop {
             info,
             routing_mode,
             token,
             proxy_needs_apply,
-            video_needs_apply: plan.map_or(true, |plan| !plan.info().is_empty()),
+            media_needs_apply: plan.map_or(true, |plan| !plan.info().is_empty()),
         })
     };
     match configuration() {
@@ -83,15 +83,19 @@ fn config_1p_path() -> Result<PathBuf> {
 }
 
 /// Reads the 1p configuration now; call it while Claude Desktop is closed when it may run.
-/// Only the Wizard-owned `coreinfra_video` entry changes.
-pub(crate) fn prepare_1p_video(path: PathBuf, enable: bool) -> Result<FileChange> {
-    video_1p_change(path, enable, &video::Registration::for_wizard()?)
-}
-
-fn video_1p_change(
+/// Only the Wizard-owned `coreinfra_media` entry changes.
+pub(crate) fn prepare_1p_media(
     path: PathBuf,
     enable: bool,
-    registration: &video::Registration,
+    headers: PathBuf,
+) -> Result<FileChange> {
+    media_1p_change(path, enable, &media::Registration::with_headers(headers)?)
+}
+
+fn media_1p_change(
+    path: PathBuf,
+    enable: bool,
+    registration: &media::Registration,
 ) -> Result<FileChange> {
     let mut change = FileChange::read(path)?;
     if !enable && change.before().content().is_none() {
@@ -159,16 +163,43 @@ pub fn get_backups() -> Result<Vec<super::Backup>> {
     BackupManager::new(AgentKind::ClaudeDesktop)?.get_backups()
 }
 
-pub fn prepare_restore_backup(id: u32) -> Result<PreparedPlan> {
+pub fn prepare_restore_backup(id: u32, media: bool) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
-    prepare_restore_at(
+    prepare_restore_with_media(
         &config_library()?,
+        &config_1p_path()?,
         &BackupManager::new(AgentKind::ClaudeDesktop)?,
         id,
+        media,
+        &media::Registration::for_wizard()?,
     )
 }
 
+#[cfg(test)]
 fn prepare_restore_at(dir: &Path, manager: &BackupManager, id: u32) -> Result<PreparedPlan> {
+    let config_1p = dir
+        .parent()
+        .and_then(Path::parent)
+        .context("Missing test profile directory")?
+        .join("Claude/claude_desktop_config.json");
+    prepare_restore_with_media(
+        dir,
+        &config_1p,
+        manager,
+        id,
+        false,
+        &tests::registration(dir)?,
+    )
+}
+
+fn prepare_restore_with_media(
+    dir: &Path,
+    config_1p: &Path,
+    manager: &BackupManager,
+    id: u32,
+    media_grant: bool,
+    media: &media::Registration,
+) -> Result<PreparedPlan> {
     let mut changes = manager.restore_changes(id)?;
     // An old backup must not point Claude at a listener that no longer exists.
     for change in &mut changes {
@@ -198,36 +229,69 @@ fn prepare_restore_at(dir: &Path, manager: &BackupManager, id: u32) -> Result<Pr
             changes.push(FileChange::read(current_path)?);
         }
     }
-    let restored = |path: &Path| -> Result<Value> {
+    let restored = |changes: &[FileChange], path: &Path| -> Result<Value> {
         let change = changes
             .iter()
             .find(|change| change.path() == path)
             .context("Claude Desktop backup is missing a configuration file")?;
         json::parse(&change.after)
     };
-    let meta = restored(&dir.join("_meta.json"))?;
-    let proxy_enabled = if meta.get("hybridPointer").is_none_or(Value::is_null)
-        && let Some(id) = applied_id(&meta)?
-    {
-        let profile = restored(&dir.join(format!("{id}.json")))?;
+    let meta = restored(&changes, &dir.join("_meta.json"))?;
+    let selected = if meta.get("hybridPointer").is_none_or(Value::is_null) {
+        applied_id(&meta)?.map(str::to_owned)
+    } else {
+        None
+    };
+    let preferences_path = dir.with_file_name("claude_desktop_config.json");
+    let use_3p = selected.is_some()
+        && restored(&changes, &preferences_path)
+            .map_or(true, |prefs| prefs["deploymentMode"] != "1p");
+    // Reconcile the restored profile with the current media grant so a 1.0.10 backup does not
+    // reinstate a legacy connector pointing to a migrated/deleted headers file.
+    if let Some(active_id) = &selected {
+        let active_path = dir.join(format!("{active_id}.json"));
+        if let Some(change) = changes
+            .iter_mut()
+            .find(|change| change.path() == &active_path)
+            && change.after.content().is_some()
+        {
+            json::update(&mut change.after, |profile| {
+                let object = profile
+                    .as_object_mut()
+                    .context("Claude Desktop configuration must be an object")?;
+                media.update_3p_profile(object, media_grant && use_3p)
+            })?;
+        }
+    }
+    let proxy_enabled = if let Some(active_id) = &selected {
+        let profile = restored(&changes, &dir.join(format!("{active_id}.json")))?;
         profile["egressProxyUrl"] == format!("http://{}", wizard_proxy::ADDRESS)
             && profile.get("egressProxyPacUrl").is_none_or(Value::is_null)
     } else {
         false
     };
-    let mut steps: Vec<_> = changes
+    let mut steps: Vec<_> = crate::media::install::migrate_headers(&media.headers, media_grant)?
         .into_iter()
+        .chain(changes)
         .map(|change| PreparedStep::ChangeFile { change })
         .collect();
+    let enable_1p = media_grant && !use_3p;
+    if media_1p_change(config_1p.to_owned(), enable_1p, media)?.is_changed() {
+        steps.push(PreparedStep::SetClaudeDesktop1pMedia {
+            path: config_1p.to_owned(),
+            enabled: enable_1p,
+            headers: media.headers.clone(),
+        });
+    }
     steps.push(PreparedStep::SetClaudeProxyEnabled {
         enabled: proxy_enabled,
     });
     Ok(PreparedPlan::new(PreparedAgent::ClaudeDesktop, steps))
 }
 
-/// The key for paid video calls: the profile's key in Hub; in Sub, which has no agent key,
+/// The key for paid media calls: the profile's key in Hub; in Sub, which has no agent key,
 /// Wizard's own proxy key from its personal Hub. Never log it.
-pub(crate) fn video_token() -> Result<Option<String>> {
+pub(crate) fn media_token() -> Result<Option<String>> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
     let (mode, token, _) = read_profile(&config_library()?)?;
     Ok(match mode {
@@ -267,28 +331,28 @@ fn read_profile(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
 
 /// Prepare a local profile update without writing files or restarting Claude. Hub writes `token`
 /// to the profile; Hub and Sub enable local proxy demand; Disabled ignores it.
-/// `video`: whether Wizard holds a video grant for Claude Desktop.
-pub fn prepare_routing(mode: RoutingMode, token: &str, video: bool) -> Result<PreparedPlan> {
-    prepare_configuration(Some((mode, token)), video)
+/// `media`: whether Wizard holds a media grant for Claude Desktop.
+pub fn prepare_routing(mode: RoutingMode, token: &str, media: bool) -> Result<PreparedPlan> {
+    prepare_configuration(Some((mode, token)), media)
 }
 
-/// Reconcile video in the current deployment without changing inference or proxy settings.
-pub fn prepare_video(enabled: bool) -> Result<PreparedPlan> {
+/// Reconcile media in the current deployment without changing inference or proxy settings.
+pub fn prepare_media(enabled: bool) -> Result<PreparedPlan> {
     prepare_configuration(None, enabled)
 }
 
 fn prepare_configuration(
     routing: Option<(RoutingMode, &str)>,
-    video: bool,
+    media: bool,
 ) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
-    prepare_with_video(
+    prepare_with_media(
         &config_library()?,
         &config_1p_path()?,
         routing,
-        video,
-        &video::Registration::for_wizard()?,
+        media,
+        &media::Registration::for_wizard()?,
     )
 }
 
@@ -299,21 +363,21 @@ fn prepare_routing_at(dir: &Path, mode: RoutingMode, token: &str) -> Result<Prep
         .and_then(Path::parent)
         .context("Missing test profile directory")?
         .join("Claude/claude_desktop_config.json");
-    prepare_with_video(
+    prepare_with_media(
         dir,
         &config_1p,
         Some((mode, token)),
         false,
-        &video::Registration::for_wizard()?,
+        &tests::registration(dir)?,
     )
 }
 
-fn prepare_with_video(
+fn prepare_with_media(
     dir: &Path,
     config_1p: &Path,
     routing: Option<(RoutingMode, &str)>,
-    video_grant: bool,
-    video: &video::Registration,
+    media_grant: bool,
+    media: &media::Registration,
 ) -> Result<PreparedPlan> {
     let mut meta = FileChange::read(dir.join("_meta.json"))?;
     let metadata = json::parse(&meta.after)?;
@@ -347,7 +411,10 @@ fn prepare_with_video(
         id = Some(new_id);
     }
 
-    let mut steps = Vec::new();
+    let mut steps: Vec<_> = crate::media::install::migrate_headers(&media.headers, media_grant)?
+        .into_iter()
+        .map(|change| PreparedStep::ChangeFile { change })
+        .collect();
     if let Some(id) = id {
         let mut config = FileChange::read(dir.join(format!("{id}.json")))?;
         ensure!(
@@ -359,7 +426,7 @@ fn prepare_with_video(
                 .as_object_mut()
                 .context("Claude Desktop configuration must be an object")?;
 
-            video.update_3p_profile(object, video_grant && use_3p)?;
+            media.update_3p_profile(object, media_grant && use_3p)?;
             let Some((mode, token)) = routing else {
                 return Ok(());
             };
@@ -409,11 +476,12 @@ fn prepare_with_video(
     ]);
     // Claude Desktop rewrites its 1p configuration while running: read it again after
     // closing the app if the registration needs to change.
-    let enabled = video_grant && !use_3p;
-    if video_1p_change(config_1p.to_owned(), enabled, video)?.is_changed() {
-        steps.push(PreparedStep::SetClaudeDesktop1pVideo {
+    let enabled = media_grant && !use_3p;
+    if media_1p_change(config_1p.to_owned(), enabled, media)?.is_changed() {
+        steps.push(PreparedStep::SetClaudeDesktop1pMedia {
             path: config_1p.to_owned(),
             enabled,
+            headers: media.headers.clone(),
         });
     }
     if let Some((mode, _)) = routing {
@@ -428,6 +496,11 @@ fn prepare_with_video(
 mod tests {
     use super::*;
     use crate::config_files::changes::FileSnapshot;
+
+    /// Keeps the grant file next to the test profile.
+    pub(super) fn registration(dir: &Path) -> Result<media::Registration> {
+        media::Registration::with_headers(dir.join("media-claude-desktop-headers.json"))
+    }
 
     #[test]
     fn first_launch_needs_only_precreated_configuration() -> Result<()> {
@@ -551,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn subscription_video_lives_in_the_1p_config_and_follows_the_mode() -> Result<()> {
+    fn subscription_media_lives_in_the_1p_config_and_follows_the_mode() -> Result<()> {
         let fixture = Fixture::new("gateway")?;
         let config_1p = fixture
             .root
@@ -564,90 +637,98 @@ mod tests {
             json!({"preferences": {"sidebarMode": "a"}, "mcpServers": {"other": other}})
                 .to_string(),
         )?;
-        let registration = video::Registration::for_wizard()?;
+        let registration = registration(fixture.root.path())?;
         let ours = json!({
             "command": registration.command,
-            "args": [crate::video::stdio::ARG, registration.port.to_string(), registration.headers],
+            "args": [crate::media::stdio::ARG, registration.port.to_string(), registration.headers],
         });
-        let prepare = |mode, video| {
-            prepare_with_video(
+        let prepare = |mode, media| {
+            prepare_with_media(
                 &fixture.dir,
                 &config_1p,
                 Some((mode, "token")),
-                video,
+                media,
                 &registration,
             )
         };
-        let video_step = |plan: &PreparedPlan| {
+        let media_step = |plan: &PreparedPlan| {
             plan.steps().iter().find_map(|step| match step {
-                PreparedStep::SetClaudeDesktop1pVideo { enabled, .. } => Some(*enabled),
+                PreparedStep::SetClaudeDesktop1pMedia { enabled, .. } => Some(*enabled),
                 _ => None,
             })
         };
         let read_config_1p = || json::read(&config_1p);
 
         // No grant, no change: the 1p configuration is not touched.
-        assert_eq!(video_step(&prepare(RoutingMode::Sub, false)?), None);
+        assert_eq!(media_step(&prepare(RoutingMode::Sub, false)?), None);
 
         let plan = prepare(RoutingMode::Sub, true)?;
-        assert_eq!(video_step(&plan), Some(true));
+        assert_eq!(media_step(&plan), Some(true));
         // Claude Desktop rewrites its 1p configuration while it runs.
         std::fs::write(
             &config_1p,
             json!({"preferences": {"sidebarMode": "b"}, "mcpServers": {
-                "other": other, "coreinfra_video": {"command":"previous-wizard", "args":[], "env":{}}
+                "other": other,
+                "coreinfra_media": {
+                    "command": "previous-wizard",
+                    "args": [crate::media::stdio::LEGACY_ARG, registration.port.to_string(), registration.headers],
+                    "env": {}
+                }
             }})
                 .to_string(),
         )?;
         fixture.apply(plan, true)?;
         assert_eq!(
             read_config_1p()?["mcpServers"],
-            json!({"other": other, "coreinfra_video": ours})
+            json!({"other": other, "coreinfra_media": ours})
         );
         assert_eq!(read_config_1p()?["preferences"]["sidebarMode"], "b");
-        assert_eq!(video_step(&prepare(RoutingMode::Sub, true)?), None);
+        assert_eq!(media_step(&prepare(RoutingMode::Sub, true)?), None);
         // The 1p configuration is Claude's own state, never part of a Wizard backup.
         assert!(!AgentKind::ClaudeDesktop.backs_up(&config_1p));
 
         // Hub keeps its registration in the profile instead.
         let plan = prepare(RoutingMode::Hub, true)?;
-        assert_eq!(video_step(&plan), Some(false));
+        assert_eq!(media_step(&plan), Some(false));
         fixture.apply(plan, true)?;
         assert_eq!(read_config_1p()?["mcpServers"], json!({"other": other}));
         assert_eq!(read_config_1p()?["preferences"]["sidebarMode"], "b");
 
-        let stale = json!({"command": "previous-wizard", "args": []});
+        let stale = json!({
+            "command": "previous-wizard",
+            "args": [crate::media::stdio::LEGACY_ARG, registration.port.to_string(), registration.headers]
+        });
         std::fs::write(
             &config_1p,
-            json!({"mcpServers": {"coreinfra_video": stale}}).to_string(),
+            json!({"mcpServers": {"coreinfra_media": stale}}).to_string(),
         )?;
         let plan = prepare(RoutingMode::Disabled, true)?;
-        assert_eq!(video_step(&plan), Some(true));
+        assert_eq!(media_step(&plan), Some(true));
         fixture.apply(plan, false)?;
         assert_eq!(
             read_config_1p()?,
-            json!({"mcpServers": {"coreinfra_video": ours}})
+            json!({"mcpServers": {"coreinfra_media": ours}})
         );
-        assert_eq!(video_step(&prepare(RoutingMode::Disabled, true)?), None);
+        assert_eq!(media_step(&prepare(RoutingMode::Disabled, true)?), None);
         fixture.apply(prepare(RoutingMode::Disabled, false)?, false)?;
         assert_eq!(read_config_1p()?, json!({}));
 
         std::fs::remove_file(&config_1p)?;
-        assert_eq!(video_step(&prepare(RoutingMode::Hub, true)?), None);
+        assert_eq!(media_step(&prepare(RoutingMode::Hub, true)?), None);
         assert!(!config_1p.exists());
         Ok(())
     }
 
     #[test]
-    fn hub_video_registration_follows_the_grant() -> Result<()> {
+    fn hub_media_registration_follows_the_grant() -> Result<()> {
         let fixture = Fixture::new("gateway")?;
         let config_1p = fixture
             .root
             .path()
             .join("Claude/claude_desktop_config.json");
-        let registration = video::Registration::for_wizard()?;
+        let registration = registration(fixture.root.path())?;
         let prepare = |grant| {
-            prepare_with_video(
+            prepare_with_media(
                 &fixture.dir,
                 &config_1p,
                 Some((RoutingMode::Hub, "token")),
@@ -655,16 +736,16 @@ mod tests {
                 &registration,
             )
         };
-        let video_needs_apply = |grant| -> Result<bool> {
+        let media_needs_apply = |grant| -> Result<bool> {
             Ok(
-                !prepare_with_video(&fixture.dir, &config_1p, None, grant, &registration)?
+                !prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration)?
                     .info()
                     .is_empty(),
             )
         };
         let example = json!({"name":"example", "transport":"http", "url":"https://mcp.example"});
-        // (MCP servers named coreinfra_video, Wizard marketplaces) in the profile.
-        let video_entries = || -> Result<(usize, usize)> {
+        // (MCP servers named coreinfra_media, Wizard marketplaces) in the profile.
+        let media_entries = || -> Result<(usize, usize)> {
             let profile = json::read(&fixture.files[0])?;
             let count = |key: &str, field: &str, value: &str| {
                 profile[key].as_array().map_or(0, |entries| {
@@ -673,7 +754,7 @@ mod tests {
             };
             assert_eq!(profile["managedMcpServers"][0], example);
             Ok((
-                count("managedMcpServers", "name", "coreinfra_video"),
+                count("managedMcpServers", "name", "coreinfra_media"),
                 count(
                     "allowedPluginMarketplaces",
                     "expectedName",
@@ -684,30 +765,30 @@ mod tests {
 
         // Hub without a grant registers nothing, and detection agrees.
         fixture.apply(prepare(false)?, true)?;
-        assert_eq!(video_entries()?, (0, 0));
-        assert!(!video_needs_apply(false)?);
-        assert!(video_needs_apply(true)?);
+        assert_eq!(media_entries()?, (0, 0));
+        assert!(!media_needs_apply(false)?);
+        assert!(media_needs_apply(true)?);
 
         fixture.apply(prepare(true)?, true)?;
-        assert_eq!(video_entries()?, (1, 1));
-        assert!(!video_needs_apply(true)?);
-        assert!(video_needs_apply(false)?);
+        assert_eq!(media_entries()?, (1, 1));
+        assert!(!media_needs_apply(true)?);
+        assert!(media_needs_apply(false)?);
 
         let current = json::read(&fixture.files[0])?;
         let mut stale = current.clone();
         stale["managedMcpServers"][1]["args"][2] = json!(
             registration
                 .headers
-                .with_file_name("video-mcp-headers.json")
+                .with_file_name("media-mcp-headers.json")
         );
         std::fs::write(&fixture.files[0], stale.to_string())?;
-        assert!(video_needs_apply(true)?);
+        assert!(media_needs_apply(true)?);
         fixture.apply(prepare(true)?, true)?;
         assert_eq!(json::read(&fixture.files[0])?, current);
 
-        stale["managedMcpServers"] = json!([
-            {"name":"coreinfra_video", "transport":"http"}, example, stale["managedMcpServers"][1]
-        ]);
+        let mut duplicate = current["managedMcpServers"][1].clone();
+        duplicate["args"][0] = json!(crate::media::stdio::LEGACY_ARG);
+        stale["managedMcpServers"] = json!([duplicate, example, stale["managedMcpServers"][1]]);
         stale["allowedPluginMarketplaces"] = json!([
             {"repo":"coreinfraai/WIZARD", "path":"old"},
             {"expectedName":"coreinfra-wizard", "ref":"old"}
@@ -723,20 +804,165 @@ mod tests {
             repaired["allowedPluginMarketplaces"],
             current["allowedPluginMarketplaces"]
         );
-        assert!(!video_needs_apply(true)?);
+        assert!(!media_needs_apply(true)?);
 
         // Revoking the grant removes only Wizard's entries.
         std::fs::write(&fixture.files[0], stale.to_string())?;
         fixture.apply(prepare(false)?, true)?;
-        assert_eq!(video_entries()?, (0, 0));
+        assert_eq!(media_entries()?, (0, 0));
+
+        // A foreign `coreinfra_media` server blocks enabling and is preserved when disabling.
+        let foreign =
+            json!({"name":"coreinfra_media", "transport":"http", "url":"https://other.example"});
+        let mut with_foreign = json::read(&fixture.files[0])?;
+        with_foreign["managedMcpServers"] = json!([foreign, example]);
+        std::fs::write(&fixture.files[0], with_foreign.to_string())?;
+        assert!(prepare(true).is_err());
+        fixture.apply(prepare(false)?, true)?;
+        assert_eq!(
+            json::read(&fixture.files[0])?["managedMcpServers"],
+            json!([foreign, example])
+        );
         Ok(())
     }
 
     #[test]
-    fn video_only_follows_the_active_deployment_without_configuring_routing() -> Result<()> {
-        let registration = video::Registration::for_wizard()?;
+    fn upgrade_from_1_0_10_replaces_only_wizard_video_registrations() -> Result<()> {
+        let fixture = Fixture::new("gateway")?;
+        let config_1p = fixture
+            .root
+            .path()
+            .join("Claude/claude_desktop_config.json");
+        std::fs::create_dir_all(config_1p.parent().context("1p configuration directory")?)?;
+        let registration = registration(fixture.root.path())?;
+        let legacy_headers = registration
+            .headers
+            .with_file_name("video-claude-desktop-headers.json");
+        let grant = r#"{"Authorization":"Bearer wizard-video-grant"}"#;
+        std::fs::write(&legacy_headers, grant)?;
+        let legacy = |command: &str| {
+            json!({"command": command, "args": [
+                crate::media::stdio::LEGACY_ARG, "33789", legacy_headers
+            ]})
+        };
+        let foreign = json!({"command": "other-video-mcp", "args": ["--serve"]});
+        let prepare = |mode, grant| {
+            prepare_with_media(
+                &fixture.dir,
+                &config_1p,
+                Some((mode, "token")),
+                grant,
+                &registration,
+            )
+        };
+
+        // Subscription: the 1p registration moves to the new name and headers file.
+        std::fs::write(
+            &config_1p,
+            json!({"mcpServers": {"coreinfra_video": legacy("/Applications/Old Wizard")}})
+                .to_string(),
+        )?;
+        let media_needs_apply = |grant| -> Result<bool> {
+            Ok(
+                !prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration)?
+                    .info()
+                    .is_empty(),
+            )
+        };
+        fixture.apply(prepare(RoutingMode::Sub, true)?, true)?;
+        let servers = json::read(&config_1p)?["mcpServers"].clone();
+        assert_eq!(servers.as_object().map(serde_json::Map::len), Some(1));
+        assert_eq!(
+            servers["coreinfra_media"]["args"][0],
+            crate::media::stdio::ARG
+        );
+        assert_eq!(std::fs::read_to_string(&registration.headers)?, grant);
+        assert!(!legacy_headers.exists());
+        assert!(!media_needs_apply(true)?);
+
+        // A foreign server under the old name survives enabling and disabling.
+        std::fs::write(
+            &config_1p,
+            json!({"mcpServers": {"coreinfra_video": foreign}}).to_string(),
+        )?;
+        for grant in [true, false] {
+            fixture.apply(prepare(RoutingMode::Sub, grant)?, true)?;
+            assert_eq!(
+                json::read(&config_1p)?["mcpServers"]["coreinfra_video"],
+                foreign
+            );
+        }
+
+        // Hub: the 3p profile drops the Wizard connector, preserves toolPolicy overrides, and allows catalogs.
+        std::fs::write(
+            &fixture.files[2],
+            json!({"deploymentMode":"3p"}).to_string(),
+        )?;
+        let mut profile = json::read(&fixture.files[0])?;
+        let mut stdio_legacy = legacy("/Applications/Old Wizard");
+        stdio_legacy["name"] = json!("coreinfra_video");
+        stdio_legacy["transport"] = json!("stdio");
+        stdio_legacy["toolPolicy"] = json!({"video_create":"deny", "video_models":"deny"});
+        let mut stdio_foreign = foreign.clone();
+        stdio_foreign["name"] = json!("coreinfra_video");
+        profile["managedMcpServers"] = json!([stdio_legacy, stdio_foreign]);
+        std::fs::write(&fixture.files[0], profile.to_string())?;
+        std::fs::write(&legacy_headers, grant)?;
+        std::fs::remove_file(&registration.headers)?;
+        assert!(media_needs_apply(true)?);
+        fixture.apply(prepare(RoutingMode::Hub, true)?, true)?;
+        let servers = json::read(&fixture.files[0])?["managedMcpServers"].clone();
+        assert_eq!(servers[0]["name"], "coreinfra_media");
+        assert_eq!(
+            servers[0]["toolPolicy"],
+            json!({"video_create":"deny", "video_models":"deny"})
+        );
+        assert_eq!(servers[1], stdio_foreign);
+        assert_eq!(servers.as_array().map(Vec::len), Some(2));
+        assert_eq!(std::fs::read_to_string(&registration.headers)?, grant);
+
+        // Restoring the 1.0.10 backup reconciles the connector to the current headers path.
+        let backup_id = u32::try_from(fixture.manager().get_backups()?.len())?;
+        fixture.apply(
+            prepare_restore_with_media(
+                &fixture.dir,
+                &config_1p,
+                &fixture.manager(),
+                backup_id,
+                true,
+                &registration,
+            )?,
+            true,
+        )?;
+        let restored = json::read(&fixture.files[0])?["managedMcpServers"].clone();
+        assert_eq!(restored[0]["name"], "coreinfra_media");
+        assert_eq!(restored[0]["args"][2], json!(registration.headers));
+
+        // A foreign `coreinfra_media` entry in 1p blocks enabling and survives disabling.
+        std::fs::write(
+            &config_1p,
+            json!({"mcpServers": {"coreinfra_media": foreign}}).to_string(),
+        )?;
+        assert!(prepare(RoutingMode::Sub, true).is_err());
+        fixture.apply(prepare(RoutingMode::Sub, false)?, true)?;
+        assert_eq!(
+            json::read(&config_1p)?["mcpServers"]["coreinfra_media"],
+            foreign
+        );
+
+        fixture.apply(prepare(RoutingMode::Hub, false)?, true)?;
+        assert_eq!(
+            json::read(&fixture.files[0])?["managedMcpServers"],
+            json!([stdio_foreign])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn media_only_follows_the_active_deployment_without_configuring_routing() -> Result<()> {
         for has_profile in [false, true] {
             let fixture = Fixture::new("bedrock")?;
+            let registration = registration(fixture.root.path())?;
             if !has_profile {
                 for path in &fixture.files {
                     std::fs::remove_file(path)?;
@@ -749,13 +975,13 @@ mod tests {
                 .path()
                 .join("Claude/claude_desktop_config.json");
             let prepare =
-                |grant| prepare_with_video(&fixture.dir, &config_1p, None, grant, &registration);
+                |grant| prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration);
             for enable in [true, false] {
                 let plan = prepare(enable)?;
                 assert!(!plan.info().is_empty());
                 plan.apply_with_backup(
                     Some(fixture.manager()),
-                    |_| panic!("a video-only change must preserve the Claude proxy"),
+                    |_| panic!("a media-only change must preserve the Claude proxy"),
                     |_| panic!("unexpected Codex proxy change"),
                 )?;
                 assert!(prepare(enable)?.info().is_empty());
@@ -763,12 +989,12 @@ mod tests {
                 assert!(fixture.snapshots()?[1..] == selection[1..]);
                 let local = json::read(&config_1p)?;
                 assert_eq!(
-                    local["mcpServers"].get("coreinfra_video").is_some(),
+                    local["mcpServers"].get("coreinfra_media").is_some(),
                     enable && !has_profile
                 );
                 if has_profile && enable {
                     let profile = json::read(&fixture.files[0])?;
-                    assert_eq!(profile["managedMcpServers"][1]["name"], "coreinfra_video");
+                    assert_eq!(profile["managedMcpServers"][1]["name"], "coreinfra_media");
                     assert_eq!(profile["inferenceProvider"], original["inferenceProvider"]);
                     assert_eq!(profile["egressProxyUrl"], original["egressProxyUrl"]);
                 } else {

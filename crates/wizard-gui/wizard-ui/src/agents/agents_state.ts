@@ -6,7 +6,7 @@ export type AgentChange =
   | { CodexSetRouting: RoutingMode }
   | { ClaudeSetRouting: RoutingMode }
   | { ClaudeDesktopSetRouting: RoutingMode }
-  | { ClaudeDesktopSetVideo: boolean }
+  | { ClaudeDesktopSetMedia: boolean }
   | { SetPiHub: HubMode }
   | { SetOpenCodeHub: HubMode };
 
@@ -37,31 +37,31 @@ export type TokenChoice = { kind: "existing"; token: string } | { kind: "create"
 export type ConnectionDraft = {
   agent: AgentId;
   routing?: { change: AgentChange; token: TokenChoice | null };
-  videoEnabled?: boolean;
+  mediaEnabled?: boolean;
 };
 
 export type ConnectionPlan = {
   agent: AgentId;
   routing?: PreparedAgentChange;
-  videoEnabled?: boolean;
+  mediaEnabled?: boolean;
 };
 
-export async function prepareAgentChange({ agent, routing, videoEnabled }: ConnectionDraft): Promise<ConnectionPlan> {
-  const request = routing ?? (agent === "claude_desktop" && videoEnabled !== undefined
-    ? { change: { ClaudeDesktopSetVideo: videoEnabled }, token: null }
+export async function prepareAgentChange({ agent, routing, mediaEnabled }: ConnectionDraft): Promise<ConnectionPlan> {
+  const request = routing ?? (agent === "claude_desktop" && mediaEnabled !== undefined
+    ? { change: { ClaudeDesktopSetMedia: mediaEnabled }, token: null }
     : undefined);
   const prepared = request
-    ? await invoke<PreparedAgentChange>("prepare_agent_change", { ...request, video: videoEnabled })
+    ? await invoke<PreparedAgentChange>("prepare_agent_change", { ...request, media: mediaEnabled })
     : undefined;
-  return { agent, routing: prepared, videoEnabled };
+  return { agent, routing: prepared, mediaEnabled };
 }
 
 export function applyAgentPlan(plan: PreparedPlan): Promise<void> {
   return invoke<void>("apply_agent_plan", { plan });
 }
 
-export function applyVideoConnection(agent: AgentId, enabled: boolean): Promise<void> {
-  return invoke<void>("set_video_connection", { agent, enabled });
+export function applyMediaConnection(agent: AgentId, enabled: boolean): Promise<void> {
+  return invoke<void>("set_media_connection", { agent, enabled });
 }
 
 export type BackupAgent = "codex" | "claude" | "claude_desktop";
@@ -97,12 +97,14 @@ export type Codex = {
   desktop: AgentDetection<{ path: string; version: string | null }>;
   routing_mode: RoutingMode;
   proxy_needs_apply: boolean;
+  // Legacy `coreinfra_video` registration or missing media skills from an older Wizard.
+  media_needs_apply: boolean;
   // CoreInfra token from the agent's configuration. Secret: never log or persist it.
   token: string | null;
 };
 
 export type Claude = {
-  video_needs_apply: boolean;
+  media_needs_apply: boolean;
   path: string;
   version: string;
   routing_mode: RoutingMode;
@@ -117,7 +119,7 @@ export type ClaudeDesktop = {
   // CoreInfra token from the agent's configuration. Secret: never log or persist it.
   token: string | null;
   proxy_needs_apply: boolean;
-  video_needs_apply: boolean;
+  media_needs_apply: boolean;
 };
 
 export type OpenCode = {

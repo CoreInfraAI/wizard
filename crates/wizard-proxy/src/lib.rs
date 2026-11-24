@@ -66,13 +66,13 @@ pub struct Proxy {
     tls: ClientConfig,
 }
 
-/// Background video service supplied by the executable. Reload errors are public,
+/// Background media service supplied by the executable. Reload errors are public,
 /// static diagnostics; credentials must never be returned through daemon control.
-pub trait VideoService: Send + Sync {
+pub trait MediaService: Send + Sync {
     fn running(&self) -> bool;
     fn reload(
         &mut self,
-        grants: wizard_settings::VideoSettings,
+        grants: wizard_settings::MediaSettings,
     ) -> core::pin::Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send + '_>>;
 }
 
@@ -80,8 +80,8 @@ pub trait VideoService: Send + Sync {
 // through this state. No Debug because the slot contains credentials.
 struct ServerState {
     reload_lock: Mutex<()>,
-    video: Mutex<Box<dyn VideoService>>,
-    video_error: Mutex<Option<&'static str>>,
+    media: Mutex<Box<dyn MediaService>>,
+    media_error: Mutex<Option<&'static str>>,
     tls: ClientConfig,
     slot: Arc<ProxySlot>,
     // Shutdown waits for accepted commands and their bounded reply attempts.
@@ -90,11 +90,11 @@ struct ServerState {
 }
 
 impl ServerState {
-    fn new(tls: ClientConfig, video: Box<dyn VideoService>) -> Self {
+    fn new(tls: ClientConfig, media: Box<dyn MediaService>) -> Self {
         Self {
             reload_lock: Mutex::new(()),
-            video: Mutex::new(video),
-            video_error: Mutex::default(),
+            media: Mutex::new(media),
+            media_error: Mutex::default(),
             tls,
             slot: Arc::new(ProxySlot::default()),
             management: RwLock::new(()),
@@ -112,8 +112,8 @@ impl ServerState {
         control::Status {
             version: control::DAEMON_VERSION.to_owned(),
             enabled: self.slot.current.read().await.is_some(),
-            video_running: self.video.lock().await.running(),
-            video_error: self.video_error.lock().await.map(str::to_owned),
+            media_running: self.media.lock().await.running(),
+            media_error: self.media_error.lock().await.map(str::to_owned),
         }
     }
 
@@ -139,18 +139,19 @@ impl ServerState {
                 Err(error) => {
                     diagnostics::error("proxy settings load", error.as_ref());
                     // No readable grants: fail closed rather than serving a stale agent key.
-                    self.video
+                    self.media
                         .lock()
                         .await
-                        .reload(wizard_settings::VideoSettings::default())
+                        .reload(wizard_settings::MediaSettings::default())
                         .await?;
-                    *self.video_error.lock().await = Some("Не удалось прочитать настройки видео");
+                    *self.media_error.lock().await =
+                        Some("Не удалось прочитать настройки медиамоделей");
                     return Err("failed to load Wizard settings");
                 }
             };
 
-            let video = self.video.lock().await.reload(settings.video.clone()).await;
-            *self.video_error.lock().await = video.err();
+            let media = self.media.lock().await.reload(settings.media.clone()).await;
+            *self.media_error.lock().await = media.err();
             let token = if settings.local_proxy_enabled() {
                 Some(
                     settings
@@ -168,7 +169,7 @@ impl ServerState {
                 .await
                 .inspect_err(|error| diagnostics::error("proxy generation update", error))
                 .map_err(|_| "failed to update proxy")?;
-            video
+            media
         }
         .await;
         let status = self.current_status().await;
@@ -185,7 +186,7 @@ impl ServerState {
                 started.elapsed().as_millis(),
             ),
         }
-        if result.is_ok() && !status.enabled && !status.video_running {
+        if result.is_ok() && !status.enabled && !status.media_running {
             // Prevent later queued Reloads from re-enabling during shutdown.
             // run_listeners still waits for the current HTTP reply to finish.
             self.stopping.send_replace(true);
@@ -294,7 +295,7 @@ impl Proxy {
 /// This function does not register OS services or change saved settings.
 pub async fn run_managed(
     shutdown: impl Future<Output = ()>,
-    video: Box<dyn VideoService>,
+    media: Box<dyn MediaService>,
 ) -> io::Result<()> {
     // Avoid loading system certificates when no proxy is needed. Reload rereads
     // after the potentially slow TLS initialization, using the latest settings.
@@ -310,18 +311,18 @@ pub async fn run_managed(
     let tls = tokio::task::spawn_blocking(upstream::tls_config)
         .await
         .map_err(io::Error::other)??;
-    let state = Arc::new(ServerState::new(tls, video));
+    let state = Arc::new(ServerState::new(tls, media));
     let response = state.reload_with_lock().await;
     if let Some(error) = response.error
         && !response.status.enabled
-        && !response.status.video_running
-        && response.status.video_error.is_none()
+        && !response.status.media_running
+        && response.status.media_error.is_none()
     {
         return Err(io::Error::other(error));
     }
     if !response.status.enabled
-        && !response.status.video_running
-        && response.status.video_error.is_none()
+        && !response.status.media_running
+        && response.status.media_error.is_none()
     {
         return Ok(());
     }
