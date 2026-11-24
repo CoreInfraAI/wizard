@@ -5,21 +5,24 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() == Some(wizard_core::video::stdio::ARG.as_ref()) {
+    if args
+        .next()
+        .is_some_and(|arg| wizard_core::media::stdio::is_arg(&arg))
+    {
         let port = args
             .next()
             .and_then(|arg| arg.to_str()?.parse::<u16>().ok());
         let (Some(port), Some(path), None) = (port, args.next(), args.next()) else {
-            eprintln!("Expected the Wizard port and video headers file");
+            eprintln!("Expected the Wizard port and media headers file");
             return ExitCode::FAILURE;
         };
-        return match tauri::async_runtime::block_on(wizard_core::video::stdio::run(
+        return match tauri::async_runtime::block_on(wizard_core::media::stdio::run(
             port,
             path.into(),
         )) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("Video MCP: {error:#}");
+                eprintln!("Media MCP: {error:#}");
                 ExitCode::FAILURE
             }
         };
@@ -27,7 +30,7 @@ fn main() -> ExitCode {
     if let Some(arg1) = std::env::args_os().nth(1)
         && arg1 == "--proxy"
     {
-        return wizard_proxy_daemon::main(wizard_core::video::background::Service::default());
+        return wizard_proxy_daemon::main(wizard_core::media::background::Service::default());
     }
 
     if std::env::args_os()

@@ -68,7 +68,7 @@ export function AgentConnectionPanel({ agent, agents, account, onBack }: {
       modes={agent === "pi" || agent === "opencode" ? hubModes : routingModes(agent === "codex" ? "Codex" : "Claude")}
       toChange={toChange} agentToken={detection.data.token} hub={hub}
       needsApply={needsApply} disabled={busy || account.submitting} error={error}
-      videoNeedsApply={"video_needs_apply" in detection.data && detection.data.video_needs_apply}
+      mediaNeedsApply={"media_needs_apply" in detection.data && detection.data.media_needs_apply}
       note={agent === "codex" ? "Настройка общая для ChatGPT и Codex." : undefined}
       actions={<Button plain disabled={busy || account.submitting} onClick={onBack}>Назад</Button>}
       onPrepare={prepare}

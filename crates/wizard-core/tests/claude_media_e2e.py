@@ -1,4 +1,4 @@
-"""Run a native Claude Code turn with the user skill and MCP installed by Wizard."""
+"""Run a native Claude Code turn with the user media skills and MCP installed by Wizard."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -8,7 +8,9 @@ import sys
 import threading
 
 MODEL = "claude-sonnet-4-6"
-TOOL = "mcp__coreinfra_video__video_models"
+# Each skill is loaded before its read-only catalog tool, one per inference round-trip.
+MEDIA = [("video", "coreinfra-video", "video_models")]
+TOOLS = ["mcp__coreinfra_media__" + tool for _, _, tool in MEDIA]
 
 
 def content_blocks(request):
@@ -31,7 +33,7 @@ def catalog(result):
 
 
 class Messages(BaseHTTPRequestHandler):
-    """Ask for the skill and catalog. Only the native agent executes those tools."""
+    """Ask for each skill and its catalog. Only the native agent executes those tools."""
     def do_POST(self):
         path = self.path.split("?")[0]
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -41,22 +43,35 @@ class Messages(BaseHTTPRequestHandler):
         if path != "/v1/messages":
             self.send_error(404)
             return
-        tools = {t["name"] for t in req.get("tools", [])}
-        result = next((b for b in content_blocks(req) if b.get("tool_use_id") == "toolu_catalog"), None)
-        block = {"type": "text", "text": "Requested skill or MCP tool unavailable"}
         try:
-            if result:
-                self.server.models = catalog(result)
-                assert self.server.models and all(isinstance(m["id"], str) and m["id"].strip()
-                                                  for m in self.server.models)
-                block["text"] = self.server.models[0]["id"]
-            elif self.server.skill_line in json.dumps(req["messages"], ensure_ascii=False) and TOOL in tools:
-                block = {"type": "tool_use", "id": "toolu_catalog", "name": TOOL, "input": {}}
-            elif "Skill" in tools and not any(b.get("id") == "toolu_skill" for b in content_blocks(req)):
-                block = {"type": "tool_use", "id": "toolu_skill", "name": "Skill", "input": {"skill": "coreinfra-video"}}
+            block = self.next_block(req)
         except (AssertionError, KeyError, TypeError, ValueError) as error:
             self.server.failure = str(error) or "Invalid catalog"
+            block = {"type": "text", "text": "Invalid catalog"}
         self.stream(block)
+
+    def next_block(self, req):
+        tools = {t["name"] for t in req.get("tools", [])}
+        blocks = content_blocks(req)
+        used = {b["id"] for b in blocks if b.get("type") == "tool_use"}
+        results = {b["tool_use_id"]: b for b in blocks if b.get("type") == "tool_result"}
+        messages = json.dumps(req["messages"], ensure_ascii=False)
+        unavailable = {"type": "text", "text": "Requested skill or MCP tool unavailable"}
+        for (key, skill, tool), name in zip(MEDIA, TOOLS):
+            if "toolu_skill_" + key not in used:
+                if "Skill" not in tools:
+                    return unavailable
+                return {"type": "tool_use", "id": "toolu_skill_" + key, "name": "Skill", "input": {"skill": skill}}
+            if "toolu_" + key not in used:
+                # The skill body, not just its listed description, must have reached inference.
+                if self.server.skill_lines[skill] not in messages or name not in tools:
+                    return unavailable
+                return {"type": "tool_use", "id": "toolu_" + key, "name": name, "input": {}}
+            models = catalog(results["toolu_" + key])
+            assert models and all(isinstance(m["id"], str) and m["id"].strip() for m in models), tool
+            self.server.catalogs[tool] = models
+        return {"type": "text", "text": "\n".join(f"{tool}: {self.server.catalogs[tool][0]['id']}"
+                                                  for _, _, tool in MEDIA)}
 
     def stream(self, block):
         message = {"id": "msg_test", "type": "message", "role": "assistant", "model": MODEL,
@@ -90,11 +105,14 @@ class Messages(BaseHTTPRequestHandler):
 
 
 def run(profile, server):
-    skill = profile / "skills/coreinfra-video/SKILL.md"
-    source = Path(__file__).resolve().parents[3] / "plugins/coreinfra-video/skills/coreinfra-video/SKILL.md"
-    assert skill.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
-    server.skill_line = next(line for line in skill.read_text(encoding="utf-8").splitlines() if line.startswith("Use the "))
-    server.models, server.failure = [], None
+    server.skill_lines = {}
+    for _, skill, tool in MEDIA:
+        installed = profile / "skills" / skill / "SKILL.md"
+        source = Path(__file__).resolve().parents[3] / "plugins/coreinfra-media/skills" / skill / "SKILL.md"
+        text = installed.read_text(encoding="utf-8")
+        assert text == source.read_text(encoding="utf-8"), f"{skill} differs from the bundled plugin skill"
+        server.skill_lines[skill] = next(line for line in text.splitlines() if line.startswith(f"- Call `{tool}`"))
+    server.catalogs, server.failure = {}, None
     # Replace only chat inference. Claude loads the installed skill and user MCP from its normal profile.
     settings_file = profile / "settings.json"
     settings = json.loads(settings_file.read_text(encoding="utf-8"))
@@ -106,21 +124,25 @@ def run(profile, server):
     home.mkdir()
     env.update(HOME=str(home), USERPROFILE=str(home), CLAUDE_CONFIG_DIR=str(profile),
                CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", ENABLE_TOOL_SEARCH="false")
-    # Limit this catalog test to the two tools that the deterministic Messages provider requests.
+    # Limit this catalog test to the tools that the deterministic Messages provider requests.
     command = [os.environ["WIZARD_VIDEO_TEST_CLAUDE"], "-p", "--no-session-persistence", "--model", MODEL,
-               "--tools", "Skill", "--allowedTools", TOOL, "--permission-mode", "dontAsk",
-               "--verbose", "--output-format", "stream-json", "--", "Какие видеомодели доступны в CoreInfra?"]
+               "--tools", "Skill", "--allowedTools", ",".join(TOOLS), "--permission-mode", "dontAsk",
+               "--verbose", "--output-format", "stream-json", "--",
+               "Какие модели для видео, озвучки и распознавания речи доступны в CoreInfra?"]
     reply = subprocess.run(command, env=env, cwd=profile.parent, capture_output=True, text=True, encoding="utf-8", timeout=90)
     assert reply.returncode == 0, (reply.stderr + reply.stdout)[-2000:]
     events = [json.loads(line) for line in reply.stdout.splitlines()]
     init = next(event for event in events if event.get("subtype") == "init")
-    assert "coreinfra-video" in init["skills"] and TOOL in init["tools"], "Installed skill or MCP missing in native Claude"
+    missing = [s for _, s, _ in MEDIA if s not in init["skills"]] + [t for t in TOOLS if t not in init["tools"]]
+    assert not missing, f"Installed skills or MCP tools missing in native Claude: {missing}"
     calls = [b["name"] for e in events if e["type"] == "assistant" for b in e["message"]["content"] if b["type"] == "tool_use"]
-    assert calls == ["Skill", TOOL], calls
+    assert calls == [name for tool in TOOLS for name in ("Skill", tool)], calls
     assert server.failure is None, server.failure
-    assert server.models and server.models[0]["id"] in events[-1]["result"], "Empty catalog or missing model ID in reply"
-    print(f"Claude Code loaded /coreinfra-video and received {len(server.models)} video models.")
-
+    assert set(server.catalogs) == {tool for _, _, tool in MEDIA}, server.catalogs.keys()
+    for tool, models in server.catalogs.items():
+        assert models[0]["id"] in events[-1]["result"], f"Missing {tool} ID in reply"
+    counts = ", ".join(f"{len(models)} from {tool}" for tool, models in server.catalogs.items())
+    print(f"Claude Code loaded {len(MEDIA)} media skills and received {counts}.")
 
 if __name__ == "__main__":
     with ThreadingHTTPServer(("127.0.0.1", 0), Messages) as provider:

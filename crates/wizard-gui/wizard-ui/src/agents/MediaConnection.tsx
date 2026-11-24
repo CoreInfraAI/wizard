@@ -9,10 +9,10 @@ import { StateNotice } from "../components/ui/StateNotice";
 import { ErrorText } from "../components/ErrorText";
 import type { AgentId, ConnectionDraft } from "./agents_state";
 
-// `suggested`: no grant yet and never turned off by the user, so the form offers video by default.
+// `suggested`: no grant yet and never turned off by the user, so the form offers media tools by default.
 type Status = { enabled: boolean; suggested: boolean; running: boolean; error: string | null };
 
-export function useVideoConnection(agent: AgentId, available: boolean) {
+export function useMediaConnection(agent: AgentId, available: boolean) {
   const [status, setStatus] = useState<Status>();
   const [draft, setDraft] = useState<boolean>();
   const [error, setError] = useState<string>();
@@ -21,7 +21,7 @@ export function useVideoConnection(agent: AgentId, available: boolean) {
   useEffect(() => {
     if (!available) return;
     let active = true;
-    void invoke<Status>("get_video_connection", { agent }).then(result => {
+    void invoke<Status>("get_media_connection", { agent }).then(result => {
       if (!active) return;
       setStatus(result);
       setError(undefined);
@@ -43,11 +43,11 @@ export function useVideoConnection(agent: AgentId, available: boolean) {
   return { status, enabled, needsApply, error, retry, setEnabled: setDraft };
 }
 
-export function VideoConnection({ video, disabled }: {
-  video: ReturnType<typeof useVideoConnection>;
+export function MediaConnection({ media, disabled }: {
+  media: ReturnType<typeof useMediaConnection>;
   disabled: boolean;
 }) {
-  const { status, enabled, error } = video;
+  const { status, enabled, error } = media;
   return (
     <Panel
       title="Дополнительные модели"
@@ -57,33 +57,33 @@ export function VideoConnection({ video, disabled }: {
       <div className="agent-connection-options">
         {status && (
           <SwitchField disabled={disabled}>
-            <Label>Подключить <Code className="whitespace-nowrap">coreinfra-video</Code> для видео-моделей</Label>
-            <Switch checked={enabled} onChange={video.setEnabled} />
+            <Label>Подключить <Code className="whitespace-nowrap">coreinfra-media</Code> для видео-моделей</Label>
+            <Switch checked={enabled} onChange={media.setEnabled} />
           </SwitchField>
         )}
         {!status && !error && <StateNotice tone="loading">Проверяем подключение…</StateNotice>}
-        {error && <StateNotice tone="error" actions={<Button plain disabled={disabled} onClick={video.retry}>Повторить</Button>}>{error}</StateNotice>}
+        {error && <StateNotice tone="error" actions={<Button plain disabled={disabled} onClick={media.retry}>Повторить</Button>}>{error}</StateNotice>}
         {status?.error && <StateNotice tone="error">{status.error}</StateNotice>}
         {enabled && status?.enabled && !status.running && !status.error && (
-          <StateNotice tone="warning">Видеосервис Wizard остановлен. Он запустится при применении настроек.</StateNotice>
+          <StateNotice tone="warning">Медиасервис Wizard остановлен. Он запустится при применении настроек.</StateNotice>
         )}
       </div>
     </Panel>
   );
 }
 
-export function StandaloneVideoConnection({ agent, disabled, error, onPrepare }: {
+export function StandaloneMediaConnection({ agent, disabled, error, onPrepare }: {
   agent: AgentId;
   disabled: boolean;
   error?: string;
   onPrepare: (draft: ConnectionDraft) => void;
 }) {
-  const video = useVideoConnection(agent, true);
+  const media = useMediaConnection(agent, true);
   return (
     <div className="mt-6 space-y-6">
-      <VideoConnection video={video} disabled={disabled} />
+      <MediaConnection media={media} disabled={disabled} />
       <ActionBar>
-        <Button disabled={disabled || !video.needsApply} onClick={() => onPrepare({ agent, videoEnabled: video.enabled })}>
+        <Button disabled={disabled || !media.needsApply} onClick={() => onPrepare({ agent, mediaEnabled: media.enabled })}>
           Применить
         </Button>
       </ActionBar>

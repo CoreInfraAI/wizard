@@ -124,10 +124,10 @@ pub(crate) fn run(
                 return Ok(());
             };
 
-            // Keep the video registration as the GUI's saved grant requires.
-            let video = settings::load_from_file()?.video.claude.is_some();
+            // Keep the media registration as the GUI's saved grant requires.
+            let media = settings::load_from_file()?.media.claude.is_some();
             run_plan(runtime, yes, move || {
-                claude::prepare_routing(mode, &token, video)
+                claude::prepare_routing(mode, &token, media)
             })?;
         }
         AgentCommand::ClaudeDesktop { .. } => {
@@ -309,7 +309,7 @@ fn run_plan(
             .context("plan application task failed")?
     })?;
 
-    if settings::load_from_file()?.video.has_grants() {
+    if settings::load_from_file()?.media.has_grants() {
         runtime.block_on(wizard_proxy_daemon::sync_proxy())?;
     }
     eprintln!("Готово.");

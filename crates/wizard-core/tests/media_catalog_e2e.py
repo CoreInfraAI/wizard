@@ -1,4 +1,4 @@
-"""Run one Codex turn against Wizard's installed skill and the public Hub catalog."""
+"""Run one Codex turn against Wizard's installed media skills and the public Hub catalogs."""
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
@@ -6,7 +6,12 @@ import sys
 import threading
 import time
 
-from video_clients import codex_session, receive
+from media_clients import MEDIA_SKILLS, codex_session, receive
+
+SERVER = "coreinfra_media"
+NAMESPACE = "mcp__" + SERVER
+# Read-only catalog tools requested one per inference round-trip, keyed by distinct call IDs.
+CATALOGS = [("call_video", "video_models")]
 
 
 class CatalogTurn(BaseHTTPRequestHandler):
@@ -17,17 +22,20 @@ class CatalogTurn(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        output = next((item for item in request["input"] if item.get("type") == "function_call_output"
-                       and item.get("call_id") == "call_catalog"), None)
-        offered = any(tool.get("name") == "mcp__coreinfra_video" and
-                      any(f["name"] == "video_models" for f in tool.get("tools", []))
-                      for tool in request["tools"])
-        if output is None and offered:
-            item = {"type": "function_call", "id": "fc_catalog", "call_id": "call_catalog",
-                    "namespace": "mcp__coreinfra_video", "name": "video_models", "arguments": "{}"}
+        outputs = {item["call_id"]: item["output"] for item in request["input"]
+                   if item.get("type") == "function_call_output"}
+        offered = {f["name"] for tool in request["tools"] if tool.get("name") == NAMESPACE
+                   for f in tool.get("tools", [])}
+        pending = next(((call_id, name) for call_id, name in CATALOGS if call_id not in outputs), None)
+        if pending and pending[1] in offered:
+            call_id, name = pending
+            item = {"type": "function_call", "id": "fc_" + call_id, "call_id": call_id,
+                    "namespace": NAMESPACE, "name": name, "arguments": "{}"}
         else:
-            # Echo only what Codex delivered to the model on its next inference request.
-            text = json.dumps(output["output"], ensure_ascii=False) if output else "video_models unavailable"
+            # Echo only what Codex delivered to the model on its later inference requests.
+            text = "\n".join(f"{name}: " + (json.dumps(outputs[call_id], ensure_ascii=False)
+                                            if call_id in outputs else "unavailable")
+                             for call_id, name in CATALOGS)
             item = {"type": "message", "id": "msg_catalog", "role": "assistant",
                     "content": [{"type": "output_text", "text": text}]}
         response = {"id": "resp_" + item["id"], "status": "completed", "output": [item]}
@@ -52,22 +60,25 @@ def run(profile, model):
         cwd = str(profile.parent)
         thread = call("thread/start", {"cwd": cwd, "ephemeral": True, "sandbox": "read-only",
                                        "approvalPolicy": "never"})["thread"]["id"]
-        installed = profile / "skills" / "coreinfra-video" / "SKILL.md"
         groups = call("skills/list", {"cwds": [cwd]})["data"]
-        skills = [s for group in groups for s in group["skills"]
-                  if s["name"] == "coreinfra-video" and s["enabled"] and Path(s["path"]).samefile(installed)]
-        assert len(skills) == 1, "Codex must discover the enabled skill in the isolated profile"
-        skill = skills[0]
-        dependencies = (skill.get("dependencies") or {}).get("tools", [])
-        assert any(d["type"] == "mcp" and d["value"] == "coreinfra_video" for d in dependencies), (
-            "Codex did not read the bundled MCP dependency from agents/openai.yaml"
-        )
+        skills = {}
+        for name in sorted(MEDIA_SKILLS):
+            installed = profile / "skills" / name / "SKILL.md"
+            found = [s for group in groups for s in group["skills"]
+                     if s["name"] == name and s["enabled"] and Path(s["path"]).samefile(installed)]
+            assert len(found) == 1, f"Codex must discover the enabled {name} skill in the isolated profile"
+            dependencies = (found[0].get("dependencies") or {}).get("tools", [])
+            assert any(d["type"] == "mcp" and d["value"] == SERVER for d in dependencies), (
+                f"Codex did not read the bundled MCP dependency from {name}/agents/openai.yaml"
+            )
+            skills[name] = found[0]
         turn = call("turn/start", {"threadId": thread, "input": [
-            {"type": "skill", "name": skill["name"], "path": skill["path"]},
-            {"type": "text", "text": "List the video models available in CoreInfra Hub."},
+            *({"type": "skill", "name": s["name"], "path": s["path"]} for s in skills.values()),
+            {"type": "text", "text": "List the video, speech and transcription models available in CoreInfra Hub."},
         ]})["turn"]["id"]
 
-        models = []
+        catalogs = {}
+        calls = []
         answer = ""
         deadline = time.monotonic() + 85
         while time.monotonic() < deadline:
@@ -78,9 +89,10 @@ def run(profile, model):
             if message.get("method") == "item/completed" and params.get("turnId") == turn:
                 item = params["item"]
                 if item["type"] == "mcpToolCall":
-                    assert (item["server"], item["tool"]) == ("coreinfra_video", "video_models"), item
+                    assert item["server"] == SERVER and item["tool"] in dict(CATALOGS).values(), item
                     assert item["status"] == "completed" and not item.get("error"), item
-                    models = item["result"]["structuredContent"]["models"]
+                    calls.append(item["tool"])
+                    catalogs[item["tool"]] = item["result"]["structuredContent"]["models"]
                 elif item["type"] == "agentMessage":
                     answer = item["text"]
             if message.get("method") == "turn/completed" and params["turn"]["id"] == turn:
@@ -89,11 +101,13 @@ def run(profile, model):
         else:
             raise TimeoutError("Codex catalog turn")
 
-        assert isinstance(models, list) and models, "Codex received an empty video catalog"
-        assert all(isinstance(m.get("id"), str) and m["id"].strip() for m in models), "Missing video model ID"
-        assert models[0]["id"] in answer, "The final agent reply did not contain a returned model ID"
-        print(f"Codex discovered {skill['name']} and received {len(models)} video models.")
-
+        assert calls == [name for _, name in CATALOGS], calls
+        for name, models in catalogs.items():
+            assert isinstance(models, list) and models, f"Codex received an empty {name} catalog"
+            assert all(isinstance(m.get("id"), str) and m["id"].strip() for m in models), f"Missing {name} ID"
+            assert models[0]["id"] in answer, f"The final agent reply did not contain a {name} ID"
+        counts = ", ".join(f"{len(models)} from {name}" for name, models in catalogs.items())
+        print(f"Codex discovered {len(skills)} media skills and received {counts}.")
 
 if __name__ == "__main__":
     with HTTPServer(("127.0.0.1", 0), CatalogTurn) as provider:

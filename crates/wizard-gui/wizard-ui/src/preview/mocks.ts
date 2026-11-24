@@ -76,9 +76,9 @@ class Snapshots<T extends object> {
   }
 }
 
-// `videoSuggested`: Wizard offers video for every agent, as on a fresh install. Otherwise the
-// fixtures model a user who has already turned video off, so other flows stay unchanged.
-export type MockOptions = { onboarding?: boolean; videoSuggested?: boolean };
+// `mediaSuggested`: Wizard offers media tools for every agent, as on a fresh install. Otherwise the
+// fixtures model a user who has already turned media tools off, so other flows stay unchanged.
+export type MockOptions = { onboarding?: boolean; mediaSuggested?: boolean };
 
 export function createMockEnvironment(scenario: Scenario = "update", options: MockOptions = {}) {
   const timeouts = new Set<ReturnType<typeof setTimeout>>();
@@ -113,7 +113,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
           status: "found",
           data: {
             ...routing,
-            video_needs_apply: false,
+            media_needs_apply: false,
             path: "/Applications/Claude.app",
             version: detectedVersion.claude,
           },
@@ -124,6 +124,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
           status: "found",
           data: {
             ...routing,
+            media_needs_apply: false,
             cli: {
               status: "found",
               data: { path: "/usr/local/bin/codex", version: "0.112.0" },
@@ -147,7 +148,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
             status: "found",
             data: {
               ...routing,
-              video_needs_apply: false,
+              media_needs_apply: false,
               path: "/usr/local/bin/claude",
               version: "2.1.0",
             },
@@ -210,9 +211,9 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
     balance_rub: ["balance_empty", "balance_guest", "onboarding_merge"].includes(scenario) ? 0 : 2500,
   });
   const proxy = new Snapshots({ enabled: !onboarding });
-  const videoEnabled = new Set<string>();
-  const videoDeclined = new Set<string>(
-    options.videoSuggested ? [] : ["codex", "claude", "claude_desktop"],
+  const mediaEnabled = new Set<string>();
+  const mediaDeclined = new Set<string>(
+    options.mediaSuggested ? [] : ["codex", "claude", "claude_desktop"],
   );
   const update = new Snapshots<UpdateState>(
     scenario === "wizard_update" ? { status: "available", version: "1.0.6" }
@@ -494,23 +495,23 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
             return configured.read(revision);
           case "get_proxy_state":
             return proxy.read(revision);
-          case "get_video_connection": {
-            const enabled = videoEnabled.has(String(args.agent));
-            return { enabled, suggested: !enabled && !videoDeclined.has(String(args.agent)), running: enabled, error: null };
+          case "get_media_connection": {
+            const enabled = mediaEnabled.has(String(args.agent));
+            return { enabled, suggested: !enabled && !mediaDeclined.has(String(args.agent)), running: enabled, error: null };
           }
-          case "set_video_connection": {
+          case "set_media_connection": {
             if (args.enabled) {
-              videoEnabled.add(String(args.agent));
-              videoDeclined.delete(String(args.agent));
+              mediaEnabled.add(String(args.agent));
+              mediaDeclined.delete(String(args.agent));
             } else {
-              videoEnabled.delete(String(args.agent));
-              videoDeclined.add(String(args.agent));
+              mediaEnabled.delete(String(args.agent));
+              mediaDeclined.add(String(args.agent));
             }
             const agent = args.agent as AgentId;
             const detection = agents.value[agent];
-            if (detection.status === "found" && "video_needs_apply" in detection.data) {
+            if (detection.status === "found" && "media_needs_apply" in detection.data) {
               agents.publish({ ...agents.value, [agent]: {
-                ...detection, data: { ...detection.data, video_needs_apply: false },
+                ...detection, data: { ...detection.data, media_needs_apply: false },
               } });
             }
             return;
@@ -563,7 +564,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
                   status: "found",
                   data: {
                     ...(next.claude_desktop.status === "found" ? next.claude_desktop.data : unconfigured),
-                    video_needs_apply: false,
+                    media_needs_apply: false,
                     path: release(desktop).path,
                     version: versions[desktop],
                   },
@@ -573,6 +574,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
                   status: "found",
                   data: {
                     ...(next.codex.status === "found" ? next.codex.data : unconfigured),
+                    media_needs_apply: false,
                     cli:
                       next.codex.status === "found"
                         ? next.codex.data.cli
@@ -620,14 +622,14 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
             return;
           case "prepare_agent_change": {
             const change = args.change as AgentChange;
-            if ("ClaudeDesktopSetVideo" in change) {
+            if ("ClaudeDesktopSetMedia" in change) {
               const agent = "claude_desktop";
               const desktop = agents.value.claude_desktop;
-              const changed = videoEnabled.has(agent) !== change.ClaudeDesktopSetVideo ||
-                (desktop.status === "found" && desktop.data.video_needs_apply);
+              const changed = mediaEnabled.has(agent) !== change.ClaudeDesktopSetMedia ||
+                (desktop.status === "found" && desktop.data.media_needs_apply);
               return {
-                agent, change, token: null, plan: { preview: true, agent, videoOnly: true },
-                info: changed ? [{ description: "Обновит регистрацию CoreInfra Video в Claude Desktop." }] : [],
+                agent, change, token: null, plan: { preview: true, agent, mediaOnly: true },
+                info: changed ? [{ description: "Обновит регистрацию CoreInfra Media в Claude Desktop." }] : [],
                 restarts_desktop: changed,
               } satisfies PreparedAgentChange;
             }
@@ -684,18 +686,18 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
               agent: AgentId;
               mode: RoutingMode;
               token: string | null;
-              videoOnly?: boolean;
+              mediaOnly?: boolean;
             };
             if (!plan.preview)
               throw "Превью принимает только демонстрационные планы";
-            if (plan.videoOnly) return;
+            if (plan.mediaOnly) return;
             const detection = agents.value[plan.agent];
             if (detection.status === "found")
               agents.publish({
                 ...agents.value,
                 [plan.agent]: {
                   ...detection,
-                  data: { ...detection.data, routing_mode: plan.mode, token: plan.token, proxy_needs_apply: false, ...(plan.agent === "claude" && { video_needs_apply: false }) },
+                  data: { ...detection.data, routing_mode: plan.mode, token: plan.token, proxy_needs_apply: false, ...(plan.agent === "claude" && { media_needs_apply: false }) },
                 },
               });
             return;

@@ -36,7 +36,7 @@ import { ErrorText } from "../components/ErrorText";
 import { useSystemProxy } from "../settings/system_proxy";
 import { SystemProxyPrompt } from "../settings/SystemProxyPrompt";
 import { SubscriptionTokenPreviewContext } from "./connection_preview";
-import { VideoConnection, useVideoConnection } from "./VideoConnection";
+import { MediaConnection, useMediaConnection } from "./MediaConnection";
 
 type ModeOption<M extends string> = {
   mode: M;
@@ -265,7 +265,7 @@ export function RoutingFieldset<M extends string>({
   actionsClassName = "",
   editing = false,
   needsApply = false,
-  videoNeedsApply = false,
+  mediaNeedsApply = false,
 }: {
   agent: AgentId;
   modes: ModeOption<M>[];
@@ -282,7 +282,7 @@ export function RoutingFieldset<M extends string>({
   actionsClassName?: string;
   editing?: boolean;
   needsApply?: boolean;
-  videoNeedsApply?: boolean;
+  mediaNeedsApply?: boolean;
 }) {
   const [draft, setDraft] = useState<M | undefined>(initialMode);
   const subscriptionTokenPreview = useContext(SubscriptionTokenPreviewContext);
@@ -296,9 +296,9 @@ export function RoutingFieldset<M extends string>({
     (token.selected?.kind === "create" ||
       (token.selected?.kind === "existing" &&
         token.selected.token !== agentToken));
-  const showVideo = agent === "codex" || agent === "claude" || agent === "claude_desktop";
-  const video = useVideoConnection(agent, showVideo);
-  const videoChanged = showVideo && !!video.status && (video.needsApply || videoNeedsApply);
+  const showMedia = agent === "codex" || agent === "claude" || agent === "claude_desktop";
+  const media = useMediaConnection(agent, showMedia);
+  const mediaChanged = showMedia && !!media.status && (media.needsApply || mediaNeedsApply);
   const routingChanged =
     selected !== mode || (enabled && (needsApply || tokenChanged));
   const prepareRouting = routingChanged || (!editing && (enabled || agent !== "claude_desktop"));
@@ -316,14 +316,14 @@ export function RoutingFieldset<M extends string>({
   }
 
   function prepare() {
-    const includeVideo = videoChanged || (showVideo && prepareRouting && video.enabled);
+    const includeMedia = mediaChanged || (showMedia && prepareRouting && media.enabled);
     onPrepare({
       agent,
       routing: prepareRouting ? {
         change: toChange(selected),
         token: enabled && !proxyOnly ? (token.selected ?? null) : null,
       } : undefined,
-      videoEnabled: includeVideo ? video.enabled : undefined,
+      mediaEnabled: includeMedia ? media.enabled : undefined,
     });
   }
 
@@ -358,8 +358,8 @@ export function RoutingFieldset<M extends string>({
                 <TokenNote token={token} hub={hub} disabled={disabled} />
               )
             )}
-            {showVideo && (
-              <VideoConnection video={video} disabled={disabled} />
+            {showMedia && (
+              <MediaConnection media={media} disabled={disabled} />
             )}
             <ActionBar leading={actions} className={actionsClassName}>
               <Button
@@ -367,8 +367,8 @@ export function RoutingFieldset<M extends string>({
                 disabled={
                   disabled ||
                   (prepareRouting && enabled && (proxyOnly ? !hub.signedIn : !token.ready)) ||
-                  (showVideo && !video.status && !video.error) ||
-                  (editing && !prepareRouting && !videoChanged)
+                  (showMedia && !media.status && !media.error) ||
+                  (editing && !prepareRouting && !mediaChanged)
                 }
                 onClick={prepare}
               >

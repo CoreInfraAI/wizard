@@ -4,9 +4,9 @@
   "owner": { "name": "CoreInfra" },
   "plugins": [
     {
-      "name": "coreinfra-video",
-      "source": "./plugins/coreinfra-video",
-      "description": "Generate and retrieve videos through CoreInfra Wizard."
+      "name": "coreinfra-media",
+      "source": "./plugins/coreinfra-media",
+      "description": "Generate and retrieve media through CoreInfra Wizard."
     }
   ]
 }

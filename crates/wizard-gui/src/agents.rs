@@ -173,7 +173,7 @@ pub(crate) enum AgentChange {
     CodexSetRouting(RoutingMode),
     ClaudeSetRouting(RoutingMode),
     ClaudeDesktopSetRouting(RoutingMode),
-    ClaudeDesktopSetVideo(bool),
+    ClaudeDesktopSetMedia(bool),
     SetPiHub(HubMode),
     SetOpenCodeHub(HubMode),
 }
@@ -197,7 +197,7 @@ impl AgentChange {
                 !matches!(mode, RoutingMode::Disabled)
             }
             Self::ClaudeDesktopSetRouting(mode) => matches!(mode, RoutingMode::Hub),
-            Self::ClaudeDesktopSetVideo(_) => false,
+            Self::ClaudeDesktopSetMedia(_) => false,
             Self::SetPiHub(mode) | Self::SetOpenCodeHub(mode) => !matches!(mode, HubMode::Disabled),
         }
     }
@@ -206,7 +206,7 @@ impl AgentChange {
         match self {
             Self::CodexSetRouting(_) => TokenAgent::Codex,
             Self::ClaudeSetRouting(_) => TokenAgent::Claude,
-            Self::ClaudeDesktopSetRouting(_) | Self::ClaudeDesktopSetVideo(_) => {
+            Self::ClaudeDesktopSetRouting(_) | Self::ClaudeDesktopSetMedia(_) => {
                 TokenAgent::ClaudeDesktop
             }
             Self::SetPiHub(_) => TokenAgent::Pi,
@@ -222,15 +222,15 @@ impl AgentChange {
 pub(crate) async fn prepare_agent_change(
     change: AgentChange,
     token: Option<TokenChoice>,
-    // The draft's video choice, applied right after this plan; otherwise the saved grant.
-    video: Option<bool>,
+    // The draft's media choice, applied right after this plan; otherwise the saved grant.
+    media: Option<bool>,
     app: tauri::AppHandle,
 ) -> Result<PreparedAgentChange, String> {
     let (name, agent) = match &change {
         AgentChange::CodexSetRouting(_) => ("CodexSetRouting", "codex"),
         AgentChange::ClaudeSetRouting(_) => ("ClaudeSetRouting", "claude"),
         AgentChange::ClaudeDesktopSetRouting(_) => ("ClaudeDesktopSetRouting", "claude_desktop"),
-        AgentChange::ClaudeDesktopSetVideo(_) => ("ClaudeDesktopSetVideo", "claude_desktop"),
+        AgentChange::ClaudeDesktopSetMedia(_) => ("ClaudeDesktopSetMedia", "claude_desktop"),
         AgentChange::SetPiHub(_) => ("SetPiHub", "pi"),
         AgentChange::SetOpenCodeHub(_) => ("SetOpenCodeHub", "opencode"),
     };
@@ -263,19 +263,19 @@ pub(crate) async fn prepare_agent_change(
         AgentChange::ClaudeSetRouting(mode) => claude::prepare_routing(
             mode,
             &token,
-            video.unwrap_or(settings.video.claude.is_some()),
+            media.unwrap_or(settings.media.claude.is_some()),
         ),
         AgentChange::ClaudeDesktopSetRouting(mode) => {
-            let video = video.unwrap_or(settings.video.claude_desktop.is_some());
-            let mut plan = claude_desktop::prepare_routing(mode, &token, video)?;
+            let media = media.unwrap_or(settings.media.claude_desktop.is_some());
+            let mut plan = claude_desktop::prepare_routing(mode, &token, media)?;
             plan.restart_desktop(
                 wizard_core::agents::desktop_install::DesktopApp::Claude,
                 settings.last_paths.claude_desktop.as_deref(),
             );
             Ok(plan)
         }
-        AgentChange::ClaudeDesktopSetVideo(enabled) => {
-            let mut plan = claude_desktop::prepare_video(enabled)?;
+        AgentChange::ClaudeDesktopSetMedia(enabled) => {
+            let mut plan = claude_desktop::prepare_media(enabled)?;
             if !plan.info().is_empty() {
                 plan.restart_desktop(
                     wizard_core::agents::desktop_install::DesktopApp::Claude,
@@ -384,7 +384,7 @@ pub(crate) async fn apply_agent_plan(
 
     if settings::get_state(&app)
         .map_err(|e| format!("{e:#}"))?
-        .video
+        .media
         .has_grants()
     {
         proxy::sync(&app).await.map_err(|e| format!("{e:#}"))?;
@@ -413,8 +413,13 @@ pub(crate) async fn apply_direct_change(
             agent: BackupAgent::ClaudeDesktop,
             id,
         } => {
+            let media = settings::get_state(&app)
+                .map_err(|error| format!("{error:#}"))?
+                .media
+                .claude_desktop
+                .is_some();
             let plan = tauri::async_runtime::spawn_blocking(move || {
-                claude_desktop::prepare_restore_backup(id)
+                claude_desktop::prepare_restore_backup(id, media)
             })
             .await
             .context("backup restore preparation task failed")
@@ -430,8 +435,8 @@ pub(crate) async fn apply_direct_change(
                     codex::restore_backup(id, &settings::get_state(&restore_app)?)
                 }
                 BackupAgent::Claude => {
-                    let video = settings::get_state(&restore_app)?.video.claude.is_some();
-                    claude::restore_backup(id, video)
+                    let media = settings::get_state(&restore_app)?.media.claude.is_some();
+                    claude::restore_backup(id, media)
                 }
                 BackupAgent::ClaudeDesktop => unreachable!(),
             })
@@ -451,7 +456,7 @@ pub(crate) async fn apply_direct_change(
     })?;
     if settings::get_state(&app)
         .map_err(|e| format!("{e:#}"))?
-        .video
+        .media
         .has_grants()
     {
         proxy::sync(&app).await.map_err(|e| format!("{e:#}"))?;

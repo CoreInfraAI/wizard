@@ -16,6 +16,7 @@ mod hub_tokens;
 #[cfg(test)]
 mod ipc_test;
 mod logs;
+mod media;
 mod proxy;
 mod revision_signal;
 mod settings;
@@ -23,7 +24,6 @@ mod system_proxy;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod tray;
 mod updater;
-mod video;
 
 const MAIN_WINDOW_NAME: &str = "main";
 static MAIN_WINDOW_LOCK: Mutex<()> = Mutex::new(());
@@ -90,7 +90,7 @@ pub fn run_application() -> Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(desktop_install::InstallManagers::default())
         .manage(proxy::ProxyState::default())
-        .manage(video::State::default())
+        .manage(media::State::default())
         // Proxy startup can sign out a rejected session, which clears the token list.
         .manage(revision_signal::RevisionSignal::new(
             hub_tokens::HubTokens::default(),
@@ -138,8 +138,8 @@ pub fn run_application() -> Result<()> {
             hub_tokens::get_hub_tokens_state,
             hub_tokens::get_configured_token_info,
             hub_tokens::refresh_hub_tokens,
-            video::get_video_connection,
-            video::set_video_connection,
+            media::get_media_connection,
+            media::set_media_connection,
             proxy::get_proxy_state,
             agents::get_agent_state,
             agents::launch_agent,
@@ -197,7 +197,7 @@ fn setup(app: &mut tauri::App, minimized: bool) -> Result<(), Box<dyn core::erro
     let tray_enabled = false;
 
     if let Err(error) = tauri::async_runtime::block_on(async {
-        // A missing HTTP proxy token must not prevent a video-only listener from starting.
+        // A missing HTTP proxy token must not prevent a media-only listener from starting.
         if let Err(error) = proxy::prepare_token(app.handle()).await {
             log::error!("proxy token preparation failed: {error:#}");
         }

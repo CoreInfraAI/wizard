@@ -2,27 +2,35 @@
 
 An application for configuring agents to use CoreInfra.
 
-## Video in ChatGPT Work, Codex and Claude Code
+## Media in ChatGPT Work, Codex and Claude Code
 
-Enable **coreinfra-video** on the agent’s page and apply the change. Ask for a video in a new ChatGPT Work or Codex chat, or invoke `$coreinfra-video`.
+Enable **Подключить `coreinfra-media` для видео-моделей** under **Дополнительные модели** on the agent’s page and apply the change. Ask for a video in a new ChatGPT Work or Codex chat, or invoke `$coreinfra-video`.
 
-The bundled skill and the `coreinfra_video` MCP registration live in the profile selected by `CODEX_HOME`. The Wizard user daemon listens at `http://127.0.0.1:33789/mcp` and uses a separate local bearer for each enabled agent. Turning off **Подключить `coreinfra-video` для видео-моделей** under **Дополнительные модели** on the ChatGPT / Codex page revokes local access and removes the managed registration and unmodified skill files. The opt-out persists across restarts.
+The bundled skill and the `coreinfra_media` MCP registration live in the profile selected by `CODEX_HOME`. The Wizard user daemon listens at `http://127.0.0.1:33789/mcp` and uses a separate local bearer for each enabled agent. Turning the switch off on the ChatGPT / Codex page revokes local access and removes the managed registration and unmodified skill files. The opt-out persists across restarts.
 
-`video_models` returns the public catalog and prices in RUB per second. `video_create` submits one paid job. Save the full returned `job` object and pass it to `video_result` to poll, including after restarting Wizard. The original Hub and key must still be available. A completed download returns a local MP4 in **Downloads/CoreInfra Video**. Use `download: false` to poll without creating a file. fal also returns its signed result URL in this mode. Repeating a submission after a network timeout can incur another charge.
+Upgrading from Wizard 1.0.10: existing `coreinfra_video` registrations, skills and local grants are migrated to `coreinfra_media` on the next **Применить**, preserving Codex server restrictions, Claude Desktop `toolPolicy` rules and opt-out state. The legacy `--video-mcp-stdio` flag is still accepted. If you added custom `mcp__coreinfra_video__*` permission rules in Claude Code settings, update them to `mcp__coreinfra_media__*`.
 
-Each paid request uses the calling agent’s active CoreInfra key, cached in memory on startup and after applying settings. Video does not issue keys or use the selected Wizard account. A job records the key fingerprint, provider, model and upstream ID; polling with a different key is rejected. Wizard keeps no job table or MCP session.
+Each paid request uses the calling agent’s active CoreInfra key, cached in memory on startup and after applying settings. Media tools do not issue keys or use the selected Wizard account. Wizard keeps no job table or MCP session. All files are written to **Downloads/CoreInfra Media**; callers cannot choose the path. Repeating a paid submission after a network timeout can incur another charge, so the tools never retry it automatically.
+
+### Video
+
+`video_models` returns the public catalog and prices in RUB per second. `video_create` submits one paid job. Save the full returned `job` object and pass it to `video_result` to poll, including after restarting Wizard. The original Hub and key must still be available. A completed download returns a local MP4 in **Downloads/CoreInfra Media**. Use `download: false` to poll without creating a file. fal also returns its signed result URL in this mode. A job records the key fingerprint, provider, model and upstream ID; polling with a different key is rejected.
 
 ### Claude Code
 
 In Wizard choose **Claude Code → API-доступ → Применить** and confirm the configuration plan. Start a new local Claude Code session and ask «Какие видеомодели доступны?» or invoke `/coreinfra-video`. Wizard can be closed after configuration. The CLI routing command applies the same configuration.
 
-Wizard installs the bundled skill under `~/.claude/skills/coreinfra-video` and registers the HTTP MCP server `coreinfra_video` in the user’s `~/.claude.json`. Both locations follow `CLAUDE_CONFIG_DIR` when set. Claude Code reads the current local bearer through its native `headersHelper`. Enable the video switch separately for Claude Code. Disabling it revokes its bearer and removes its headers file without affecting Codex or Claude Desktop. Switching Claude Code away from API access removes its managed MCP entry and unmodified skill. Reapplying API access installs the version shipped with Wizard.
+Wizard installs the bundled skill under `~/.claude/skills/coreinfra-video` and registers the HTTP MCP server `coreinfra_media` in the user’s `~/.claude.json`. Both locations follow `CLAUDE_CONFIG_DIR` when set. Claude Code reads the current local bearer through its native `headersHelper`. Enable the media switch separately for Claude Code; the registration stays active across routing modes while enabled. Disabling the media switch revokes its bearer and removes its headers file, managed MCP entry and unmodified skills without affecting Codex or Claude Desktop.
 
-The Claude Code E2E in the Linux, macOS and Windows CI matrix configures a fresh profile, launches native Claude Code, asks it to read the installed skill, and verifies that the next inference request and the final answer receive live catalog data. Chat inference is a local Messages fixture. To run it locally, set `WIZARD_VIDEO_TEST_CLAUDE` to a Claude Code executable and run `cargo test -p wizard-core claude_code_skill_lists_public_video_models -- --ignored --nocapture` with Python 3 available.
+### Claude Desktop
 
-### Custom video fields
+Claude Desktop uses the `coreinfra_media` connector configured by Wizard together with the plugin `coreinfra-media` from the marketplace `coreinfra-wizard` (this repository’s `.claude-plugin/marketplace.json`).
 
-Put provider-specific JSON in `fields`. Wizard merges its entries into the outgoing JSON body and preserves nested objects, arrays, numbers, booleans and nulls. For clients that cannot express open-ended object arguments, `fields_json` accepts the same object as a JSON string. Use one representation per request. `model` and `prompt` are reserved tool arguments. The destination, authentication and HTTP headers are controlled by Wizard.
+The Claude Code E2E in the Linux, macOS and Windows CI matrix configures a fresh profile, launches native Claude Code, asks it to read the installed skill, and verifies that the next inference request and the final answer receive live catalog data. Chat inference is a local Messages fixture. To run it locally, set `WIZARD_VIDEO_TEST_CLAUDE` to a Claude Code executable and run `cargo test -p wizard-core claude_code_skill_lists_public_media_models -- --ignored --nocapture` with Python 3 available.
+
+### Custom fields
+
+Put provider-specific JSON in `fields`. Wizard merges its entries into the top level of the outgoing JSON body and preserves nested objects, arrays, numbers, booleans and nulls. For clients that cannot express open-ended object arguments, `fields_json` accepts the same object as a JSON string. Use one representation per request. Named tool arguments (such as `model`, `prompt`, `input`, `voice`) are reserved and must not be repeated inside `fields`. The destination, authentication and HTTP headers are controlled by Wizard.
 
 ```json
 {
@@ -39,9 +47,9 @@ Put provider-specific JSON in `fields`. Wizard merges its entries into the outgo
 
 For OpenRouter, put per-provider options under `fields.provider.options` and inline frame images under `fields.frame_images`. The Hub strips other OpenRouter routing options and `callback_url`. fal accepts inline `image_url` and `end_image_url` and uses polling for job status. The MCP request body limit is 32 MiB including base64 encoding. The Hub and model determine which fields they honor. [OpenRouter media](https://coreinfra.ru/docs/use/openrouter) · [fal queue](https://coreinfra.ru/docs/use/fal)
 
-The [client compatibility test](crates/wizard-core/tests/video_clients.py) includes a Python SDK 2.x example using `streamable_http_client`. To repeat the end-to-end test, set `WIZARD_VIDEO_TEST_PYTHON` to a Python with `mcp` 2.x installed and `WIZARD_VIDEO_TEST_CODEX` to a Codex executable. Run `cargo test -p wizard-core native_and_python_clients -- --ignored --nocapture`. All submissions in this test go to its temporary local Hub.
+The [client compatibility test](crates/wizard-core/tests/media_clients.py) includes a Python SDK 2.x example using `streamable_http_client`. To repeat the end-to-end test, set `WIZARD_VIDEO_TEST_PYTHON` to a Python with `mcp` 2.x installed and `WIZARD_VIDEO_TEST_CODEX` to a Codex executable. Run `cargo test -p wizard-core native_and_python_clients -- --ignored --nocapture`. All submissions in this test go to its temporary local Hub.
 
-CI also runs a catalog E2E on Linux, macOS and Windows. Wizard installs the bundled skill and MCP registration into a fresh profile. A native Codex turn uses the installed skill to call `video_models` and receives model IDs from the public Hub. A local Responses fixture requests that single read-only tool call. To run it locally, set `WIZARD_VIDEO_TEST_CODEX` to a Codex executable or its npm `bin/codex.js` launcher and run `cargo test -p wizard-core codex_skill_lists_public_video_models -- --ignored --nocapture` with Python 3 available. The test uses its own loopback listener.
+CI also runs a catalog E2E on Linux, macOS and Windows. Wizard installs the bundled skill and MCP registration into a fresh profile. A native Codex turn uses the installed skill to call `video_models` and receives model IDs from the public Hub. A local Responses fixture requests that single read-only tool call. To run it locally, set `WIZARD_VIDEO_TEST_CODEX` to a Codex executable or its npm `bin/codex.js` launcher and run `cargo test -p wizard-core codex_skill_lists_public_media_models -- --ignored --nocapture` with Python 3 available. The test uses its own loopback listener.
 
 ## How to build
 

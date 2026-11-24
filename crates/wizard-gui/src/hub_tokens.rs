@@ -12,7 +12,7 @@ use tauri::Manager as _;
 use wizard_core::{
     agents::TokenAgent,
     hub::{self, AgentTokens, Client, HubError, SessionUpdate},
-    video::fingerprint,
+    media::fingerprint,
 };
 
 pub(crate) const PROXY_TOKEN_NAME: &str = "coreinfra-ai-wizard";
@@ -324,7 +324,7 @@ const PROXY_LOOKUP_ERROR: &str = "Не удалось получить токе�
 const CODEX_LOOKUP_ERROR: &str = "Не удалось получить ключ Codex в выбранном хабе";
 static CODEX_TOKEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Both automatic Codex setup and video use the same default in Wizard's selected Hub.
+/// Both automatic Codex setup and media use the same default in Wizard's selected Hub.
 /// Capture the selection now, even when the caller awaits this after other I/O.
 pub(crate) fn codex_token(
     app: &tauri::AppHandle,
@@ -595,9 +595,9 @@ mod tests {
                     },
                 )
             };
-            let (codex, video) = tokio::join!(request(), request());
+            let (codex, media) = tokio::join!(request(), request());
             assert_eq!(codex.as_deref(), Ok("issued"));
-            assert_eq!(video, codex);
+            assert_eq!(media, codex);
             assert_eq!(issues.load(Ordering::SeqCst), 1);
         });
     }

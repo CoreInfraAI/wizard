@@ -1,4 +1,4 @@
-//! Stateless video tools. Job references are carried by the caller and contain no credential.
+//! Stateless media tools. Job references are carried by the caller and contain no credential.
 pub mod background;
 pub mod install;
 pub mod keys;
@@ -24,6 +24,9 @@ const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 pub const URL: &str = "http://127.0.0.1:33789/mcp";
 const OPENROUTER: &str = "/openrouter/api/v1/videos";
 const FAL: &str = "/fal/api";
+const OUTPUT_DIR: &str = "CoreInfra Media";
+/// Responses read into memory: catalogs, job states and transcripts.
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 #[must_use]
 pub fn fingerprint(secret: &str) -> String {
@@ -60,17 +63,7 @@ struct Create {
 
 impl Create {
     fn into_body(self) -> Result<(String, Map<String, Value>)> {
-        let mut body = match (self.fields, self.fields_json) {
-            (Some(_), Some(_)) => bail!("Use either fields or fields_json"),
-            (Some(fields), None) => fields,
-            (None, Some(text)) => serde_json::from_str(&text)
-                .map_err(|_| anyhow!("fields_json must encode a JSON object"))?,
-            (None, None) => Map::new(),
-        };
-        ensure!(
-            !body.contains_key("model") && !body.contains_key("prompt"),
-            "Put model and prompt in the named tool arguments"
-        );
+        let mut body = extra_fields(self.fields, self.fields_json, &["model", "prompt"])?;
         ensure!(
             self.prompt.as_ref().is_some_and(|p| !p.trim().is_empty()) || !body.is_empty(),
             "Provide a prompt or model-specific inputs"
@@ -93,8 +86,27 @@ pub struct Job {
 
 const MISSING_KEY: &str = "В активной конфигурации агента нет ключа CoreInfra";
 
+/// Merge `fields` or `fields_json` into a body after rejecting keys owned by named arguments.
+fn extra_fields(
+    fields: Option<Map<String, Value>>,
+    fields_json: Option<String>,
+    named: &[&str],
+) -> Result<Map<String, Value>> {
+    let body = match (fields, fields_json) {
+        (Some(_), Some(_)) => bail!("Use either fields or fields_json"),
+        (Some(fields), None) => fields,
+        (None, Some(text)) => serde_json::from_str(&text)
+            .map_err(|_| anyhow!("fields_json must encode a JSON object"))?,
+        (None, None) => Map::new(),
+    };
+    if let Some(key) = named.iter().find(|key| body.contains_key(**key)) {
+        bail!("Put {key} in the named tool argument, not in fields");
+    }
+    Ok(body)
+}
+
 /// Cached for one agent. Never serialized or logged.
-pub struct VideoKey {
+pub struct MediaKey {
     pub token: String,
 }
 
@@ -110,14 +122,36 @@ struct GetResult {
     index: u32,
 }
 
+#[derive(Deserialize)]
+struct PriceEntry {
+    category: String,
+    endpoints: Vec<String>,
+    display_name: Option<String>,
+    #[serde(default)]
+    prices: BTreeMap<String, Value>,
+    #[serde(default)]
+    lowest_prices: BTreeMap<String, Value>,
+}
+
+impl PriceEntry {
+    /// Lowest and highest public rate for `unit`, scaled from Hub's RUB per million units.
+    fn range(&self, unit: &str, scale: f64) -> (Option<f64>, Option<f64>) {
+        let rate = |prices: &BTreeMap<String, Value>| {
+            prices.get(unit).and_then(Value::as_f64).map(|p| p * scale)
+        };
+        let max = rate(&self.prices);
+        (rate(&self.lowest_prices).or(max), max)
+    }
+}
+
 #[derive(Clone)]
-pub struct VideoHub {
+pub struct MediaHub {
     client: Client,
     origin: Url,
     output_dir: Option<PathBuf>,
 }
 
-impl VideoHub {
+impl MediaHub {
     pub fn new() -> Result<Self> {
         Ok(Self {
             client: Client::builder()
@@ -127,46 +161,40 @@ impl VideoHub {
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(180))
                 .build()
-                .map_err(|_| anyhow!("Could not initialize the video HTTP client"))?,
+                .map_err(|_| anyhow!("Could not initialize the media HTTP client"))?,
             origin: Url::parse(crate::hub::HUB_ORIGIN)?,
             output_dir: dirs::download_dir()
                 .or_else(|| dirs::home_dir().map(|dir| dir.join("Downloads")))
-                .map(|dir| dir.join("CoreInfra Video")),
+                .map(|dir| dir.join(OUTPUT_DIR)),
         })
     }
 
-    async fn models(&self) -> Result<BTreeMap<String, Model>> {
+    /// Public Hub price entries accepted by `accept`.
+    async fn prices(
+        &self,
+        accept: impl Fn(&PriceEntry) -> bool,
+    ) -> Result<Vec<(String, PriceEntry)>> {
         #[derive(Deserialize)]
         struct Prices {
             providers: BTreeMap<String, Group>,
         }
         #[derive(Deserialize)]
         struct Group {
-            models: BTreeMap<String, Entry>,
-        }
-        #[derive(Deserialize)]
-        struct Entry {
-            category: String,
-            endpoints: Vec<String>,
-            display_name: Option<String>,
-            prices: Rates,
-            lowest_prices: Option<Rates>,
-        }
-        #[derive(Deserialize)]
-        struct Rates {
-            video_seconds: Option<f64>,
+            models: BTreeMap<String, PriceEntry>,
         }
         let value = read_json(self.client.get(self.origin.join("/hub/api/prices")?)).await?;
         let prices: Prices = serde_json::from_value(value).context("Invalid Hub price catalog")?;
-        let mut models = BTreeMap::new();
-        for (id, entry) in prices
+        Ok(prices
             .providers
             .into_values()
             .flat_map(|group| group.models)
-        {
-            if entry.category != "videos" {
-                continue;
-            }
+            .filter(|(_, entry)| accept(entry))
+            .collect())
+    }
+
+    async fn models(&self) -> Result<BTreeMap<String, Model>> {
+        let mut models = BTreeMap::new();
+        for (id, entry) in self.prices(|entry| entry.category == "videos").await? {
             let Some(provider) = entry.endpoints.iter().find_map(|path| match path.as_str() {
                 OPENROUTER => Some(Provider::OpenRouter),
                 FAL => Some(Provider::Fal),
@@ -174,12 +202,7 @@ impl VideoHub {
             }) else {
                 continue;
             };
-            let max = entry.prices.video_seconds.map(|p| p / 1_000_000.0);
-            let min = entry
-                .lowest_prices
-                .and_then(|p| p.video_seconds)
-                .map(|p| p / 1_000_000.0)
-                .or(max);
+            let (min, max) = entry.range("video_seconds", 1.0 / 1_000_000.0);
             models.insert(
                 id.clone(),
                 Model {
@@ -194,7 +217,7 @@ impl VideoHub {
         Ok(models)
     }
 
-    async fn create(&self, input: Create, key: Option<&VideoKey>) -> Result<Value> {
+    async fn create(&self, input: Create, key: Option<&MediaKey>) -> Result<Value> {
         let (model_id, mut body) = input.into_body()?;
         let model = self
             .models()
@@ -234,7 +257,7 @@ impl VideoHub {
         Ok(json!({"job":job, "status":response["status"].as_str().unwrap_or("pending")}))
     }
 
-    async fn result(&self, input: GetResult, key: Option<&VideoKey>) -> Result<Value> {
+    async fn result(&self, input: GetResult, key: Option<&MediaKey>) -> Result<Value> {
         let job = &input.job;
         ensure!(safe_segment(&job.id), "Invalid job ID");
         let path = match job.provider {
@@ -354,47 +377,73 @@ async fn send(request: RequestBuilder) -> Result<Response> {
                 status.as_u16()
             );
         }
+        // Error bodies are not shown: they may echo request credentials.
         bail!("CoreInfra Hub returned HTTP {}", status.as_u16());
     }
     Ok(response)
 }
 
-async fn read_json(request: RequestBuilder) -> Result<Value> {
-    let mut response = send(request).await?;
+async fn read_body(mut response: Response, limit: usize, what: &str) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| anyhow!("Incomplete Hub response"))?
+        .map_err(|_| anyhow!("Incomplete Hub {what} response"))?
     {
         ensure!(
-            bytes.len() + chunk.len() <= 8 * 1024 * 1024,
-            "Hub JSON response is too large"
+            bytes.len() + chunk.len() <= limit,
+            "Hub {what} response is too large"
         );
         bytes.extend_from_slice(&chunk);
     }
+    Ok(bytes)
+}
+
+async fn read_json(request: RequestBuilder) -> Result<Value> {
+    read_json_limit(request, MAX_RESPONSE_BYTES).await
+}
+
+async fn read_json_limit(request: RequestBuilder, limit: usize) -> Result<Value> {
+    let bytes = read_body(send(request).await?, limit, "JSON").await?;
     serde_json::from_slice(&bytes).map_err(|_| anyhow!("Invalid JSON from CoreInfra Hub"))
 }
 
-async fn save_video(dir: &Path, mut response: Response) -> Result<PathBuf> {
-    if let Some(mime) = response.headers().get(reqwest::header::CONTENT_TYPE) {
-        let mime = mime
-            .to_str()
-            .unwrap_or("")
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim();
+/// The lowercase MIME type without parameters.
+fn content_type(response: &Response) -> Option<String> {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .map(|mime| {
+            mime.to_str()
+                .unwrap_or("")
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
+}
+
+async fn save_video(dir: &Path, response: Response) -> Result<PathBuf> {
+    if let Some(mime) = content_type(&response) {
         ensure!(
-            ["video/mp4", "application/mp4", "application/octet-stream"]
-                .iter()
-                .any(|t| mime.eq_ignore_ascii_case(t)),
+            ["video/mp4", "application/mp4", "application/octet-stream"].contains(&mime.as_str()),
             "Hub returned a non-MP4 response"
         );
     }
+    Ok(save_download(dir, response, "video-", "mp4").await?.0)
+}
+
+/// Stream a download into `dir` under a fresh random name. Never overwrites a file.
+async fn save_download(
+    dir: &Path,
+    mut response: Response,
+    prefix: &str,
+    extension: &str,
+) -> Result<(PathBuf, u64)> {
     tokio::fs::create_dir_all(dir).await?;
     let file = tempfile::Builder::new()
-        .prefix("video-")
+        .prefix(prefix)
         .suffix(".part")
         .tempfile_in(dir)?;
     let (file, path) = file.into_parts();
@@ -403,17 +452,17 @@ async fn save_video(dir: &Path, mut response: Response) -> Result<PathBuf> {
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| anyhow!("Incomplete video download"))?
+        .map_err(|_| anyhow!("Incomplete download from CoreInfra Hub"))?
     {
         size += chunk.len() as u64;
         file.write_all(&chunk).await?;
     }
-    ensure!(size > 0, "Empty video from CoreInfra Hub");
+    ensure!(size > 0, "Empty file from CoreInfra Hub");
     file.flush().await?;
     drop(file);
-    let output = path.with_extension("mp4");
+    let output = path.with_extension(extension);
     path.persist_noclobber(&output)?;
-    Ok(output)
+    Ok((output, size))
 }
 
 #[cfg(test)]

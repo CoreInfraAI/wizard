@@ -112,16 +112,16 @@ describe("overview system proxy banner", () => {
   });
 });
 
-it("keeps video local to the draft until confirmation and saves the preference only for the selected agent", async () => {
+it("keeps media local to the draft until confirmation and saves the preference only for the selected agent", async () => {
   const user = userEvent.setup();
   launch("all_agents", "/agents/codex");
-  const name = "Подключить coreinfra-video для видео-моделей";
+  const name = "Подключить coreinfra-media для видео-моделей";
   const toggle = await screen.findByRole("switch", { name });
   expect(toggle).not.toBeChecked();
   await user.click(toggle);
   await user.click(screen.getByRole("button", { name: "Применить" }));
   let plan = await screen.findByRole("dialog", { name: "План изменений: ChatGPT / Codex" });
-  expect(within(plan).getByText("coreinfra-video", { selector: "code" })).toBeVisible();
+  expect(within(plan).getByText("coreinfra_media", { selector: "code" })).toBeVisible();
   await user.click(within(plan).getByRole("button", { name: "Отмена" }));
   await user.click(screen.getByRole("link", { name: "Claude Code" }));
   const claude = await screen.findByRole("switch", { name });
@@ -129,10 +129,10 @@ it("keeps video local to the draft until confirmation and saves the preference o
   await user.click(claude);
   await user.click(screen.getByRole("button", { name: "Применить" }));
   plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
-  expect(environment.calls).not.toContain("set_video_connection");
+  expect(environment.calls).not.toContain("set_media_connection");
   await user.click(within(plan).getByRole("button", { name: "Применить" }));
   const success = await screen.findByRole("dialog", { name: "Настройки применены" });
-  expect(environment.calls.filter(command => command === "set_video_connection")).toHaveLength(1);
+  expect(environment.calls.filter(command => command === "set_media_connection")).toHaveLength(1);
   expect(environment.calls).not.toContain("apply_agent_plan");
   expect(environment.calls).not.toContain("launch_agent");
   await user.click(within(success).getByRole("button", { name: "Запустить агента" }));
@@ -141,14 +141,14 @@ it("keeps video local to the draft until confirmation and saves the preference o
   expect(await screen.findByRole("switch", { name })).not.toBeChecked();
 });
 
-it("offers one Apply to install video in an existing Claude Code gateway profile", async () => {
+it("offers one Apply to install media in an existing Claude Code gateway profile", async () => {
   const user = userEvent.setup();
   launch("all_agents", "/agents/claude", ({ agents }) => {
     const claude = agents.value.claude;
     if (claude.status !== "found") throw new Error("Claude Code fixture missing");
-    agents.publish({ ...agents.value, claude: { ...claude, data: { ...claude.data, video_needs_apply: true } } });
+    agents.publish({ ...agents.value, claude: { ...claude, data: { ...claude.data, media_needs_apply: true } } });
   });
-  await user.click(await screen.findByRole("switch", { name: "Подключить coreinfra-video для видео-моделей" }));
+  await user.click(await screen.findByRole("switch", { name: "Подключить coreinfra-media для видео-моделей" }));
   expect(screen.getByText(/локальный MCP-сервер/)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Применить" }));
   const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
@@ -158,78 +158,78 @@ it("offers one Apply to install video in an existing Claude Code gateway profile
   expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
 });
 
-it("applies a Claude Desktop video change through a plan that restarts Desktop, then saves the grant", async () => {
+it("applies a Claude Desktop media change through a plan that restarts Desktop, then saves the grant", async () => {
   const user = userEvent.setup();
   const prepare = vi.spyOn(agentCommands, "prepareAgentChange");
   try {
     launch("all_agents", "/agents/claude-desktop");
-    const toggle = await screen.findByRole("switch", { name: /coreinfra-video/ });
+    const toggle = await screen.findByRole("switch", { name: /coreinfra-media/ });
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
     await user.click(screen.getByRole("button", { name: "Применить" }));
     const plan = await screen.findByRole("dialog", { name: /План изменений/ });
-    // A video-only plan can close Desktop without reconfiguring its gateway or agent token.
+    // A media-only plan can close Desktop without reconfiguring its gateway or agent token.
     expect(prepare).toHaveBeenLastCalledWith(expect.objectContaining({
       agent: "claude_desktop",
       routing: undefined,
-      videoEnabled: true,
+      mediaEnabled: true,
     }));
     await user.click(within(plan).getByRole("button", { name: "Применить" }));
     await screen.findByRole("dialog", { name: "Настройки применены" });
     const applied = environment.calls.indexOf("apply_agent_plan");
     expect(applied).toBeGreaterThanOrEqual(0);
-    expect(environment.calls.indexOf("set_video_connection")).toBeGreaterThan(applied);
+    expect(environment.calls.indexOf("set_media_connection")).toBeGreaterThan(applied);
     await finishSettings(user);
-    expect(await screen.findByRole("switch", { name: /coreinfra-video/ })).toBeChecked();
+    expect(await screen.findByRole("switch", { name: /coreinfra-media/ })).toBeChecked();
     expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
   } finally {
     prepare.mockRestore();
   }
 });
 
-it("keeps the Claude Desktop video choice across routing modes", async () => {
+it("keeps the Claude Desktop media choice across routing modes", async () => {
   const user = userEvent.setup();
   const prepare = vi.spyOn(agentCommands, "prepareAgentChange");
   try {
     launch("all_agents", "/agents/claude-desktop");
-    await screen.findByRole("switch", { name: /coreinfra-video/ });
+    await screen.findByRole("switch", { name: /coreinfra-media/ });
     await user.click(screen.getByRole("radio", { name: "Без CoreInfra AI Hub" }));
-    expect(screen.getByRole("switch", { name: /coreinfra-video/ })).toBeVisible();
+    expect(screen.getByRole("switch", { name: /coreinfra-media/ })).toBeVisible();
     await user.click(screen.getByRole("radio", { name: "Своя подписка Claude" }));
     await user.click(await screen.findByRole("button", { name: "Пропустить" }));
-    await user.click(await screen.findByRole("switch", { name: /coreinfra-video/ }));
+    await user.click(await screen.findByRole("switch", { name: /coreinfra-media/ }));
     await user.click(screen.getByRole("button", { name: "Применить" }));
     await screen.findByRole("dialog", { name: /План изменений/ });
     expect(prepare).toHaveBeenLastCalledWith(expect.objectContaining({
       agent: "claude_desktop",
       routing: expect.objectContaining({ change: { ClaudeDesktopSetRouting: "sub" } }),
-      videoEnabled: true,
+      mediaEnabled: true,
     }));
   } finally {
     prepare.mockRestore();
   }
 });
 
-it("remembers declining the default video offer while switching Claude Desktop away from Hub", async () => {
+it("remembers declining the default media offer while switching Claude Desktop away from Hub", async () => {
   const user = userEvent.setup();
-  launch("all_agents", "/agents/claude-desktop", undefined, { videoSuggested: true });
-  const toggle = await screen.findByRole("switch", { name: /coreinfra-video/ });
+  launch("all_agents", "/agents/claude-desktop", undefined, { mediaSuggested: true });
+  const toggle = await screen.findByRole("switch", { name: /coreinfra-media/ });
   expect(toggle).toBeChecked();
   await user.click(toggle);
   await user.click(screen.getByRole("radio", { name: "Без CoreInfra AI Hub" }));
   await user.click(screen.getByRole("button", { name: "Применить" }));
   const plan = await screen.findByRole("dialog", { name: /План изменений/ });
-  expect(within(plan).getByText(/Отключит видео-модели/)).toBeVisible();
+  expect(within(plan).getByText(/Отключит MCP-сервер/)).toBeVisible();
   await user.click(within(plan).getByRole("button", { name: "Применить" }));
   await finishSettings(user);
   await user.click(screen.getByRole("link", { name: "Claude Code" }));
   await user.click(screen.getByRole("link", { name: "Claude Desktop" }));
-  expect(await screen.findByRole("switch", { name: /coreinfra-video/ })).not.toBeChecked();
+  expect(await screen.findByRole("switch", { name: /coreinfra-media/ })).not.toBeChecked();
   expect(screen.getByRole("radio", { name: "Без CoreInfra AI Hub" })).toBeChecked();
   expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
 });
 
-it("saves both video choices in Claude Desktop without a Hub connection", async () => {
+it("saves both media choices in Claude Desktop without a Hub connection", async () => {
   const user = userEvent.setup();
   launch("offline", "/agents/claude-desktop", ({ agents }) => {
     const desktop = agents.value.claude_desktop;
@@ -237,9 +237,9 @@ it("saves both video choices in Claude Desktop without a Hub connection", async 
     agents.publish({ ...agents.value, claude_desktop: {
       ...desktop, data: { ...desktop.data, routing_mode: "disabled", token: null },
     } });
-  }, { videoSuggested: true });
+  }, { mediaSuggested: true });
   for (const enabled of [false, true]) {
-    const toggle = await screen.findByRole("switch", { name: /coreinfra-video/ });
+    const toggle = await screen.findByRole("switch", { name: /coreinfra-media/ });
     expect(toggle).toHaveAttribute("aria-checked", String(!enabled));
     await user.click(toggle);
     const apply = screen.getByRole("button", { name: "Применить" });
@@ -248,16 +248,16 @@ it("saves both video choices in Claude Desktop without a Hub connection", async 
     const plan = await screen.findByRole("dialog", { name: /План изменений/ });
     await user.click(within(plan).getByRole("button", { name: "Применить" }));
     await finishSettings(user);
-    expect(await screen.findByRole("switch", { name: /coreinfra-video/ })).toHaveAttribute("aria-checked", String(enabled));
+    expect(await screen.findByRole("switch", { name: /coreinfra-media/ })).toHaveAttribute("aria-checked", String(enabled));
     expect(screen.getByRole("radio", { name: "Без CoreInfra AI Hub" })).toBeChecked();
     expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
   }
 });
 
-it("offers video by default to configured agents until the user turns it off", async () => {
+it("offers media by default to configured agents until the user turns it off", async () => {
   const user = userEvent.setup();
-  launch("all_agents", "/agents/claude", undefined, { videoSuggested: true });
-  const toggle = await screen.findByRole("switch", { name: /coreinfra-video/ });
+  launch("all_agents", "/agents/claude", undefined, { mediaSuggested: true });
+  const toggle = await screen.findByRole("switch", { name: /coreinfra-media/ });
   expect(toggle).toBeChecked();
   const apply = screen.getByRole("button", { name: "Применить" });
   expect(apply).toBeEnabled();
@@ -266,27 +266,52 @@ it("offers video by default to configured agents until the user turns it off", a
   await user.click(toggle);
   await user.click(apply);
   let plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
-  expect(within(plan).getByText("coreinfra-video", { selector: "code" })).toBeVisible();
+  expect(within(plan).getByText("coreinfra_media", { selector: "code" })).toBeVisible();
   await user.click(within(plan).getByRole("button", { name: "Применить" }));
   await finishSettings(user);
-  expect(await screen.findByRole("switch", { name: /coreinfra-video/ })).toBeChecked();
+  expect(await screen.findByRole("switch", { name: /coreinfra-media/ })).toBeChecked();
 
-  // Turning video off is remembered: it is not offered again.
-  await user.click(screen.getByRole("switch", { name: /coreinfra-video/ }));
+  // Turning media off is remembered: it is not offered again.
+  await user.click(screen.getByRole("switch", { name: /coreinfra-media/ }));
   await user.click(screen.getByRole("button", { name: "Применить" }));
   plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
   await user.click(within(plan).getByRole("button", { name: "Применить" }));
   await finishSettings(user);
   await user.click(screen.getByRole("link", { name: "ChatGPT / Codex" }));
   await user.click(screen.getByRole("link", { name: "Claude Code" }));
-  expect(await screen.findByRole("switch", { name: /coreinfra-video/ })).not.toBeChecked();
+  expect(await screen.findByRole("switch", { name: /coreinfra-media/ })).not.toBeChecked();
   expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
 });
 
-it("keeps the Claude Code video choice in all three modes and retries only the failed step", async () => {
+it("offers Apply to migrate legacy media registration in an upgraded Codex without changing the choice", async () => {
+  const user = userEvent.setup();
+  launch("all_agents", "/agents/codex", ({ agents }) => {
+    const codex = agents.value.codex;
+    if (codex.status !== "found") throw new Error("Codex fixture missing");
+    agents.publish({ ...agents.value, codex: { ...codex, data: { ...codex.data, media_needs_apply: true } } });
+  });
+  const toggle = await screen.findByRole("switch", { name: /coreinfra-media/ });
+  expect(toggle).not.toBeChecked();
+  const save = vi.spyOn(agentCommands, "applyMediaConnection");
+  try {
+    await user.click(screen.getByRole("button", { name: "Применить" }));
+    const plan = await screen.findByRole("dialog", { name: "План изменений: ChatGPT / Codex" });
+    expect(within(plan).getByText("coreinfra_media", { selector: "code" })).toBeVisible();
+    await user.click(within(plan).getByRole("button", { name: "Применить" }));
+    await finishSettings(user);
+    expect(save).toHaveBeenCalledExactlyOnceWith("codex", false);
+    expect(environment.calls).not.toContain("apply_agent_plan");
+  } finally {
+    save.mockRestore();
+  }
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
+});
+
+it("keeps the Claude Code media choice in all three modes and retries only the failed step", async () => {
   const user = userEvent.setup();
   launch("all_agents", "/agents/claude");
-  const toggle = await screen.findByRole("switch", { name: /coreinfra-video/ });
+  const toggle = await screen.findByRole("switch", { name: /coreinfra-media/ });
   expect(toggle).not.toBeChecked();
   await user.click(toggle);
   await user.click(screen.getByRole("radio", { name: "Своя подписка Claude" }));
@@ -298,13 +323,13 @@ it("keeps the Claude Code video choice in all three modes and retries only the f
   expect(toggle).toBeChecked();
   await user.click(screen.getByRole("button", { name: "Применить" }));
   const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
-  expect(within(plan).getByText("coreinfra-video", { selector: "code" })).toBeVisible();
+  expect(within(plan).getByText("coreinfra_media", { selector: "code" })).toBeVisible();
   const details = within(plan).getByRole("button", { name: "Ещё 1 шаг" });
   await user.click(details);
   expect(within(plan).getByText("Обновит режим подключения и токен CoreInfra Hub.")).toBeVisible();
   await user.keyboard("{Enter}");
   expect(details).toHaveAttribute("aria-expanded", "false");
-  const save = vi.spyOn(agentCommands, "applyVideoConnection").mockRejectedValueOnce("Сервис занят");
+  const save = vi.spyOn(agentCommands, "applyMediaConnection").mockRejectedValueOnce("Сервис занят");
   try {
     await user.click(within(plan).getByRole("button", { name: "Применить" }));
     expect(await within(plan).findByRole("alert")).toHaveTextContent("Сервис занят");
@@ -568,16 +593,16 @@ describe("application transitions", () => {
 
   it("replaces getting started with the overview after the first connection is configured", async () => {
     const user = userEvent.setup();
-    launch("onboarding_merge", "/overview", undefined, { videoSuggested: true });
+    launch("onboarding_merge", "/overview", undefined, { mediaSuggested: true });
     await screen.findByRole("heading", { name: "Начало работы" });
     expect(screen.queryByRole("button", { name: "Пополнить" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Настроить агента" }));
     const dialog = await screen.findByRole("dialog", { name: "Настройка агентов" });
     await user.click(within(dialog).getByRole("radio", { name: "Claude Desktop" }));
     await user.click(within(dialog).getByRole("button", { name: "Настроить агента" }));
-    const video = await within(dialog).findByRole("switch", { name: /coreinfra-video/ });
-    expect(video).toBeChecked();
-    await user.click(video);
+    const media = await within(dialog).findByRole("switch", { name: /coreinfra-media/ });
+    expect(media).toBeChecked();
+    await user.click(media);
     await user.click(await within(dialog).findByRole("button", { name: "Завершить настройку" }));
     const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Desktop" });
     await user.click(within(plan).getByRole("button", { name: "Завершить настройку" }));
@@ -592,7 +617,7 @@ describe("application transitions", () => {
     await screen.findByRole("heading", { name: "Агент готов!" });
     expect(screen.queryByRole("heading", { name: "Начало работы" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Claude Desktop" }));
-    expect(await screen.findByRole("switch", { name: /coreinfra-video/ })).not.toBeChecked();
+    expect(await screen.findByRole("switch", { name: /coreinfra-media/ })).not.toBeChecked();
     await waitFor(() => expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled());
   });
 

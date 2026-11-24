@@ -20,8 +20,8 @@ const KEY: &str = "fixture-upstream-secret";
 const LOCAL: &str = "fixture-local-grant";
 const MP4: &[u8] = include_bytes!("../../tests/fixtures/blue.mp4");
 
-fn key(token: &str) -> VideoKey {
-    VideoKey {
+fn key(token: &str) -> MediaKey {
+    MediaKey {
         token: token.into(),
     }
 }
@@ -34,7 +34,7 @@ struct Seen {
 }
 
 struct Fixture {
-    hub: VideoHub,
+    hub: MediaHub,
     dir: tempfile::TempDir,
     requests: Arc<Mutex<Vec<Seen>>>,
     fake_hub: JoinHandle<()>,
@@ -63,7 +63,7 @@ impl Fixture {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("http://{}", listener.local_addr()?);
         let dir = tempfile::tempdir()?;
-        let mut hub = VideoHub::new()?;
+        let mut hub = MediaHub::new()?;
         hub.origin = Url::parse(&origin)?;
         hub.output_dir = Some(dir.path().join("downloads"));
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -171,7 +171,7 @@ impl Fixture {
         })
     }
 
-    async fn start(&self, key: Option<VideoKey>) -> Result<RunningServer> {
+    async fn start(&self, key: Option<MediaKey>) -> Result<RunningServer> {
         let path = self.dir.path().join("profile/config.toml");
         let config = path.clone();
         let local = TcpListener::bind("127.0.0.1:0").await?;
@@ -185,7 +185,7 @@ impl Fixture {
             &doc,
             &[
                 "mcp_servers",
-                "coreinfra_video",
+                "coreinfra_media",
                 "http_headers",
                 "Authorization",
             ],
@@ -543,7 +543,7 @@ fn install_upgrade_disable_and_collisions() -> Result<()> {
     assert_eq!(fs::read_to_string(&config)?, original);
     let other_dir = tempfile::tempdir()?;
     let config = other_dir.path().join("config.toml");
-    let foreign = "[mcp_servers.coreinfra_video]\nurl='https://other.example'\n";
+    let foreign = "[mcp_servers.coreinfra_media]\nurl='https://other.example'\n";
     fs::write(&config, foreign)?;
     assert!(install::sync_at(&config, None, Some(LOCAL)).is_err());
     assert_eq!(fs::read_to_string(config)?, foreign);
@@ -646,21 +646,21 @@ async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
 
 #[tokio::test]
 #[ignore = "requires WIZARD_VIDEO_TEST_CODEX, Python and access to the public Hub catalog"]
-async fn codex_skill_lists_public_video_models() -> Result<()> {
+async fn codex_skill_lists_public_media_models() -> Result<()> {
     let _ = crate::hub::install_crypto_provider();
     let dir = tempfile::tempdir()?;
     let profile = dir.path().join("codex");
     let config = profile.join("config.toml");
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}/mcp", listener.local_addr()?);
-    let server = server::start(listener, VideoHub::new()?, None, move |bearer| {
+    let server = server::start(listener, MediaHub::new()?, None, move |bearer| {
         install::sync_at(&config, None, Some(bearer))?;
         // Verify the production registration, then point this isolated profile at its own listener.
         let mut doc = toml::read(&config)?;
-        let key = ["mcp_servers", "coreinfra_video", "url"];
+        let key = ["mcp_servers", "coreinfra_media", "url"];
         ensure!(
             toml::get_string(&doc, &key) == Some(URL),
-            "Wrong installed video endpoint"
+            "Wrong installed media endpoint"
         );
         toml::set_value(&mut doc, &key, url)?;
         std::fs::write(config, doc.to_string())?;
@@ -669,7 +669,7 @@ async fn codex_skill_lists_public_video_models() -> Result<()> {
     .await?;
     let python = std::env::var_os("WIZARD_VIDEO_TEST_PYTHON")
         .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video_catalog_e2e.py");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media_catalog_e2e.py");
     let mut client = tokio::process::Command::new(python)
         .args(["-E", "-B"])
         .arg(script)
@@ -691,7 +691,7 @@ async fn codex_skill_lists_public_video_models() -> Result<()> {
 async fn failed_registration_releases_the_listener_and_preserves_a_foreign_server() -> Result<()> {
     let fixture = Fixture::new().await?;
     let config = fixture.dir.path().join("config.toml");
-    let foreign = "[mcp_servers.coreinfra_video]\nurl = 'https://other.example'\n";
+    let foreign = "[mcp_servers.coreinfra_media]\nurl = 'https://other.example'\n";
     std::fs::write(&config, foreign)?;
     let register_path = config.clone();
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -725,7 +725,7 @@ async fn native_and_python_clients() -> Result<()> {
         &path,
         "[shell_environment_policy]\nexclude = ['WIZARD_VIDEO_TEST_FILTER', 'COREINFRA_API_KEY']\n",
     )?;
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video_clients.py");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media_clients.py");
     let mut clients = tokio::process::Command::new(std::env::var("WIZARD_VIDEO_TEST_PYTHON")?)
         .arg(script)
         .arg(&profile)
@@ -775,9 +775,9 @@ async fn native_and_python_clients() -> Result<()> {
 
 #[tokio::test]
 #[ignore = "contacts the public read-only CoreInfra Hub price catalog"]
-async fn public_video_catalog() -> Result<()> {
+async fn public_media_catalog() -> Result<()> {
     let _ = crate::hub::install_crypto_provider();
-    let models = VideoHub::new()?.models().await?;
+    let models = MediaHub::new()?.models().await?;
     ensure!(!models.is_empty(), "Hub returned no video models");
     let fal = models
         .values()
@@ -787,5 +787,99 @@ async fn public_video_catalog() -> Result<()> {
         "Live public catalog: {} OpenRouter and {fal} fal video models",
         models.len() - fal
     );
+    Ok(())
+}
+
+#[test]
+fn downloads_share_one_media_directory() -> Result<()> {
+    let hub = MediaHub::new()?;
+    let dir = hub.output_dir.context("Downloads directory")?;
+    assert!(dir.ends_with("CoreInfra Media"));
+    Ok(())
+}
+
+#[test]
+fn codex_upgrade_from_1_0_10_preserves_restrictions_and_foreign_servers() -> Result<()> {
+    use std::fs;
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("config.toml");
+    let bearer = format!("wizard-video-{}", uuid::Uuid::new_v4());
+    let legacy = format!(
+        "model = 'gpt'\n\n[mcp_servers.coreinfra_video]\nurl = '{URL}'\nenabled = false\ndisabled_tools = ['video_create']\ntool_timeout_sec = 600\n\n[mcp_servers.coreinfra_video.http_headers]\nAuthorization = 'Bearer {bearer}'\n"
+    );
+    fs::write(&config, &legacy)?;
+    let video = dir.path().join("skills/coreinfra-video");
+    fs::create_dir_all(&video)?;
+    fs::write(video.join("SKILL.md"), "1.0.10 skill")?;
+    fs::write(
+        video.join(".wizard-managed.json"),
+        json!({"SKILL.md": fingerprint("1.0.10 skill")}).to_string(),
+    )?;
+    assert!(install::needs_apply_at(&config, Some(&bearer)));
+    install::sync_at(&config, Some(&bearer), Some(&bearer))?;
+    assert!(!install::needs_apply_at(&config, Some(&bearer)));
+    let doc = toml::read(&config)?;
+    assert!(doc["mcp_servers"].get("coreinfra_video").is_none());
+    assert_eq!(
+        toml::get_string(&doc, &["mcp_servers", "coreinfra_media", "url"]),
+        Some(URL)
+    );
+    assert_eq!(
+        doc["mcp_servers"]["coreinfra_media"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        doc["mcp_servers"]["coreinfra_media"]["disabled_tools"]
+            .as_array()
+            .and_then(|a| a.get(0))
+            .and_then(toml_edit::Value::as_str),
+        Some("video_create")
+    );
+    assert_eq!(
+        doc["mcp_servers"]["coreinfra_media"]["tool_timeout_sec"].as_integer(),
+        Some(600)
+    );
+    assert_eq!(
+        toml::get_string(
+            &doc,
+            &[
+                "mcp_servers",
+                "coreinfra_media",
+                "http_headers",
+                "Authorization"
+            ]
+        ),
+        Some(format!("Bearer {bearer}").as_str())
+    );
+    let text = fs::read_to_string(video.join("SKILL.md"))?;
+    assert!(text.contains("coreinfra_media"));
+    assert!(video.join("agents/openai.yaml").is_file());
+    assert!(video.join(".wizard-managed.json").is_file());
+    install::sync_at(&config, Some(&bearer), None)?;
+    assert_eq!(fs::read_to_string(&config)?, "model = 'gpt'\n");
+    assert!(!video.join("SKILL.md").exists());
+
+    // Disabling with a foreign coreinfra_media still cleans up an owned 1.0.10 entry.
+    let mixed = format!(
+        "[mcp_servers.coreinfra_media]\nurl = 'https://other.example/mcp'\n\n[mcp_servers.coreinfra_video]\nurl = '{URL}'\n\n[mcp_servers.coreinfra_video.http_headers]\nAuthorization = 'Bearer {bearer}'\n"
+    );
+    fs::write(&config, &mixed)?;
+    assert!(install::sync_at(&config, Some(&bearer), Some(&bearer)).is_err());
+    install::sync_at(&config, Some(&bearer), None)?;
+    let doc = toml::read(&config)?;
+    assert!(doc["mcp_servers"].get("coreinfra_video").is_none());
+    assert_eq!(
+        toml::get_string(&doc, &["mcp_servers", "coreinfra_media", "url"]),
+        Some("https://other.example/mcp")
+    );
+
+    // A server under the old name that Wizard did not register is never removed.
+    let foreign = format!(
+        "[mcp_servers.coreinfra_video]\nurl = 'https://other.example/mcp'\n\n[mcp_servers.coreinfra_video.http_headers]\nAuthorization = 'Bearer {bearer}'\n"
+    );
+    fs::write(&config, &foreign)?;
+    install::sync_at(&config, None, Some(LOCAL))?;
+    install::sync_at(&config, Some(LOCAL), None)?;
+    assert_eq!(fs::read_to_string(&config)?, foreign);
     Ok(())
 }
