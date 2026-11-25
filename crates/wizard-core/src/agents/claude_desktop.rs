@@ -1,4 +1,6 @@
 mod media;
+mod models;
+pub use models::Models;
 
 use super::{
     AgentDetection, AgentToken, RoutingMode,
@@ -21,7 +23,7 @@ use std::{
 };
 use wizard_settings::Settings;
 
-const HUB_URL: &str = "https://hub.coreinfra.ai/anthropic/api";
+const HUB_URL: &str = "https://hub.coreinfra.ai/claude-desktop/api";
 // Read-only compatibility with an unreleased configuration. Never bind this port.
 const RETIRED_PROXY_URL: &str = "http://127.0.0.1:33789";
 pub(crate) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
@@ -32,7 +34,7 @@ pub(crate) struct ClaudeDesktop {
     pub info: AgentInfo,
     pub routing_mode: RoutingMode,
     pub token: Option<AgentToken>,
-    pub proxy_needs_apply: bool,
+    pub configuration_needs_apply: bool,
     pub media_needs_apply: bool,
 }
 
@@ -49,19 +51,20 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
     let configuration = || -> Result<ClaudeDesktop> {
         let _guard = PreparedAgent::ClaudeDesktop.lock()?;
         let dir = config_library()?;
-        let (routing_mode, token, proxy_needs_apply) = read_profile(&dir)?;
+        let (routing_mode, token, configuration_needs_apply) = read_profile(&dir)?;
         let plan = prepare_with_media(
             &dir,
             &config_1p_path()?,
             None,
             settings.media.claude_desktop.is_some(),
             &media::Registration::for_wizard()?,
+            None,
         );
         Ok(ClaudeDesktop {
             info,
             routing_mode,
             token,
-            proxy_needs_apply,
+            configuration_needs_apply,
             media_needs_apply: plan.map_or(true, |plan| !plan.info().is_empty()),
         })
     };
@@ -154,7 +157,9 @@ fn has_hub_connection(config: &Value) -> bool {
                 // Manual setup also uses the Claude API alias for the same Hub gateway.
                 matches!(
                     url.trim_end_matches('/'),
-                    HUB_URL | "https://hub.coreinfra.ai/claude/api"
+                    HUB_URL
+                        | "https://hub.coreinfra.ai/claude/api"
+                        | "https://hub.coreinfra.ai/anthropic/api"
                 )
             })
 }
@@ -323,7 +328,13 @@ fn read_profile(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
         let token = config["inferenceGatewayApiKey"]
             .as_str()
             .and_then(|s| AgentToken::new(s.to_owned()));
-        Ok((RoutingMode::Hub, token, proxy_needs_apply))
+        let configuration_needs_apply = proxy_needs_apply
+            || config["inferenceGatewayBaseUrl"]
+                .as_str()
+                .map(|url| url.trim_end_matches('/'))
+                != Some(HUB_URL)
+            || Models::from_value(&config["inferenceModels"]).is_none();
+        Ok((RoutingMode::Hub, token, configuration_needs_apply))
     } else {
         Ok((RoutingMode::Disabled, None, false))
     }
@@ -332,18 +343,24 @@ fn read_profile(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
 /// Prepare a local profile update without writing files or restarting Claude. Hub writes `token`
 /// to the profile; Hub and Sub enable local proxy demand; Disabled ignores it.
 /// `media`: whether Wizard holds a media grant for Claude Desktop.
-pub fn prepare_routing(mode: RoutingMode, token: &str, media: bool) -> Result<PreparedPlan> {
-    prepare_configuration(Some((mode, token)), media)
+pub fn prepare_routing(
+    mode: RoutingMode,
+    token: &str,
+    media: bool,
+    models: Option<&Models>,
+) -> Result<PreparedPlan> {
+    prepare_configuration(Some((mode, token)), media, models)
 }
 
 /// Reconcile media in the current deployment without changing inference or proxy settings.
 pub fn prepare_media(enabled: bool) -> Result<PreparedPlan> {
-    prepare_configuration(None, enabled)
+    prepare_configuration(None, enabled, None)
 }
 
 fn prepare_configuration(
     routing: Option<(RoutingMode, &str)>,
     media: bool,
+    models: Option<&Models>,
 ) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::ClaudeDesktop.lock()?;
 
@@ -353,6 +370,7 @@ fn prepare_configuration(
         routing,
         media,
         &media::Registration::for_wizard()?,
+        models,
     )
 }
 
@@ -369,6 +387,7 @@ fn prepare_routing_at(dir: &Path, mode: RoutingMode, token: &str) -> Result<Prep
         Some((mode, token)),
         false,
         &tests::registration(dir)?,
+        Some(&tests::fixture_models()),
     )
 }
 
@@ -378,6 +397,7 @@ fn prepare_with_media(
     routing: Option<(RoutingMode, &str)>,
     media_grant: bool,
     media: &media::Registration,
+    models: Option<&Models>,
 ) -> Result<PreparedPlan> {
     let mut meta = FileChange::read(dir.join("_meta.json"))?;
     let metadata = json::parse(&meta.after)?;
@@ -440,6 +460,12 @@ fn prepare_with_media(
                 object.insert("inferenceGatewayBaseUrl".into(), json!(HUB_URL));
                 object.insert("inferenceGatewayApiKey".into(), json!(token));
                 object.insert("inferenceGatewayAuthScheme".into(), json!("x-api-key"));
+                object.insert(
+                    "inferenceModels".into(),
+                    models
+                        .context("Каталог моделей Claude Desktop не загружен")?
+                        .value()?,
+                );
             }
 
             if mode == RoutingMode::Sub {
@@ -502,6 +528,13 @@ mod tests {
         media::Registration::with_headers(dir.join("media-claude-desktop-headers.json"))
     }
 
+    pub(super) fn fixture_models() -> Models {
+        Models::from_value(&json!([
+            {"name":"claude-sonnet-5", "labelOverride":"Claude Sonnet 5"},
+            {"name":"claude-coreinfra-cn-3", "labelOverride":"GLM 5.3", "behavesAs":"claude-sonnet-4-6", "maxEffort":"max"}
+        ])).expect("valid model fixture")
+    }
+
     #[test]
     fn first_launch_needs_only_precreated_configuration() -> Result<()> {
         for mode in [RoutingMode::Hub, RoutingMode::Sub] {
@@ -528,6 +561,8 @@ mod tests {
                     );
                     if mode == RoutingMode::Sub {
                         assert!(profile.get("inferenceGatewayApiKey").is_none());
+                    } else {
+                        assert_eq!(profile["inferenceModels"], fixture_models().value()?);
                     }
                     activated = true;
                     Ok(())
@@ -579,6 +614,7 @@ mod tests {
                     "inferenceGatewayAuthScheme": "bearer",
                     "inferenceCredentialCommand": "old-command",
                     "inferenceBedrockRegion": "us-east-1",
+                    "inferenceModels": ["old-model"],
                     "egressProxyUrl": "http://corp:3128",
                     "egressProxyPacUrl": "https://corp/proxy.pac",
                     "egressProxyAuth": "old-proxy-auth",
@@ -649,6 +685,7 @@ mod tests {
                 Some((mode, "token")),
                 media,
                 &registration,
+                Some(&fixture_models()),
             )
         };
         let media_step = |plan: &PreparedPlan| {
@@ -734,11 +771,12 @@ mod tests {
                 Some((RoutingMode::Hub, "token")),
                 grant,
                 &registration,
+                Some(&fixture_models()),
             )
         };
         let media_needs_apply = |grant| -> Result<bool> {
             Ok(
-                !prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration)?
+                !prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration, None)?
                     .info()
                     .is_empty(),
             )
@@ -853,6 +891,7 @@ mod tests {
                 Some((mode, "token")),
                 grant,
                 &registration,
+                Some(&fixture_models()),
             )
         };
 
@@ -864,7 +903,7 @@ mod tests {
         )?;
         let media_needs_apply = |grant| -> Result<bool> {
             Ok(
-                !prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration)?
+                !prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration, None)?
                     .info()
                     .is_empty(),
             )
@@ -974,8 +1013,9 @@ mod tests {
                 .root
                 .path()
                 .join("Claude/claude_desktop_config.json");
-            let prepare =
-                |grant| prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration);
+            let prepare = |grant| {
+                prepare_with_media(&fixture.dir, &config_1p, None, grant, &registration, None)
+            };
             for enable in [true, false] {
                 let plan = prepare(enable)?;
                 assert!(!plan.info().is_empty());
@@ -1042,6 +1082,8 @@ mod tests {
                     assert_eq!(config["inferenceGatewayBaseUrl"], HUB_URL);
                     assert_eq!(config["inferenceCredentialKind"], "static");
                     assert_eq!(config["inferenceGatewayAuthScheme"], "x-api-key");
+                    assert_eq!(config["inferenceModels"], fixture_models().value()?);
+                    assert!(!read_profile(&fixture.dir)?.2);
                 } else {
                     assert!(
                         config
@@ -1257,6 +1299,75 @@ mod tests {
     }
 
     #[test]
+    fn invalid_model_catalog_requires_reapply() -> Result<()> {
+        let fixture = Fixture::new("gateway")?;
+        fixture.apply(
+            prepare_routing_at(&fixture.dir, RoutingMode::Hub, "token")?,
+            true,
+        )?;
+        let baseline = json::read(&fixture.files[0])?;
+        assert!(!read_profile(&fixture.dir)?.2);
+        for models in [Value::Null, json!([]), json!(["invalid-model"])] {
+            let mut config = baseline.clone();
+            config["inferenceModels"] = models;
+            std::fs::write(&fixture.files[0], config.to_string())?;
+            assert!(read_profile(&fixture.dir)?.2);
+            fixture.apply(
+                prepare_routing_at(&fixture.dir, RoutingMode::Hub, "token")?,
+                true,
+            )?;
+            assert_eq!(json::read(&fixture.files[0])?, baseline);
+            assert!(!read_profile(&fixture.dir)?.2);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_refresh_preserves_mcp_and_a_missing_catalog_changes_no_files() -> Result<()> {
+        let fixture = Fixture::new("gateway")?;
+        let config_1p = fixture
+            .root
+            .path()
+            .join("Claude/claude_desktop_config.json");
+        let registration = registration(&fixture.dir)?;
+        let prepare = |models: Option<&Models>| {
+            prepare_with_media(
+                &fixture.dir,
+                &config_1p,
+                Some((RoutingMode::Hub, "selected-token")),
+                true,
+                &registration,
+                models,
+            )
+        };
+        let original = fixture.snapshots()?;
+        assert!(prepare(None).is_err());
+        assert!(fixture.snapshots()? == original);
+        fixture.apply(prepare(Some(&fixture_models()))?, true)?;
+        let before = json::read(&fixture.files[0])?;
+        let updated_models = Models::from_value(&json!([
+            {"name":"claude-coreinfra-cn-3", "labelOverride":"Updated GLM", "behavesAs":"claude-sonnet-4-6", "maxEffort":"high"}
+        ])).expect("updated catalog");
+        fixture.apply(prepare(Some(&updated_models))?, true)?;
+        let after = json::read(&fixture.files[0])?;
+        assert_eq!(after["inferenceModels"], updated_models.value()?);
+        assert_eq!(after["inferenceGatewayApiKey"], "selected-token");
+        assert_eq!(after["managedMcpServers"], before["managedMcpServers"]);
+        assert_eq!(
+            after["allowedPluginMarketplaces"],
+            before["allowedPluginMarketplaces"]
+        );
+        assert_eq!(after["managedMcpServers"][1]["name"], "coreinfra_media");
+        assert!(!read_profile(&fixture.dir)?.2);
+        let repeated = prepare(Some(&updated_models))?;
+        assert!(repeated.steps().iter().all(|step| match step {
+            PreparedStep::ChangeFile { change } => !change.is_changed(),
+            _ => true,
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn manually_configured_hub_supports_detection_and_mode_changes() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let dir = directory.path().join("configLibrary");
@@ -1267,7 +1378,11 @@ mod tests {
         let preferences_path = dir.with_file_name("claude_desktop_config.json");
         let profile_path = dir.join(format!("{id}.json"));
 
-        for url in [HUB_URL, "https://hub.coreinfra.ai/claude/api"] {
+        for url in [
+            HUB_URL,
+            "https://hub.coreinfra.ai/claude/api",
+            "https://hub.coreinfra.ai/anthropic/api",
+        ] {
             for suffix in ["", "/"] {
                 for mode in [RoutingMode::Hub, RoutingMode::Sub, RoutingMode::Disabled] {
                     let original = json!({
@@ -1282,9 +1397,9 @@ mod tests {
                     std::fs::write(&profile_path, original.to_string())?;
                     std::fs::write(&preferences_path, r#"{"deploymentMode":"3p"}"#)?;
 
-                    let (detected, token, proxy_needs_apply) = read_profile(&dir)?;
+                    let (detected, token, configuration_needs_apply) = read_profile(&dir)?;
                     assert_eq!(detected, RoutingMode::Hub);
-                    assert!(!proxy_needs_apply);
+                    assert!(configuration_needs_apply);
                     assert_eq!(
                         token.map(AgentToken::into_secret).as_deref(),
                         Some("manual-token")
@@ -1317,6 +1432,8 @@ mod tests {
                     if mode == RoutingMode::Hub {
                         assert_eq!(updated["inferenceGatewayBaseUrl"], HUB_URL);
                         assert_eq!(updated["inferenceGatewayApiKey"], "wizard-token");
+                        assert_eq!(updated["inferenceModels"], fixture_models().value()?);
+                        assert!(!read_profile(&dir)?.2);
                     } else {
                         assert!(
                             updated

@@ -113,6 +113,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
           status: "found",
           data: {
             ...routing,
+            configuration_needs_apply: false,
             media_needs_apply: false,
             path: "/Applications/Claude.app",
             version: detectedVersion.claude,
@@ -563,7 +564,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
                 next.claude_desktop = {
                   status: "found",
                   data: {
-                    ...(next.claude_desktop.status === "found" ? next.claude_desktop.data : unconfigured),
+                    ...(next.claude_desktop.status === "found" ? next.claude_desktop.data : { ...unconfigured, configuration_needs_apply: false }),
                     media_needs_apply: false,
                     path: release(desktop).path,
                     version: versions[desktop],
@@ -697,7 +698,7 @@ export function createMockEnvironment(scenario: Scenario = "update", options: Mo
                 ...agents.value,
                 [plan.agent]: {
                   ...detection,
-                  data: { ...detection.data, routing_mode: plan.mode, token: plan.token, proxy_needs_apply: false, ...(plan.agent === "claude" && { media_needs_apply: false }) },
+                  data: { ...detection.data, routing_mode: plan.mode, token: plan.token, proxy_needs_apply: false, ...(plan.agent === "claude_desktop" && { configuration_needs_apply: false }), ...(plan.agent === "claude" && { media_needs_apply: false }) },
                 },
               });
             return;
