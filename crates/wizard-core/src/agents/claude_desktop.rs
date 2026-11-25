@@ -333,7 +333,8 @@ fn read_profile(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
                 .as_str()
                 .map(|url| url.trim_end_matches('/'))
                 != Some(HUB_URL)
-            || Models::from_value(&config["inferenceModels"]).is_none();
+            || Models::from_value(&config["inferenceModels"])
+                .is_none_or(|models| models.default_model_index() != 0);
         Ok((RoutingMode::Hub, token, configuration_needs_apply))
     } else {
         Ok((RoutingMode::Disabled, None, false))
@@ -531,7 +532,8 @@ mod tests {
     pub(super) fn fixture_models() -> Models {
         Models::from_value(&json!([
             {"name":"claude-sonnet-5", "labelOverride":"Claude Sonnet 5"},
-            {"name":"claude-coreinfra-cn-3", "labelOverride":"GLM 5.3", "behavesAs":"claude-sonnet-4-6", "maxEffort":"max"}
+            {"name":"claude-coreinfra-cn-3", "labelOverride":"GLM 5.3", "behavesAs":"claude-sonnet-4-6", "maxEffort":"max"},
+            {"name":"claude-coreinfra-cn-1", "labelOverride":"DeepSeek V4.1 Flash", "behavesAs":"claude-sonnet-4-6", "maxEffort":"max"}
         ])).expect("valid model fixture")
     }
 
@@ -1299,7 +1301,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_model_catalog_requires_reapply() -> Result<()> {
+    fn invalid_catalog_or_old_default_requires_reapply() -> Result<()> {
         let fixture = Fixture::new("gateway")?;
         fixture.apply(
             prepare_routing_at(&fixture.dir, RoutingMode::Hub, "token")?,
@@ -1307,7 +1309,20 @@ mod tests {
         )?;
         let baseline = json::read(&fixture.files[0])?;
         assert!(!read_profile(&fixture.dir)?.2);
-        for models in [Value::Null, json!([]), json!(["invalid-model"])] {
+        let models = &baseline["inferenceModels"];
+        assert_eq!(
+            models[0],
+            json!({"name":"claude-coreinfra-cn-1", "labelOverride":"DeepSeek V4.1 Flash", "behavesAs":"claude-sonnet-4-6", "maxEffort":"max"})
+        );
+        assert_eq!(models[1]["name"], "claude-sonnet-5");
+        assert_eq!(models[2]["name"], "claude-coreinfra-cn-3");
+        let previous_order = json!([models[1], models[2], models[0]]);
+        for models in [
+            Value::Null,
+            json!([]),
+            json!(["invalid-model"]),
+            previous_order,
+        ] {
             let mut config = baseline.clone();
             config["inferenceModels"] = models;
             std::fs::write(&fixture.files[0], config.to_string())?;

@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 const MODELS_URL: &str = "https://hub.coreinfra.ai/claude-desktop/config";
+// Hub's stable Claude Desktop alias for DeepSeek V4.1 Flash.
+const DEEPSEEK_FLASH: &str = "claude-coreinfra-cn-1";
 
 #[derive(Deserialize, Serialize)]
 #[serde(transparent)]
@@ -92,9 +94,19 @@ impl Models {
             .filter(Self::valid)
     }
 
+    pub(super) fn default_model_index(&self) -> usize {
+        self.0
+            .iter()
+            .position(|model| model.name == DEEPSEEK_FLASH)
+            .unwrap_or(0)
+    }
+
     pub(super) fn value(&self) -> Result<Value> {
         ensure!(self.valid(), "Каталог моделей Claude Desktop не загружен");
-        Ok(serde_json::to_value(self)?)
+        // Desktop uses the first entry as its default. Keep Hub order for the rest.
+        let mut models: Vec<_> = self.0.iter().collect();
+        models[..=self.default_model_index()].rotate_right(1);
+        Ok(serde_json::to_value(models)?)
     }
 }
 
