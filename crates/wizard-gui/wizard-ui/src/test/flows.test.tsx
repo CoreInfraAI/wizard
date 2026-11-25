@@ -229,6 +229,26 @@ it("remembers declining the default media offer while switching Claude Desktop a
   expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
 });
 
+it("migrates an outdated Claude Desktop configuration without changing the selected mode", async () => {
+  const user = userEvent.setup();
+  launch("all_agents", "/agents/claude-desktop", ({ agents }) => {
+    const desktop = agents.value.claude_desktop;
+    if (desktop.status !== "found") throw new Error("Expected installed desktop");
+    agents.publish({ ...agents.value, claude_desktop: {
+      ...desktop, data: { ...desktop.data, configuration_needs_apply: true },
+    } });
+  });
+  const apply = await screen.findByRole("button", { name: "Применить" });
+  expect(apply).toBeEnabled();
+  await user.click(apply);
+  const plan = await screen.findByRole("dialog", { name: /План изменений/ });
+  await user.click(within(plan).getByRole("button", { name: "Применить" }));
+  await finishSettings(user);
+  expect(screen.getByRole("button", { name: "Применить" })).toBeDisabled();
+  const desktop = environment.agents.value.claude_desktop;
+  expect(desktop.status === "found" && desktop.data.routing_mode).toBe("hub");
+});
+
 it("saves both media choices in Claude Desktop without a Hub connection", async () => {
   const user = userEvent.setup();
   launch("offline", "/agents/claude-desktop", ({ agents }) => {

@@ -255,6 +255,20 @@ pub(crate) async fn prepare_agent_change(
 
     let reprepare_token = (!token.is_empty()).then(|| token.clone());
 
+    // Fetch before taking the file lock or preparing changes. A failed fetch leaves the profile intact.
+    let desktop_models = if matches!(
+        change,
+        AgentChange::ClaudeDesktopSetRouting(RoutingMode::Hub)
+    ) {
+        Some(
+            claude_desktop::Models::fetch(&token)
+                .await
+                .map_err(|error| format!("{error:#}"))?,
+        )
+    } else {
+        None
+    };
+
     // Plans contain credentials: never log the returned value.
     let plan = tauri::async_runtime::spawn_blocking(move || match change {
         AgentChange::CodexSetRouting(mode) => {
@@ -267,7 +281,8 @@ pub(crate) async fn prepare_agent_change(
         ),
         AgentChange::ClaudeDesktopSetRouting(mode) => {
             let media = media.unwrap_or(settings.media.claude_desktop.is_some());
-            let mut plan = claude_desktop::prepare_routing(mode, &token, media)?;
+            let mut plan =
+                claude_desktop::prepare_routing(mode, &token, media, desktop_models.as_ref())?;
             plan.restart_desktop(
                 wizard_core::agents::desktop_install::DesktopApp::Claude,
                 settings.last_paths.claude_desktop.as_deref(),

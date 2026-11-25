@@ -118,7 +118,7 @@ export type ClaudeDesktop = {
   routing_mode: RoutingMode;
   // CoreInfra token from the agent's configuration. Secret: never log or persist it.
   token: string | null;
-  proxy_needs_apply: boolean;
+  configuration_needs_apply: boolean;
   media_needs_apply: boolean;
 };
 

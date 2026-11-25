@@ -341,7 +341,7 @@ export function AgentPage({
               editing
               needsApply={
                 desktop.data.routing_mode !== "disabled" &&
-                (desktop.data.proxy_needs_apply ||
+                (desktop.data.configuration_needs_apply ||
                   (!proxyStartup.starting && proxy.proxy?.enabled === false))
               }
               agent="claude_desktop"
