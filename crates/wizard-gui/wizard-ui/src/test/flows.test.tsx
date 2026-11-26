@@ -239,7 +239,7 @@ it("migrates an outdated Claude Desktop configuration without changing the selec
     } });
   });
   const apply = await screen.findByRole("button", { name: "Применить" });
-  expect(apply).toBeEnabled();
+  await waitFor(() => expect(apply).toBeEnabled());
   await user.click(apply);
   const plan = await screen.findByRole("dialog", { name: /План изменений/ });
   await user.click(within(plan).getByRole("button", { name: "Применить" }));

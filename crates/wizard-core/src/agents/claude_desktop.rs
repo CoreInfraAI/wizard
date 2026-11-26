@@ -1514,19 +1514,28 @@ mod tests {
         let id = applied_id(&meta)?.context("missing fixture profile")?;
         let key_path = credential::path(&fixture.dir, id)?;
         let registration = tests::registration(&fixture.dir)?;
-        fixture.apply(prepare_routing_at(&fixture.dir, RoutingMode::Hub, "first-key")?, true)?;
+        fixture.apply(
+            prepare_routing_at(&fixture.dir, RoutingMode::Hub, "first-key")?,
+            true,
+        )?;
 
         // Matching helper is healthy; moved helper keeps the token and flags reapply.
         let (mode, token, needs_apply) =
             read_profile_with_helper(&fixture.dir, Some(&registration.command))?;
         assert_eq!(mode, RoutingMode::Hub);
-        assert_eq!(token.map(AgentToken::into_secret).as_deref(), Some("first-key"));
+        assert_eq!(
+            token.map(AgentToken::into_secret).as_deref(),
+            Some("first-key")
+        );
         assert!(!needs_apply);
 
         let moved = fixture.root.path().join("moved-wizard");
         let (mode, token, needs_apply) = read_profile_with_helper(&fixture.dir, Some(&moved))?;
         assert_eq!(mode, RoutingMode::Hub);
-        assert_eq!(token.map(AgentToken::into_secret).as_deref(), Some("first-key"));
+        assert_eq!(
+            token.map(AgentToken::into_secret).as_deref(),
+            Some("first-key")
+        );
         assert!(needs_apply);
         assert!(!read_profile(&fixture.dir)?.2);
 
@@ -1535,21 +1544,11 @@ mod tests {
         for invalid_override in [json!("C:\\Other\\helper.exe"), json!(""), Value::Null] {
             let mut overridden = base_profile.clone();
             overridden["inferenceCredentialHelperWindows"] = invalid_override;
-            let (win_token, win_needs_apply) = credential::profile_token_for_platform(
-                &fixture.dir,
-                id,
-                &overridden,
-                None,
-                true,
-            )?;
+            let (win_token, win_needs_apply) =
+                credential::profile_token_for_platform(&fixture.dir, id, &overridden, None, true)?;
             assert!(win_token.is_none() && win_needs_apply);
-            let (unix_token, unix_needs_apply) = credential::profile_token_for_platform(
-                &fixture.dir,
-                id,
-                &overridden,
-                None,
-                false,
-            )?;
+            let (unix_token, unix_needs_apply) =
+                credential::profile_token_for_platform(&fixture.dir, id, &overridden, None, false)?;
             assert_eq!(
                 unix_token.map(AgentToken::into_secret).as_deref(),
                 Some("first-key")
@@ -1574,7 +1573,10 @@ mod tests {
             }))?,
         )?;
         assert!(key_path.exists());
-        fixture.apply(prepare_restore_at(&fixture.dir, &fixture.manager(), 10)?, false)?;
+        fixture.apply(
+            prepare_restore_at(&fixture.dir, &fixture.manager(), 10)?,
+            false,
+        )?;
         assert!(!fixture.files[0].exists());
         assert!(!fixture.files[1].exists());
         assert!(!key_path.exists());
