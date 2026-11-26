@@ -64,7 +64,7 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<Codex> {
     };
     let proxy_needs_apply = routing_mode != RoutingMode::Disabled
         && matches!(desktop, AgentDetection::Found(_))
-        && (!settings.codex_proxy_enabled || desktop_proxy_needs_apply());
+        && (!settings.codex_proxy_enabled || desktop_proxy_needs_apply(routing_mode));
     let media_needs_apply = media_needs_apply(settings.media.codex.as_deref());
     AgentDetection::Found(Codex {
         cli,
@@ -265,6 +265,15 @@ pub fn prepare_routing(
     token: &str,
     settings: &Settings,
 ) -> Result<PreparedPlan> {
+    prepare_routing_with_proxy(mode, token, settings, settings.codex_proxy_enabled)
+}
+
+fn prepare_routing_with_proxy(
+    mode: RoutingMode,
+    token: &str,
+    settings: &Settings,
+    desktop_proxy_enabled: bool,
+) -> Result<PreparedPlan> {
     let _guard = PreparedAgent::Codex.lock()?;
 
     let path = std::path::absolute(config_path()?)?;
@@ -284,7 +293,7 @@ pub fn prepare_routing(
     })?;
 
     remove_inactive_routing_env(&mut dotenv.after, current_mode, mode)?;
-    write_routing_env(&mut dotenv.after, mode, token)?;
+    write_routing_env(&mut dotenv.after, mode, token, desktop_proxy_enabled)?;
 
     let mut steps = vec![
         PreparedStep::ChangeFile { change: config },
@@ -309,7 +318,6 @@ pub fn prepare_routing_for_gui(
     token: &str,
     settings: &Settings,
 ) -> Result<PreparedPlan> {
-    let mut plan = prepare_routing(mode, token, settings)?;
     let desktop = detection::detect_desktop(
         DesktopAgent::Codex,
         settings.last_paths.codex_desktop.as_deref(),
@@ -321,6 +329,8 @@ pub fn prepare_routing_for_gui(
     }
     let installed = matches!(desktop, AgentDetection::Found(_));
     let enabled = mode != RoutingMode::Disabled && installed;
+    // Use the listener this plan enables, including the first desktop configuration.
+    let mut plan = prepare_routing_with_proxy(mode, token, settings, enabled)?;
     if let AgentDetection::Found(info) = desktop {
         plan.restart_desktop(
             super::desktop_install::DesktopApp::ChatGpt,
@@ -385,10 +395,18 @@ Join-Path $root 'LocalCache\Roaming\Codex\web\Codex\Default\Preferences' | Conve
     }
 }
 
-fn desktop_proxy_needs_apply() -> bool {
+fn desktop_proxy_needs_apply(mode: RoutingMode) -> bool {
     let current = desktop_preferences_path().and_then(|path| {
         let path = path.context("ChatGPT profile location is unavailable")?;
-        desktop_proxy_needs_apply_at(path)
+        if desktop_proxy_needs_apply_at(path)? {
+            return Ok(true);
+        }
+        if mode == RoutingMode::Sub {
+            let _guard = PreparedAgent::Codex.lock()?;
+            let dotenv = FileSnapshot::read(&config_path()?.with_file_name(".env"))?;
+            return desktop_subscription_proxy_needs_apply(&dotenv);
+        }
+        Ok(false)
     });
     current.unwrap_or_else(|error| {
         // A desktop profile problem must not hide an otherwise usable Codex CLI.
@@ -399,6 +417,14 @@ fn desktop_proxy_needs_apply() -> bool {
 
 fn desktop_proxy_needs_apply_at(path: PathBuf) -> Result<bool> {
     Ok(prepare_desktop_proxy(path, true)?.is_changed())
+}
+
+fn desktop_subscription_proxy_needs_apply(dotenv: &FileSnapshot) -> Result<bool> {
+    let proxy = format!("http://{}", wizard_proxy::CHATGPT_ADDRESS);
+    let configured = config_files::env::get(dotenv, "COREINFRA_PROXY_URL")?;
+    let https_proxy = config_files::env::get(dotenv, "HTTPS_PROXY")?;
+    Ok(configured.as_deref() != Some(proxy.as_str())
+        || !matches!(https_proxy.as_deref(), Some(value) if value == "${COREINFRA_PROXY_URL}" || value == proxy))
 }
 
 pub(crate) fn prepare_desktop_proxy(path: PathBuf, enabled: bool) -> Result<FileChange> {
@@ -642,24 +668,36 @@ fn remove_inactive_routing_env(
     Ok(())
 }
 
-fn write_routing_env(after: &mut FileSnapshot, mode: RoutingMode, token: &str) -> Result<()> {
+fn write_routing_env(
+    after: &mut FileSnapshot,
+    mode: RoutingMode,
+    token: &str,
+    desktop_proxy_enabled: bool,
+) -> Result<()> {
     match mode {
         RoutingMode::Disabled => Ok(()),
         RoutingMode::Hub => {
             config_files::env::set_many(after, &[("COREINFRA_API_KEY", Some(token))])
         }
-        RoutingMode::Sub => config_files::env::set_many(
-            after,
-            &[
-                ("COREINFRA_API_KEY", Some(token)),
-                (
-                    "COREINFRA_PROXY_URL",
-                    Some("https://coreinfra:${COREINFRA_API_KEY}@proxy.hub.coreinfra.ai:443"),
-                ),
-                ("HTTPS_PROXY", Some("${COREINFRA_PROXY_URL}")),
-                ("NO_PROXY", Some("localhost,127.0.0.1,::1,hub.coreinfra.ai")),
-            ],
-        ),
+        RoutingMode::Sub => {
+            // The native Work executor overwrites its inherited environment with .env.
+            // Its WebSocket transport accepts an HTTP CONNECT proxy, not an HTTPS proxy.
+            // Wizard's local listener handles the authenticated TLS hop to the Hub.
+            let proxy = if desktop_proxy_enabled {
+                format!("http://{}", wizard_proxy::CHATGPT_ADDRESS)
+            } else {
+                "https://coreinfra:${COREINFRA_API_KEY}@proxy.hub.coreinfra.ai:443".into()
+            };
+            config_files::env::set_many(
+                after,
+                &[
+                    ("COREINFRA_API_KEY", Some(token)),
+                    ("COREINFRA_PROXY_URL", Some(&proxy)),
+                    ("HTTPS_PROXY", Some("${COREINFRA_PROXY_URL}")),
+                    ("NO_PROXY", Some("localhost,127.0.0.1,::1,hub.coreinfra.ai")),
+                ],
+            )
+        }
     }
 }
 
@@ -667,6 +705,74 @@ fn write_routing_env(after: &mut FileSnapshot, mode: RoutingMode, token: &str) -
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn legacy_desktop_subscription_proxy_is_detected_and_migrated() -> Result<()> {
+        let mut dotenv = FileSnapshot::new(
+            concat!(
+                "# User configuration\nUNRELATED='keep this'\n",
+                "COREINFRA_API_KEY=\"fixture-token\"\n",
+                "COREINFRA_PROXY_URL=\"https://coreinfra:${COREINFRA_API_KEY}@proxy.hub.coreinfra.ai:443\"\n",
+                "HTTPS_PROXY=\"${COREINFRA_PROXY_URL}\"\n",
+                "NO_PROXY=\"localhost,127.0.0.1,::1,hub.coreinfra.ai\"\n",
+            )
+            .into(),
+            0o600,
+        );
+        assert!(desktop_subscription_proxy_needs_apply(&dotenv)?);
+        write_routing_env(&mut dotenv, RoutingMode::Sub, "fixture-token", true)?;
+        assert!(!desktop_subscription_proxy_needs_apply(&dotenv)?);
+        assert_eq!(
+            config_files::env::get(&dotenv, "COREINFRA_PROXY_URL")?.as_deref(),
+            Some("http://127.0.0.1:33788"),
+        );
+        assert_eq!(
+            config_files::env::get(&dotenv, "COREINFRA_API_KEY")?.as_deref(),
+            Some("fixture-token"),
+        );
+        assert!(
+            dotenv
+                .content()
+                .context("migrated subscription environment")?
+                .starts_with("# User configuration\nUNRELATED='keep this'\n")
+        );
+        let migrated = dotenv.clone();
+        write_routing_env(&mut dotenv, RoutingMode::Sub, "fixture-token", true)?;
+        assert!(dotenv == migrated, "applying again must be a no-op");
+
+        config_files::env::set_many(&mut dotenv, &[("HTTPS_PROXY", Some("https://old-proxy"))])?;
+        assert!(desktop_subscription_proxy_needs_apply(&dotenv)?);
+        Ok(())
+    }
+
+    #[test]
+    fn subscription_proxy_follows_listener_availability_and_routing_mode() -> Result<()> {
+        let mut dotenv = FileSnapshot::new("UNRELATED=keep\n".into(), 0o600);
+        // A CLI-only configuration must not depend on a desktop listener.
+        write_routing_env(&mut dotenv, RoutingMode::Sub, "fixture-token", false)?;
+        assert_eq!(
+            config_files::env::get(&dotenv, "COREINFRA_PROXY_URL")?.as_deref(),
+            Some("https://coreinfra:${COREINFRA_API_KEY}@proxy.hub.coreinfra.ai:443"),
+        );
+        write_routing_env(&mut dotenv, RoutingMode::Sub, "fixture-token", true)?;
+        for next in [RoutingMode::Hub, RoutingMode::Disabled] {
+            let mut changed = dotenv.clone();
+            remove_inactive_routing_env(&mut changed, RoutingMode::Sub, next)?;
+            write_routing_env(&mut changed, next, "fixture-token", true)?;
+            for key in ["COREINFRA_PROXY_URL", "HTTPS_PROXY", "NO_PROXY"] {
+                assert!(config_files::env::get(&changed, key)?.is_none());
+            }
+            assert_eq!(
+                config_files::env::get(&changed, "COREINFRA_API_KEY")?.as_deref(),
+                (next == RoutingMode::Hub).then_some("fixture-token"),
+            );
+            assert_eq!(
+                config_files::env::get(&changed, "UNRELATED")?.as_deref(),
+                Some("keep"),
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn hub_key_filter_follows_subscription_routing() -> Result<()> {
