@@ -322,11 +322,8 @@ impl Reopen {
             });
             let result = match found {
                 // Open in the background: Wizard keeps showing the installation result.
-                Some(path) => command_output(
-                    Command::new("/usr/bin/open").arg("-g").arg(path),
-                    &format!("Не удалось открыть {}", path.display()),
-                )
-                .map(|_| log::info!("{product} opened again after installation")),
+                Some(path) => open_macos(id, path, true)
+                    .map(|()| log::info!("{product} opened again after installation")),
                 None => Err(anyhow::anyhow!("приложение не найдено")),
             };
             if let Err(error) = result {
@@ -406,13 +403,8 @@ fn open_installed(target: &Target) -> anyhow::Result<()> {
 fn open_application(app: DesktopApp, path: Option<&Path>) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     let opened = {
-        let _ = app;
         let path = path.ok_or_else(|| anyhow::anyhow!("не указан путь установки"))?;
-        command_output(
-            Command::new("/usr/bin/open").arg(path),
-            &format!("Не удалось открыть {}", path.display()),
-        )
-        .map(drop)
+        open_macos(app.spec().bundle.id, path, false)
     };
     #[cfg(target_os = "windows")]
     let opened = windows::open_package(&app.spec().package, path);
@@ -432,6 +424,39 @@ fn open_application(app: DesktopApp, path: Option<&Path>) -> anyhow::Result<()> 
         anyhow::bail!("Запуск приложения на этой платформе не поддерживается")
     };
     opened
+}
+
+#[cfg(target_os = "macos")]
+fn open_macos(bundle_id: &str, path: &Path, background: bool) -> Result<()> {
+    let mut command = Command::new("/usr/bin/open");
+    if background {
+        command.arg("-g");
+    }
+    // Reopening after installation can also restore a renamed ChatGPT Classic bundle.
+    if bundle_id == DesktopApp::ChatGpt.spec().bundle.id
+        && wizard_settings::load_from_file()?.codex_proxy_enabled
+    {
+        // Work's Node WebSocket transport does not use Chromium's Preferences proxy or
+        // Codex's .env. Launch Services needs explicit --env arguments: setting the
+        // environment of /usr/bin/open alone does not pass it to the application.
+        // Scope these settings to this launch, without changing the user's login environment.
+        let proxy = format!("http://{}", wizard_proxy::CHATGPT_ADDRESS);
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+            command.args(["--env", &format!("{key}={proxy}")]);
+        }
+        for key in ["NO_PROXY", "no_proxy"] {
+            command.args([
+                "--env",
+                &format!("{key}=localhost,127.0.0.1,::1,hub.coreinfra.ai"),
+            ]);
+        }
+        command.args(["--env", "NODE_USE_ENV_PROXY=1"]);
+    }
+    command_output(
+        command.arg(path),
+        &format!("Не удалось открыть {}", path.display()),
+    )
+    .map(drop)
 }
 
 #[cfg(target_os = "windows")]
