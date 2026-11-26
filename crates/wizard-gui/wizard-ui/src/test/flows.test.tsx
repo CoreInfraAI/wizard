@@ -475,6 +475,36 @@ describe("shared installation flow", () => {
     expect(environment.calls).not.toContain("install_desktop_release");
   });
 
+  it("finishes an installation as current when the application has updated itself", async () => {
+    const user = userEvent.setup();
+    launch("ready");
+    await user.click(await screen.findByRole("button", { name: "Обновить" }));
+    const dialog = await screen.findByRole("dialog", { name: "Установка агента" });
+    await act(async () => environment.installs.claude.publish({ status: "installing", close: true }));
+    expect(within(dialog).getByRole("button", { name: "Устанавливаем…" })).toBeDisabled();
+
+    // Native installation rechecks a changed target without publishing a failed operation.
+    await act(async () => environment.installs.claude.publish({ status: "up_to_date" }));
+    expect(await within(dialog).findByText("Установлена актуальная версия")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Повторить|Установить|Проверить/ })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("retries a failed automatic recheck instead of repeating the obsolete installation", async () => {
+    const user = userEvent.setup();
+    launch("ready");
+    await user.click(await screen.findByRole("button", { name: "Обновить" }));
+    const dialog = await screen.findByRole("dialog", { name: "Установка агента" });
+    await act(async () => environment.installs.claude.publish({
+      status: "failed", operation: "check", message: "Сервер проверки недоступен", confirmation: null,
+    }));
+    await user.click(await within(dialog).findByRole("button", { name: "Повторить" }));
+    await waitFor(() => expect(environment.calls).toContain("check_desktop_release"));
+    expect(environment.calls).not.toContain("install_desktop_release");
+  });
+
   it("discards a completed archive from the dialog and offers a fresh download", async () => {
     const user = userEvent.setup();
     launch("ready");
