@@ -456,6 +456,8 @@ fn prepare_with_media(
             object
                 .retain(|key, _| !key.starts_with("inference") && !key.starts_with("egressProxy"));
             if mode == RoutingMode::Hub {
+                // An unset key enables Auto only in Code; Cowork needs an explicit opt-in.
+                object.entry("autoModeEnabled").or_insert(json!(true));
                 object.insert("inferenceProvider".into(), json!("gateway"));
                 object.insert("inferenceCredentialKind".into(), json!("static"));
                 object.insert("inferenceGatewayBaseUrl".into(), json!(HUB_URL));
@@ -565,6 +567,7 @@ mod tests {
                         assert!(profile.get("inferenceGatewayApiKey").is_none());
                     } else {
                         assert_eq!(profile["inferenceModels"], fixture_models().value()?);
+                        assert_eq!(profile["autoModeEnabled"], true);
                     }
                     activated = true;
                     Ok(())
