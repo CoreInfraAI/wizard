@@ -245,6 +245,23 @@ pub struct DownloadedRelease {
     sha256: String,
 }
 
+impl DownloadedRelease {
+    /// A refreshed check may resume the approved installation only with the same archive and
+    /// filesystem changes. A different installed version alone does not need another approval.
+    #[must_use]
+    pub fn same_installation_plan(&self, previous: &Self) -> bool {
+        let target = &self.release.target;
+        let previous_target = &previous.release.target;
+        self.sha256 == previous.sha256
+            && self.release.version == previous.release.version
+            && target.app == previous_target.app
+            && target.path == previous_target.path
+            && target.replaces == previous_target.replaces
+            && target.rename == previous_target.rename
+            && target.superseded == previous_target.superseded
+    }
+}
+
 /// Completed installation.
 #[derive(Debug)]
 pub struct Installed {
@@ -1040,6 +1057,34 @@ pub fn archive_rejected(error: &anyhow::Error) -> bool {
     error.is::<RejectedArchive>()
 }
 
+#[derive(Debug)]
+struct TargetChanged(DesktopApp);
+
+impl core::fmt::Display for TargetChanged {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "{} изменился после проверки обновления; проверьте обновление снова",
+            self.0.product()
+        )
+    }
+}
+
+impl core::error::Error for TargetChanged {}
+
+/// The installed application changed; recheck the release instead of retrying a stale plan.
+/// The verified archive is retained and can be reused by the refreshed check.
+#[must_use]
+pub fn target_changed(error: &anyhow::Error) -> bool {
+    error.is::<TargetChanged>()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn ensure_target_unchanged(expected: &Target, installed: &Target) -> Result<()> {
+    ensure!(installed == expected, TargetChanged(expected.app));
+    Ok(())
+}
+
 /// Installs a downloaded release. `confirmed` approves the release's `confirmation`. `close`
 /// approves closing the applications in [`running_apps`]; whatever installation closes opens
 /// again afterwards, also when installation fails. The caller opens a first installation with
@@ -1068,6 +1113,9 @@ pub fn install_release(
                 download.release.version
             );
             download::discard(&download.directory);
+        }
+        Err(error) if target_changed(error) => {
+            log::info!("{product} installation needs a refreshed release check");
         }
         Err(error) => {
             log::error!(
@@ -1205,11 +1253,7 @@ fn install_macos(
     }
     // After quitting: an application can install its own staged update as it quits.
     let installed = detect_target(release.target.app, release.target.path.as_deref())?;
-    ensure!(
-        installed == release.target,
-        "{} изменился после проверки обновления; проверьте обновление снова",
-        spec.product
-    );
+    ensure_target_unchanged(&release.target, &installed)?;
     ensure!(
         !app_is_running(spec.bundle.id),
         "{}",
@@ -1387,6 +1431,87 @@ mod tests {
             "version":"3.2.1", "url":"https://downloads.claude.ai/releases/darwin/arm64/3.2.1/Claude.zip",
             "sha256":"a".repeat(64), "size":1024
         }}]})
+    }
+
+    fn downloaded(target: Target) -> DownloadedRelease {
+        DownloadedRelease {
+            directory: PathBuf::from("unused-test-download"),
+            release: claude::parse_release(&serde_json::to_vec(&feed()).unwrap(), target)
+                .unwrap()
+                .unwrap(),
+            sha256: "a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn self_update_rechecks_the_release_and_reuses_the_same_installation_plan() {
+        let previous = downloaded(target(Some("3.0.0")));
+        let current = target(Some("3.1.0"));
+        let error = ensure_target_unchanged(&previous.release.target, &current)
+            .unwrap_err()
+            .context("installation stopped before replacement");
+        assert!(target_changed(&error));
+        assert!(!archive_rejected(&error));
+
+        let refreshed = downloaded(current);
+        assert!(refreshed.same_installation_plan(&previous));
+        assert!(
+            ensure_target_unchanged(&refreshed.release.target, &refreshed.release.target).is_ok()
+        );
+    }
+
+    #[test]
+    fn self_update_to_the_selected_or_newer_version_needs_no_installation() {
+        let previous = downloaded(target(Some("3.0.0")));
+        for version in ["3.2.1", "3.3.0"] {
+            let current = target(Some(version));
+            assert!(target_changed(
+                &ensure_target_unchanged(&previous.release.target, &current).unwrap_err()
+            ));
+            assert!(
+                claude::parse_release(&serde_json::to_vec(&feed()).unwrap(), current)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn refreshed_installation_requires_review_for_new_filesystem_changes_or_archive() {
+        let previous = downloaded(target(Some("3.0.0")));
+        let refreshed = || downloaded(target(Some("3.1.0")));
+
+        let mut moved = refreshed();
+        moved.release.target.path = Some(PathBuf::from("another-directory/Claude.app"));
+        assert!(!moved.same_installation_plan(&previous));
+
+        let missing = downloaded(target(None));
+        assert!(!missing.same_installation_plan(&previous));
+
+        let mut renamed = refreshed();
+        renamed.release.target.rename = Some(Rename {
+            from: PathBuf::from("ChatGPT.app"),
+            to: PathBuf::from("ChatGPT Classic.app"),
+            bundle_id: "com.openai.chat",
+            name: "ChatGPT Classic",
+        });
+        assert!(!renamed.same_installation_plan(&previous));
+
+        let mut superseded = refreshed();
+        superseded
+            .release
+            .target
+            .superseded
+            .push(PathBuf::from("Codex.app"));
+        assert!(!superseded.same_installation_plan(&previous));
+
+        let mut changed_archive = refreshed();
+        changed_archive.sha256 = "b".repeat(64);
+        assert!(!changed_archive.same_installation_plan(&previous));
+
+        let mut newer_release = refreshed();
+        newer_release.release.version = Version::new(3, 2, 2);
+        assert!(!newer_release.same_installation_plan(&previous));
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

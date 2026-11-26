@@ -449,6 +449,13 @@ fn start(
                 .notify(AgentRevisionState);
         }
         if let Err(message) = result {
+            // A rejected archive needs another download; a failed automatic recheck has no
+            // selected package and must retry the check, never the obsolete installation.
+            let operation = match (operation, &session.package) {
+                (Operation::Install, Some(Package::Available(_))) => Operation::Download,
+                (Operation::Install, None) => Operation::Check,
+                _ => operation,
+            };
             if matches!(operation, Operation::Check) {
                 // A startup network failure must not hide updates for the next day.
                 // Keep a cooldown so rejected credentials cannot cause a retry loop.
@@ -462,11 +469,6 @@ fn start(
                 Operation::Check => log::warn!("{} release check failed", desktop.product()),
                 Operation::Download => log::warn!("{} download failed", desktop.product()),
             }
-            // An installation that rejected the archive deleted it: offer to download it again.
-            let operation = match (operation, &session.package) {
-                (Operation::Install, Some(Package::Available(_))) => Operation::Download,
-                _ => operation,
-            };
             let confirmation = match &session.package {
                 Some(Package::Downloaded(download)) if matches!(operation, Operation::Install) => {
                     download.release.confirmation()
@@ -505,6 +507,64 @@ async fn release_notes(
     Ok(notes)
 }
 
+/// Rebuilds the plan from the current installation, reusing a matching verified archive. The
+/// caller publishes the result only if it will not immediately continue installing it.
+async fn check_release(
+    app: &tauri::AppHandle,
+    desktop: DesktopApp,
+    session: &mut Session,
+) -> Result<State, String> {
+    // A failed check must not leave the obsolete plan available for another install attempt.
+    session.package = None;
+    let name = desktop.name();
+    let settings = settings::get_state(app).map_err(|error| format!("{error:#}"))?;
+    let target = tauri::async_runtime::spawn_blocking(move || {
+        let last_path = match desktop {
+            DesktopApp::Claude => settings.last_paths.claude_desktop,
+            DesktopApp::ChatGpt => settings.last_paths.codex_desktop,
+        };
+        installer::detect_target(desktop, last_path.as_deref())
+    })
+    .await
+    .map_err(|_| format!("Не удалось проверить установленный {name}"))?
+    .map_err(|error| format!("{error:#}"))?;
+
+    // Checking and downloading belong to Wizard, never to an agent's API identity.
+    let token = hub_tokens::proxy_token(app).await?.value;
+    log::info!("Checking {} releases with Wizard token", desktop.product());
+    let release = installer::check_release(&token, target)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    let Some(release) = release else {
+        log::debug!("{} is up to date", desktop.product());
+        saved_download(desktop, None).await;
+        session.next_check = Some(Instant::now() + CHECK_INTERVAL);
+        return Ok(State::UpToDate);
+    };
+    log::info!(
+        "{} {} is available",
+        desktop.product(),
+        release.display_version
+    );
+    let notes = release_notes(app, &release).await?;
+    let mut saved = saved_download(desktop, Some(&release)).await;
+    if saved.is_some_and(|saved| saved.complete()) {
+        // A completely saved archive only needs verification, without the network.
+        if let Ok(download) = installer::download_release(release.clone(), &token, |_| {}).await {
+            log::info!("{} saved archive is ready to install", desktop.product());
+            session.package = Some(Package::Downloaded(Arc::new(download)));
+            session.next_check = Some(Instant::now() + CHECK_INTERVAL);
+            return Ok(ready_state(&release, notes));
+        }
+        log::warn!("{} saved archive could not be used", desktop.product());
+        saved = saved_download(desktop, Some(&release)).await;
+    }
+    let state = available_state(&release, notes, saved);
+    session.package = Some(Package::Available(Box::new(release)));
+    session.next_check = Some(Instant::now() + CHECK_INTERVAL);
+    Ok(state)
+}
+
 async fn run(
     app: &tauri::AppHandle,
     manager: &InstallManager,
@@ -517,55 +577,9 @@ async fn run(
     let name = desktop.name();
     match operation {
         Operation::Check => {
-            let settings = settings::get_state(app).map_err(|error| format!("{error:#}"))?;
-            let target = tauri::async_runtime::spawn_blocking(move || {
-                let last_path = match desktop {
-                    DesktopApp::Claude => settings.last_paths.claude_desktop,
-                    DesktopApp::ChatGpt => settings.last_paths.codex_desktop,
-                };
-                installer::detect_target(desktop, last_path.as_deref())
-            })
-            .await
-            .map_err(|_| format!("Не удалось проверить установленный {name}"))?
-            .map_err(|error| format!("{error:#}"))?;
-
-            // Checking and downloading belong to Wizard, never to an agent's API identity.
-            let token = hub_tokens::proxy_token(app).await?.value;
-            log::info!("Checking {} releases with Wizard token", desktop.product());
-            let release = installer::check_release(&token, target)
-                .await
-                .map_err(|error| format!("{error:#}"))?;
-            let Some(release) = release else {
-                log::debug!("{} is up to date", desktop.product());
-                saved_download(desktop, None).await;
-                session.package = None;
-                manager.signal.notify(State::UpToDate);
-                return Ok(());
-            };
-            log::info!(
-                "{} {} is available",
-                desktop.product(),
-                release.display_version
-            );
-            let notes = release_notes(app, &release).await?;
-            let mut saved = saved_download(desktop, Some(&release)).await;
-            if saved.is_some_and(|saved| saved.complete()) {
-                // A completely saved archive only needs verification, without the network.
-                if let Ok(download) =
-                    installer::download_release(release.clone(), &token, |_| {}).await
-                {
-                    log::info!("{} saved archive is ready to install", desktop.product());
-                    session.package = Some(Package::Downloaded(Arc::new(download)));
-                    manager.signal.notify(ready_state(&release, notes));
-                    return Ok(());
-                }
-                log::warn!("{} saved archive could not be used", desktop.product());
-                saved = saved_download(desktop, Some(&release)).await;
-            }
             manager
                 .signal
-                .notify(available_state(&release, notes, saved));
-            session.package = Some(Package::Available(Box::new(release)));
+                .notify(check_release(app, desktop, session).await?);
         }
         Operation::Download => {
             let Some(Package::Available(selected)) = session.package.as_ref() else {
@@ -620,36 +634,58 @@ async fn run(
             manager.signal.notify(state);
         }
         Operation::Install => {
-            let Some(Package::Downloaded(download)) = session.package.as_ref() else {
-                return Err(format!("Сначала скачайте {name}"));
-            };
-            // Retain the cached archive even if the blocking task fails or panics.
-            let download = Arc::clone(download);
-            let version = download.release.display_version.clone();
-            let target = download.release.target.clone();
-            let result = tauri::async_runtime::spawn_blocking(move || {
-                installer::install_release(&download, install.confirmed, install.close)
-            })
-            .await
-            .map_err(|error| {
-                let reason = match error {
-                    tauri::Error::JoinError(error) if error.is_panic() => "panicked",
-                    tauri::Error::JoinError(_) => "was cancelled",
-                    _ => "failed",
+            let mut retried = false;
+            let (mut installed, version, target) = loop {
+                let Some(Package::Downloaded(download)) = session.package.as_ref() else {
+                    return Err(format!("Сначала скачайте {name}"));
                 };
-                // A panic payload is arbitrary data, not a safe diagnostic.
-                log::error!("{} installation worker {reason}", desktop.product());
-                format!("Не удалось выполнить установку {name}")
-            })?;
-            let mut installed = result.map_err(|error| {
-                if installer::archive_rejected(&error)
-                    && let Some(Package::Downloaded(download)) = &session.package
-                {
-                    // Installation deleted the archive: the release must be downloaded again.
-                    session.package = Some(Package::Available(Box::new(download.release.clone())));
+                // Retain the cached archive even if the blocking task fails or panics.
+                let previous = Arc::clone(download);
+                let download = Arc::clone(download);
+                let result = tauri::async_runtime::spawn_blocking(move || {
+                    installer::install_release(&download, install.confirmed, install.close)
+                })
+                .await
+                .map_err(|error| {
+                    let reason = match error {
+                        tauri::Error::JoinError(error) if error.is_panic() => "panicked",
+                        tauri::Error::JoinError(_) => "was cancelled",
+                        _ => "failed",
+                    };
+                    // A panic payload is arbitrary data, not a safe diagnostic.
+                    log::error!("{} installation worker {reason}", desktop.product());
+                    format!("Не удалось выполнить установку {name}")
+                })?;
+                if result.as_ref().is_err_and(installer::target_changed) {
+                    let state = check_release(app, desktop, session).await?;
+                    // Keep the existing installing UI while recovering from an application
+                    // updating itself. Never carry approval over to a different archive or plan.
+                    if !retried
+                        && let Some(Package::Downloaded(download)) = &session.package
+                        && download.same_installation_plan(&previous)
+                    {
+                        retried = true;
+                        continue;
+                    }
+                    // Already current, a new plan to review, or another change during retry.
+                    // Even in the last case, the next click uses the freshly checked target.
+                    manager.signal.notify(state);
+                    return Ok(());
                 }
-                format!("{error:#}")
-            })?;
+                let installed = result.map_err(|error| {
+                    if installer::archive_rejected(&error) {
+                        // Installation deleted the archive: the release must be downloaded again.
+                        session.package =
+                            Some(Package::Available(Box::new(previous.release.clone())));
+                    }
+                    format!("{error:#}")
+                })?;
+                break (
+                    installed,
+                    previous.release.display_version.clone(),
+                    previous.release.target.clone(),
+                );
+            };
             session.package = None;
             // Count the installation as the day's check, so its notices stay visible.
             session.next_check = Some(Instant::now() + CHECK_INTERVAL);

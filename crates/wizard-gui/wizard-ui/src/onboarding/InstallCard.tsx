@@ -59,7 +59,7 @@ export function InstallCard({
     state?.status === "checking" || (state?.status === "idle" && signedIn);
   const canDownload =
     available ||
-    (state?.status === "failed" && state.operation === "download") ||
+    (state?.status === "failed" && state.operation !== "install") ||
     (state?.status === "idle" && !found && !signedIn);
   const progress = downloadProgress(state);
   const failedMessage =
@@ -96,7 +96,7 @@ export function InstallCard({
           : installed
             ? `Установлена версия ${state.version}`
             : state?.status === "up_to_date"
-              ? ""
+              ? "Установлена актуальная версия"
               : available
                 ? `Доступна версия ${state.version}`
                 : state?.status === "unsupported"

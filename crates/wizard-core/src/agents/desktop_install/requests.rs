@@ -116,6 +116,11 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+    fn client() -> reqwest::ClientBuilder {
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+        Client::builder().no_proxy()
+    }
+
     async fn serve(
         responses: Vec<&'static str>,
     ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
@@ -148,8 +153,7 @@ mod tests {
             "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
         ])
         .await;
-        let client = Client::builder()
-            .no_proxy()
+        let client = client()
             .proxy(
                 reqwest::Proxy::all(url)
                     .unwrap()
@@ -168,7 +172,7 @@ mod tests {
 
     #[tokio::test]
     async fn temporary_server_failure_recovers_but_client_and_empty_responses_are_preserved() {
-        let client = Client::builder().no_proxy().build().unwrap();
+        let client = client().build().unwrap();
         let (url, count, server) = serve(vec![
             "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n",
             "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nnew",
@@ -194,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn disconnected_feed_retries_once_and_does_not_blame_the_token() {
         let (url, count, server) = serve(vec![""]).await;
-        let client = Client::builder().no_proxy().build().unwrap();
+        let client = client().build().unwrap();
         let error = feed_response(&client, &url).await.unwrap_err();
         assert_eq!(error.to_string(), Failure::Connection.message());
         assert_eq!(count.load(Ordering::SeqCst), 2);
