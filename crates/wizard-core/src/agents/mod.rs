@@ -157,8 +157,18 @@ impl<T> AgentDetection<T> {
     }
 }
 
-/// Collects state for GUI or CLI. Must be called within a Tokio runtime with I/O and time enabled.
+/// Collects state for CLI without comparing Claude Desktop's helper path to this binary.
 pub async fn collect_agent_state(settings: &Settings) -> AgentStates {
+    collect_agent_state_with(settings, false).await
+}
+
+/// Collects state for GUI, including checking Claude Desktop's credential helper executable.
+pub async fn collect_agent_state_for_gui(settings: &Settings) -> AgentStates {
+    collect_agent_state_with(settings, true).await
+}
+
+/// Must be called within a Tokio runtime with I/O and time enabled.
+async fn collect_agent_state_with(settings: &Settings, check_desktop_helper: bool) -> AgentStates {
     async fn collect<T: core::fmt::Debug>(
         name: &str,
         task: tokio::task::JoinHandle<AgentDetection<T>>,
@@ -176,7 +186,7 @@ pub async fn collect_agent_state(settings: &Settings) -> AgentStates {
 
     fn spawn_detection<T: Send + 'static>(
         settings: &Settings,
-        detect: fn(&Settings) -> AgentDetection<T>,
+        detect: impl FnOnce(&Settings) -> AgentDetection<T> + Send + 'static,
     ) -> tokio::task::JoinHandle<AgentDetection<T>> {
         let settings = settings.clone();
         tokio::task::spawn_blocking(move || detect(&settings))
@@ -185,7 +195,9 @@ pub async fn collect_agent_state(settings: &Settings) -> AgentStates {
     // Start all detectors before awaiting their results so they can run concurrently.
     let codex = spawn_detection(settings, codex::detect);
     let claude = spawn_detection(settings, claude::detect);
-    let claude_desktop = spawn_detection(settings, claude_desktop::detect);
+    let claude_desktop = spawn_detection(settings, move |settings| {
+        claude_desktop::detect(settings, check_desktop_helper)
+    });
     let opencode = spawn_detection(settings, opencode::detect);
     let pi = spawn_detection(settings, pi::detect);
 

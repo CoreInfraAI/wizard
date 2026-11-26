@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager as _;
 use wizard_core::agents::{
     AgentStates, Backup, BackupAgent, HubMode, RoutingMode, TokenAgent, claude, claude_desktop,
-    codex, collect_agent_state, opencode, pi,
+    codex, collect_agent_state_for_gui, opencode, pi,
 };
 use wizard_core::prepared_plan::{PreparedPlan, PreparedStep, PreparedStepInfo};
 
@@ -40,7 +40,7 @@ pub(crate) async fn get_agent_state(app: tauri::AppHandle) -> Result<AgentStateS
         .revision;
     log::debug!("collecting agent state at revision {revision}");
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
-    let state = collect_agent_state(&settings).await;
+    let state = collect_agent_state_for_gui(&settings).await;
 
     // Only a cache for the next detection: never fail the state because it was not saved.
     let detected = state.clone();
@@ -237,6 +237,20 @@ pub(crate) async fn prepare_agent_change(
     log::info!("received agent change: {name}");
 
     let settings = settings::get_state(&app).map_err(|error| format!("{error:#}"))?;
+
+    if matches!(
+        change,
+        AgentChange::ClaudeDesktopSetRouting(RoutingMode::Hub)
+    ) {
+        let last_path = settings.last_paths.claude_desktop.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            claude_desktop::ensure_hub_supported(last_path.as_deref())
+        })
+        .await
+        .context("Claude Desktop version check task failed")
+        .flatten()
+        .map_err(|error| format!("{error:#}"))?;
+    }
 
     let token = if change.needs_agent_token() {
         match token {

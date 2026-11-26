@@ -1,3 +1,4 @@
+pub mod credential;
 mod media;
 mod models;
 pub use models::Models;
@@ -9,7 +10,7 @@ use super::{
 use crate::{
     config_files::{
         backups::{AgentKind, BackupManager},
-        changes::FileChange,
+        changes::{FileChange, FileSnapshot},
         json,
     },
     prepared_plan::{PreparedAgent, PreparedPlan, PreparedStep},
@@ -38,7 +39,7 @@ pub(crate) struct ClaudeDesktop {
     pub media_needs_apply: bool,
 }
 
-pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
+pub(super) fn detect(settings: &Settings, check_helper: bool) -> AgentDetection<ClaudeDesktop> {
     let info = match detection::detect_desktop(
         DesktopAgent::Claude,
         settings.last_paths.claude_desktop.as_deref(),
@@ -51,13 +52,16 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
     let configuration = || -> Result<ClaudeDesktop> {
         let _guard = PreparedAgent::ClaudeDesktop.lock()?;
         let dir = config_library()?;
-        let (routing_mode, token, configuration_needs_apply) = read_profile(&dir)?;
+        let registration = media::Registration::for_wizard()?;
+        let expected_helper = check_helper.then_some(registration.command.as_path());
+        let (routing_mode, token, configuration_needs_apply) =
+            read_profile_with_helper(&dir, expected_helper)?;
         let plan = prepare_with_media(
             &dir,
             &config_1p_path()?,
             None,
             settings.media.claude_desktop.is_some(),
-            &media::Registration::for_wizard()?,
+            &registration,
             None,
         );
         Ok(ClaudeDesktop {
@@ -72,6 +76,16 @@ pub(super) fn detect(settings: &Settings) -> AgentDetection<ClaudeDesktop> {
         Ok(desktop) => AgentDetection::Found(desktop),
         Err(error) => AgentDetection::Error(format!("{error:#}")),
     }
+}
+
+/// Reject Hub helper-script setup on Claude Desktop versions older than 2.110.0,
+/// which do not support `inferenceCredentialHelperArgs`.
+pub fn ensure_hub_supported(last_path: Option<&Path>) -> Result<()> {
+    if let AgentDetection::Found(info) = detection::detect_desktop(DesktopAgent::Claude, last_path)
+    {
+        credential::ensure_supported_version(info.version.as_deref())?;
+    }
+    Ok(())
 }
 
 /// The 1p configuration, where Claude Desktop in 1p mode reads local MCP servers.
@@ -205,10 +219,39 @@ fn prepare_restore_with_media(
     media_grant: bool,
     media: &media::Registration,
 ) -> Result<PreparedPlan> {
-    let mut changes = manager.restore_changes(id)?;
+    let dir =
+        std::path::absolute(dir).context("failed to resolve Claude Desktop profile directory")?;
+    let preferences_path = dir.with_file_name("claude_desktop_config.json");
+    let credentials_dir = credential::directory(&dir)?;
+    let mut changes = manager.restore_changes_checked(
+        id,
+        |path| {
+            let allowed = path == preferences_path
+                || path.parent() == Some(dir.as_path())
+                || path.parent() == Some(credentials_dir.as_path());
+            ensure!(
+                allowed,
+                "Claude Desktop backup contains a path outside the active configuration directory"
+            );
+            Ok(())
+        },
+        |path| {
+            if path.parent() == Some(credentials_dir.as_path()) {
+                credential::read_change(path)
+            } else {
+                FileChange::read(path)
+            }
+        },
+    )?;
+    // Never restore a group- or world-readable credential file.
+    for change in &mut changes {
+        if change.path().parent() == Some(credentials_dir.as_path()) {
+            change.after.enforce_mode(0o600);
+        }
+    }
     // An old backup must not point Claude at a listener that no longer exists.
     for change in &mut changes {
-        if change.path().parent() == Some(dir)
+        if change.path().parent() == Some(dir.as_path())
             && let Ok(profile) = json::parse(&change.after)
             && profile["egressProxyUrl"] == RETIRED_PROXY_URL
         {
@@ -218,22 +261,17 @@ fn prepare_restore_with_media(
             })?;
         }
     }
-    // A restore also backs up the state it replaces. If the user has selected another
-    // profile since this backup, include that profile so the new backup is restorable.
+    // A restore also backs up the state it replaces when it differs from last_written.
     let meta_path = dir.join("_meta.json");
     let current_meta = changes
         .iter()
         .find(|change| change.path() == &meta_path)
         .context("Claude Desktop backup is missing profile metadata")?;
     // Corrupt current metadata must not prevent recovery from a valid backup.
-    if let Ok(current_meta) = json::parse(current_meta.before())
-        && let Ok(Some(current_id)) = applied_id(&current_meta)
-    {
-        let current_path = dir.join(format!("{current_id}.json"));
-        if !changes.iter().any(|change| change.path() == &current_path) {
-            changes.push(FileChange::read(current_path)?);
-        }
-    }
+    let current = json::parse(current_meta.before()).ok();
+    let current_id = current
+        .as_ref()
+        .and_then(|meta| applied_id(meta).ok().flatten());
     let restored = |changes: &[FileChange], path: &Path| -> Result<Value> {
         let change = changes
             .iter()
@@ -241,13 +279,51 @@ fn prepare_restore_with_media(
             .context("Claude Desktop backup is missing a configuration file")?;
         json::parse(&change.after)
     };
-    let meta = restored(&changes, &dir.join("_meta.json"))?;
+    let meta = restored(&changes, &meta_path)?;
     let selected = if meta.get("hybridPointer").is_none_or(Value::is_null) {
         applied_id(&meta)?.map(str::to_owned)
     } else {
         None
     };
-    let preferences_path = dir.with_file_name("claude_desktop_config.json");
+    // Legacy backups have no `.key` entries. Clear the sidecar for every profile
+    // snapshot in the restore set (including deleted profiles), unless the restored
+    // profile itself expects Wizard's helper without a backed-up key.
+    let restored_profiles: Vec<_> = changes
+        .iter()
+        .filter(|change| change.path().parent() == Some(dir.as_path()))
+        .filter_map(|change| {
+            let id = change.path().file_name()?.to_str()?.strip_suffix(".json")?;
+            let valid = uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id);
+            valid.then(|| (id.to_owned(), change.after.clone()))
+        })
+        .collect();
+    for (profile_id, snapshot) in restored_profiles {
+        let path = credential::path(&dir, &profile_id)?;
+        if !changes.iter().any(|change| change.path() == &path) {
+            if let Ok(profile) = json::parse(&snapshot)
+                && credential::is_wizard_helper(&profile)
+            {
+                anyhow::bail!(
+                    "Резервная копия не содержит ключ для профиля Claude Desktop; восстановление отменено"
+                );
+            }
+            let mut change = credential::read_change(path)?;
+            change.after = FileSnapshot::Missing;
+            changes.push(change);
+        }
+    }
+    // Include the current profile and key so that if restore creates a backup,
+    // the displaced selection can be restored later.
+    if let Some(id) = current_id {
+        let profile_path = dir.join(format!("{id}.json"));
+        if !changes.iter().any(|change| change.path() == &profile_path) {
+            changes.push(FileChange::read(profile_path)?);
+        }
+        let key_path = credential::path(&dir, id)?;
+        if !changes.iter().any(|change| change.path() == &key_path) {
+            changes.push(credential::read_change(key_path)?);
+        }
+    }
     let use_3p = selected.is_some()
         && restored(&changes, &preferences_path)
             .map_or(true, |prefs| prefs["deploymentMode"] != "1p");
@@ -309,6 +385,13 @@ pub(crate) fn media_token() -> Result<Option<String>> {
 }
 
 fn read_profile(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
+    read_profile_with_helper(dir, None)
+}
+
+fn read_profile_with_helper(
+    dir: &Path,
+    expected_helper: Option<&Path>,
+) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
     let meta = json::read(&dir.join("_meta.json"))?;
     let Some(id) = applied_id(&meta)? else {
         return Ok((RoutingMode::Disabled, None, false));
@@ -325,10 +408,11 @@ fn read_profile(dir: &Path) -> Result<(RoutingMode, Option<AgentToken>, bool)> {
     {
         Ok((RoutingMode::Sub, None, proxy_needs_apply))
     } else if preferences["deploymentMode"] != "1p" && has_hub_connection(&config) {
-        let token = config["inferenceGatewayApiKey"]
-            .as_str()
-            .and_then(|s| AgentToken::new(s.to_owned()));
-        let configuration_needs_apply = proxy_needs_apply
+        let (token, credential_needs_apply) =
+            credential::profile_token(dir, id, &config, expected_helper)?;
+        let configuration_needs_apply = token.is_none()
+            || credential_needs_apply
+            || proxy_needs_apply
             || config["inferenceGatewayBaseUrl"]
                 .as_str()
                 .map(|url| url.trim_end_matches('/'))
@@ -442,6 +526,21 @@ fn prepare_with_media(
             selected.is_some() || config.before().content().is_none(),
             "new Claude Desktop profile already exists; prepare again"
         );
+        // Include the credential even on media-only changes so a backup of a helper
+        // profile can always restore the corresponding key.
+        let credential_change = if let Some((mode, token)) = routing {
+            credential::prepare(
+                dir,
+                &id,
+                &media.command,
+                (mode == RoutingMode::Hub).then_some(token),
+            )?
+        } else {
+            credential::read_change(credential::path(dir, &id)?)?
+        };
+        steps.push(PreparedStep::ChangeFile {
+            change: credential_change,
+        });
         json::update(&mut config.after, |config| {
             let object = config
                 .as_object_mut()
@@ -457,9 +556,8 @@ fn prepare_with_media(
                 .retain(|key, _| !key.starts_with("inference") && !key.starts_with("egressProxy"));
             if mode == RoutingMode::Hub {
                 object.insert("inferenceProvider".into(), json!("gateway"));
-                object.insert("inferenceCredentialKind".into(), json!("static"));
+                credential::configure(object, &id, &media.command, token);
                 object.insert("inferenceGatewayBaseUrl".into(), json!(HUB_URL));
-                object.insert("inferenceGatewayApiKey".into(), json!(token));
                 object.insert("inferenceGatewayAuthScheme".into(), json!("x-api-key"));
                 object.insert(
                     "inferenceModels".into(),
@@ -1060,7 +1158,7 @@ mod tests {
                 assert_eq!(fixture.manager().get_backups()?.len(), 1);
                 let restored = fixture.manager().restore_changes(1)?;
                 // Include unchanged selection and preferences, not just the changed profile.
-                assert_eq!(restored.len(), 3);
+                assert_eq!(restored.len(), 4);
                 for (path, snapshot) in fixture.files.iter().zip(&original) {
                     assert!(
                         restored
@@ -1080,9 +1178,9 @@ mod tests {
                 assert!(config.get("egressProxyAuth").is_none());
                 assert_eq!(read_profile(&fixture.dir)?.0, mode);
                 if mode == RoutingMode::Hub {
-                    assert_eq!(config["inferenceGatewayApiKey"], "new-token");
+                    assert!(config.get("inferenceGatewayApiKey").is_none());
                     assert_eq!(config["inferenceGatewayBaseUrl"], HUB_URL);
-                    assert_eq!(config["inferenceCredentialKind"], "static");
+                    assert_eq!(config["inferenceCredentialKind"], "helper-script");
                     assert_eq!(config["inferenceGatewayAuthScheme"], "x-api-key");
                     assert_eq!(config["inferenceModels"], fixture_models().value()?);
                     assert!(!read_profile(&fixture.dir)?.2);
@@ -1366,7 +1464,13 @@ mod tests {
         fixture.apply(prepare(Some(&updated_models))?, true)?;
         let after = json::read(&fixture.files[0])?;
         assert_eq!(after["inferenceModels"], updated_models.value()?);
-        assert_eq!(after["inferenceGatewayApiKey"], "selected-token");
+        assert_eq!(
+            read_profile(&fixture.dir)?
+                .1
+                .map(AgentToken::into_secret)
+                .as_deref(),
+            Some("selected-token")
+        );
         assert_eq!(after["managedMcpServers"], before["managedMcpServers"]);
         assert_eq!(
             after["allowedPluginMarketplaces"],
@@ -1383,10 +1487,306 @@ mod tests {
     }
 
     #[test]
+    fn sealed_profile_migrates_and_gateway_and_media_follow_the_same_key_after_reload() -> Result<()>
+    {
+        let fixture = Fixture::new("gateway")?;
+        let meta = json::read(&fixture.files[1])?;
+        let id = applied_id(&meta)?.context("missing fixture profile")?;
+        let key_path = credential::path(&fixture.dir, id)?;
+        let mut profile = json::read(&fixture.files[0])?;
+        profile["inferenceGatewayBaseUrl"] = json!(HUB_URL);
+        profile["inferenceCredentialKind"] = json!("static");
+        profile["inferenceGatewayApiKey"] = json!("__sealed__:fixture");
+        std::fs::write(&fixture.files[0], profile.to_string())?;
+        let (mode, token, needs_apply) = read_profile(&fixture.dir)?;
+        assert_eq!(mode, RoutingMode::Hub);
+        assert!(token.is_none() && needs_apply);
+        assert!(prepare_routing_at(&fixture.dir, mode, "__sealed__:fixture").is_err());
+
+        let first = crate::media::fingerprint("first-key");
+        let second = crate::media::fingerprint("second-key");
+        fixture.apply(prepare_routing_at(&fixture.dir, mode, "first-key")?, true)?;
+        let profile = json::read(&fixture.files[0])?;
+        assert_eq!(
+            profile["inferenceCredentialHelperArgs"],
+            json!([credential::ARG, id, first])
+        );
+        assert!(!profile.to_string().contains("first-key"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&key_path)?.permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(
+            credential::helper_token(&fixture.dir, id, &first)?.into_secret(),
+            "first-key"
+        );
+        let (_, reloaded, needs_apply) = read_profile(&fixture.dir)?;
+        assert_eq!(
+            reloaded
+                .context("missing reloaded media key")?
+                .into_secret(),
+            "first-key"
+        );
+        assert!(!needs_apply);
+        assert!(credential::helper_token(&fixture.dir, "../another-profile", &first).is_err());
+
+        fixture.apply(prepare_routing_at(&fixture.dir, mode, "second-key")?, true)?;
+        assert!(credential::helper_token(&fixture.dir, id, &first).is_err());
+        assert_eq!(
+            credential::helper_token(&fixture.dir, id, &second)?.into_secret(),
+            "second-key"
+        );
+        let mut manual = json::read(&fixture.files[0])?;
+        manual["inferenceCredentialHelper"] = json!("different-helper");
+        std::fs::write(&fixture.files[0], manual.to_string())?;
+        assert!(read_profile(&fixture.dir)?.1.is_none());
+        assert!(credential::helper_token(&fixture.dir, id, &second).is_err());
+        fixture.apply(
+            prepare_routing_at(&fixture.dir, RoutingMode::Disabled, "")?,
+            false,
+        )?;
+        assert!(!key_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn credential_helper_detects_moved_wizard_windows_override_and_loose_permissions() -> Result<()> {
+        let fixture = Fixture::new("gateway")?;
+        let meta = json::read(&fixture.files[1])?;
+        let id = applied_id(&meta)?.context("missing fixture profile")?;
+        let key_path = credential::path(&fixture.dir, id)?;
+        let registration = tests::registration(&fixture.dir)?;
+        fixture.apply(prepare_routing_at(&fixture.dir, RoutingMode::Hub, "first-key")?, true)?;
+
+        // Matching GUI helper is healthy; moved GUI helper keeps the token and flags reapply.
+        let (mode, token, needs_apply) =
+            read_profile_with_helper(&fixture.dir, Some(&registration.command))?;
+        assert_eq!(mode, RoutingMode::Hub);
+        assert_eq!(token.map(AgentToken::into_secret).as_deref(), Some("first-key"));
+        assert!(!needs_apply);
+
+        let moved = fixture.root.path().join("moved-wizard");
+        let (mode, token, needs_apply) = read_profile_with_helper(&fixture.dir, Some(&moved))?;
+        assert_eq!(mode, RoutingMode::Hub);
+        assert_eq!(token.map(AgentToken::into_secret).as_deref(), Some("first-key"));
+        assert!(needs_apply);
+        // CLI / daemon detection (no expected helper) still treats the configured path as valid.
+        assert!(!read_profile(&fixture.dir)?.2);
+
+        // On Windows, any non-matching inferenceCredentialHelperWindows override rejects the sidecar.
+        let base_profile = json::read(&fixture.files[0])?;
+        for invalid_override in [json!("C:\\Other\\helper.exe"), json!(""), Value::Null] {
+            let mut overridden = base_profile.clone();
+            overridden["inferenceCredentialHelperWindows"] = invalid_override;
+            let (win_token, win_needs_apply) = credential::profile_token_for_platform(
+                &fixture.dir,
+                id,
+                &overridden,
+                None,
+                true,
+            )?;
+            assert!(win_token.is_none() && win_needs_apply);
+            let (unix_token, unix_needs_apply) = credential::profile_token_for_platform(
+                &fixture.dir,
+                id,
+                &overridden,
+                None,
+                false,
+            )?;
+            assert_eq!(
+                unix_token.map(AgentToken::into_secret).as_deref(),
+                Some("first-key")
+            );
+            assert!(!unix_needs_apply);
+        }
+
+        // Loose Unix permissions keep the verified key working while flagging reapply to tighten it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))?;
+            let (_, token, needs_apply) = read_profile(&fixture.dir)?;
+            assert_eq!(token.map(AgentToken::into_secret).as_deref(), Some("first-key"));
+            assert!(needs_apply);
+            fixture.apply(prepare_routing_at(&fixture.dir, RoutingMode::Hub, "first-key")?, true)?;
+            assert_eq!(
+                std::fs::metadata(&key_path)?.permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(!read_profile(&fixture.dir)?.2);
+
+            // Symlinked sidecars must be refused on lookup, helper invocation, and plan preparation.
+            let target = fixture.root.path().join("external.key");
+            std::fs::rename(&key_path, &target)?;
+            std::os::unix::fs::symlink(&target, &key_path)?;
+            let digest = crate::media::fingerprint("first-key");
+            assert!(read_profile(&fixture.dir).is_err());
+            assert!(credential::helper_token(&fixture.dir, id, &digest).is_err());
+            assert!(prepare_routing_at(&fixture.dir, RoutingMode::Hub, "first-key").is_err());
+            let config_1p = fixture.root.path().join("Claude/claude_desktop_config.json");
+            assert!(
+                prepare_with_media(&fixture.dir, &config_1p, None, false, &registration, None)
+                    .is_err()
+            );
+        }
+        #[cfg(not(unix))]
+        let _ = key_path;
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_and_crafted_backups_reconcile_sidecars_safely() -> Result<()> {
+        let fixture = Fixture::new("gateway")?;
+        let meta = json::read(&fixture.files[1])?;
+        let id = applied_id(&meta)?.context("missing fixture profile")?;
+        let key_path = credential::path(&fixture.dir, id)?;
+        let backups_dir = fixture.root.path().join("backups");
+        std::fs::create_dir_all(&backups_dir)?;
+
+        let write_backup = |backup_id: u32, files: Value| -> Result<()> {
+            let payload = json!({
+                "id": backup_id,
+                "version": 1,
+                "time_created": "2026-01-01T00:00:00Z",
+                "files": files,
+            });
+            std::fs::write(
+                backups_dir.join(format!("{backup_id}.json")),
+                serde_json::to_string_pretty(&payload)?,
+            )?;
+            Ok(())
+        };
+
+        // 1. Literal pre-1.0.12 first-launch backup (all missing, no `.key` entry) deletes `.key`.
+        fixture.apply(prepare_routing_at(&fixture.dir, RoutingMode::Hub, "first-key")?, true)?;
+        assert!(key_path.exists());
+        write_backup(
+            10,
+            json!({
+                fixture.files[0].to_string_lossy().into_owned(): FileSnapshot::Missing,
+                fixture.files[1].to_string_lossy().into_owned(): FileSnapshot::Missing,
+                fixture.files[2].to_string_lossy().into_owned(): FileSnapshot::Missing,
+            }),
+        )?;
+        fixture.apply(prepare_restore_at(&fixture.dir, &fixture.manager(), 10)?, false)?;
+        assert!(!fixture.files[0].exists());
+        assert!(!fixture.files[1].exists());
+        assert!(!key_path.exists());
+
+        // 2. Downgrade backup: restored profile names Wizard's helper without a `.key` entry -> error.
+        let fixture = Fixture::new("gateway")?;
+        let meta = json::read(&fixture.files[1])?;
+        let id = applied_id(&meta)?.context("missing fixture profile")?;
+        let key_path = credential::path(&fixture.dir, id)?;
+        let backups_dir = fixture.root.path().join("backups");
+        std::fs::create_dir_all(&backups_dir)?;
+        let write_backup = |backup_id: u32, files: Value| -> Result<()> {
+            let payload = json!({
+                "id": backup_id,
+                "version": 1,
+                "time_created": "2026-01-01T00:00:00Z",
+                "files": files,
+            });
+            std::fs::write(
+                backups_dir.join(format!("{backup_id}.json")),
+                serde_json::to_string_pretty(&payload)?,
+            )?;
+            Ok(())
+        };
+        fixture.apply(prepare_routing_at(&fixture.dir, RoutingMode::Hub, "first-key")?, true)?;
+        let helper_profile = std::fs::read_to_string(&fixture.files[0])?;
+        let meta_text = std::fs::read_to_string(&fixture.files[1])?;
+        let prefs_text = std::fs::read_to_string(&fixture.files[2])?;
+        write_backup(
+            11,
+            json!({
+                fixture.files[0].to_string_lossy().into_owned(): FileSnapshot::new(helper_profile, 0o600),
+                fixture.files[1].to_string_lossy().into_owned(): FileSnapshot::new(meta_text.clone(), 0o600),
+                fixture.files[2].to_string_lossy().into_owned(): FileSnapshot::new(prefs_text.clone(), 0o600),
+            }),
+        )?;
+        assert!(prepare_restore_at(&fixture.dir, &fixture.manager(), 11).is_err());
+        assert!(key_path.exists());
+
+        // 3. Crafted backup pointing to a `.key` under a different root is rejected before reading.
+        let foreign_root = tempfile::tempdir()?;
+        let foreign_key = foreign_root
+            .path()
+            .join(wizard_settings::paths::IDENTIFIER)
+            .join(credential::DIRECTORY)
+            .join(format!("{id}.key"));
+        std::fs::create_dir_all(foreign_key.parent().context("foreign credential dir")?)?;
+        std::fs::write(&foreign_key, "untouched")?;
+        write_backup(
+            12,
+            json!({
+                fixture.files[0].to_string_lossy().into_owned(): FileSnapshot::Missing,
+                fixture.files[1].to_string_lossy().into_owned(): FileSnapshot::new(meta_text.clone(), 0o600),
+                fixture.files[2].to_string_lossy().into_owned(): FileSnapshot::new(prefs_text.clone(), 0o600),
+                foreign_key.to_string_lossy().into_owned(): FileSnapshot::Missing,
+            }),
+        )?;
+        assert!(prepare_restore_at(&fixture.dir, &fixture.manager(), 12).is_err());
+        assert_eq!(std::fs::read_to_string(&foreign_key)?, "untouched");
+
+        // 4. Restoring a backup with a group/world-readable `.key` enforces mode 0600 on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let key_text = std::fs::read_to_string(&key_path)?;
+            let profile_text = std::fs::read_to_string(&fixture.files[0])?;
+            write_backup(
+                13,
+                json!({
+                    fixture.files[0].to_string_lossy().into_owned(): FileSnapshot::new(profile_text, 0o600),
+                    fixture.files[1].to_string_lossy().into_owned(): FileSnapshot::new(meta_text, 0o600),
+                    fixture.files[2].to_string_lossy().into_owned(): FileSnapshot::new(prefs_text, 0o600),
+                    key_path.to_string_lossy().into_owned(): FileSnapshot::new(key_text, 0o644),
+                }),
+            )?;
+            std::fs::remove_file(&key_path)?;
+            fixture.apply(prepare_restore_at(&fixture.dir, &fixture.manager(), 13)?, true)?;
+            assert_eq!(
+                std::fs::metadata(&key_path)?.permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hub_helper_args_version_gate_rejects_old_desktop_releases() {
+        for old in ["1.1.4498.0", "2.0.0", "2.109.0", "2.109.9-1", "v2.109.1"] {
+            assert!(
+                credential::ensure_supported_version(Some(old)).is_err(),
+                "expected {old} to be rejected"
+            );
+        }
+        for supported in [
+            None,
+            Some("2.110.0"),
+            Some("2.110.0-1"),
+            Some("2.110.0.0"),
+            Some("1:2.110.0-1"),
+            Some("7.37095.0"),
+            Some("unparseable"),
+        ] {
+            assert!(
+                credential::ensure_supported_version(supported).is_ok(),
+                "expected {supported:?} to be accepted"
+            );
+        }
+    }
+
+    #[test]
     fn manually_configured_hub_supports_detection_and_mode_changes() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let dir = directory.path().join("configLibrary");
-        std::fs::create_dir(&dir)?;
+        let dir = directory.path().join("Claude-3p/configLibrary");
+        std::fs::create_dir_all(&dir)?;
         let id = uuid::Uuid::new_v4().to_string();
         let meta = json!({"appliedId": id, "entries": [{"id": id, "name": "Manual"}]});
         std::fs::write(dir.join("_meta.json"), meta.to_string())?;
@@ -1446,7 +1846,13 @@ mod tests {
                     assert_eq!(read_profile(&dir)?.0, mode);
                     if mode == RoutingMode::Hub {
                         assert_eq!(updated["inferenceGatewayBaseUrl"], HUB_URL);
-                        assert_eq!(updated["inferenceGatewayApiKey"], "wizard-token");
+                        assert_eq!(
+                            read_profile(&dir)?
+                                .1
+                                .map(AgentToken::into_secret)
+                                .as_deref(),
+                            Some("wizard-token")
+                        );
                         assert_eq!(updated["inferenceModels"], fixture_models().value()?);
                         assert!(!read_profile(&dir)?.2);
                     } else {

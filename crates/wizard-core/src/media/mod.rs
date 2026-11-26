@@ -86,7 +86,7 @@ pub struct Job {
     pub key_id: String,
 }
 
-const MISSING_KEY: &str = "В активной конфигурации агента нет ключа CoreInfra";
+const MISSING_KEY: &str = "В активной конфигурации агента нет ключа CoreInfra. Проверьте настройки подключения агента в Wizard";
 
 /// Merge `fields` or `fields_json` into a body after rejecting keys owned by named arguments.
 fn extra_fields(

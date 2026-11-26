@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result};
 use std::path::PathBuf;
 
 // Match `identifier` in crates/wizard-gui/tauri.conf.json.
-const IDENTIFIER: &str = "ai.coreinfra.wizard";
+pub const IDENTIFIER: &str = "ai.coreinfra.wizard";
 
 pub fn config_dir() -> Result<PathBuf> {
     dirs::config_dir()

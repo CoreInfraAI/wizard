@@ -37,18 +37,25 @@ impl AgentKind {
             if parent.file_name().is_some_and(|name| name == "Claude-3p") {
                 return name == Some("claude_desktop_config.json");
             }
-            return parent
-                .file_name()
-                .is_some_and(|name| name == "configLibrary")
-                && parent
-                    .parent()
-                    .and_then(Path::file_name)
-                    .is_some_and(|name| name == "Claude-3p")
-                && name.is_some_and(|name| {
-                    name == "_meta.json"
-                        || name.strip_suffix(".json").is_some_and(|id| {
-                            uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
-                        })
+            let root = parent
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|n| n.to_str());
+            let suffix = match (root, parent.file_name().and_then(|n| n.to_str())) {
+                (Some("Claude-3p"), Some("configLibrary")) if name == Some("_meta.json") => {
+                    return true;
+                }
+                (Some("Claude-3p"), Some("configLibrary")) => ".json",
+                (
+                    Some(wizard_settings::paths::IDENTIFIER),
+                    Some(crate::agents::claude_desktop::credential::DIRECTORY),
+                ) => ".key",
+                _ => return false,
+            };
+            return name
+                .and_then(|name| name.strip_suffix(suffix))
+                .is_some_and(|id| {
+                    uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
                 });
         }
         let names: &[&str] = match self {
@@ -165,6 +172,15 @@ impl BackupManager {
     }
 
     pub(crate) fn restore_changes(&self, id: u32) -> Result<Vec<FileChange>> {
+        self.restore_changes_checked(id, |_| Ok(()), FileChange::read)
+    }
+
+    pub(crate) fn restore_changes_checked(
+        &self,
+        id: u32,
+        check: impl Fn(&Path) -> Result<()>,
+        read: impl Fn(PathBuf) -> Result<FileChange>,
+    ) -> Result<Vec<FileChange>> {
         let backup = Backup::load(&self.directory, id)?;
 
         let mut changes = Vec::with_capacity(backup.files.len());
@@ -174,7 +190,8 @@ impl BackupManager {
             .iter()
             .filter(|(path, _)| self.agent.backs_up(path))
         {
-            let mut change = FileChange::read(path.clone())?;
+            check(path)?;
+            let mut change = read(path.clone())?;
             change.after = snapshot.clone();
             changes.push(change);
         }

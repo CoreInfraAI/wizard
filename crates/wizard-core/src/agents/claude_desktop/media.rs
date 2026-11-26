@@ -6,10 +6,8 @@ use std::path::PathBuf;
 
 const MARKET: &str = "coreinfra-wizard";
 const REPO: &str = "CoreInfraAI/wizard";
-// Desktop requires a published full commit SHA for unattended installation.
-// TODO: point at the first published commit containing `plugins/coreinfra-media`.
-// Until then Desktop installs the 1.0.10 `coreinfra-video` plugin from this revision.
-const REVISION: &str = "b75477dadb850f059279c5a7b46ec5ed291b5e13";
+// Desktop requires a published full commit SHA for unattended installation (v1.0.11).
+const REVISION: &str = "ccf0217ceb267f35582bf828c08658eaab36a4d3";
 const SERVER: &str = "coreinfra_media";
 const CATALOG_TOOLS: &[&str] = &["video_models", "speech_models", "transcription_models"];
 

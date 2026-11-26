@@ -55,6 +55,8 @@ Wizard installs the bundled skills under `~/.claude/skills/coreinfra-video`, `~/
 
 ### Claude Desktop
 
+In Hub mode, Wizard configures a gateway credential helper for Claude Desktop. The helper and the media daemon read the selected key from the same per-profile Wizard file (mode `0600` on Unix). The Claude profile holds the helper path, profile ID and key fingerprint. If an older profile has a sealed static key, select the intended Hub key on Wizard’s Claude Desktop page and click **Применить** once after updating Wizard. Subsequent daemon restarts reload that key automatically. [Claude Desktop credential helpers](https://claude.com/docs/third-party/claude-desktop/credential-helper)
+
 Claude Desktop uses the `coreinfra_media` connector configured by Wizard together with the plugin `coreinfra-media` from the marketplace `coreinfra-wizard` (this repository’s `.claude-plugin/marketplace.json`). The plugin bundles the same three skills.
 
 The Claude Code E2E in the Linux, macOS and Windows CI matrix configures a fresh profile, launches native Claude Code and verifies that all three skills and media tools are installed. It loads each skill in turn and calls `video_models`, `speech_models` and `transcription_models`, then verifies that the following inference requests and the final answer receive live catalog data from all three. Chat inference is a local Messages fixture. To run it locally, set `WIZARD_VIDEO_TEST_CLAUDE` to a Claude Code executable and run `cargo test -p wizard-core claude_code_skill_lists_public_media_models -- --ignored --nocapture` with Python 3 available.

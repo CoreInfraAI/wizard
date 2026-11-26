@@ -60,24 +60,89 @@ impl FileSnapshot {
         }
     }
 
+    pub(crate) fn has_permissive_mode(&self) -> bool {
+        #[cfg(unix)]
+        {
+            matches!(self, Self::Present { mode, .. } if mode & 0o077 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
+    pub(crate) fn enforce_mode(&mut self, unix_mode: u32) {
+        #[cfg(unix)]
+        if let Self::Present { mode, .. } = self {
+            *mode = unix_mode;
+        }
+        #[cfg(not(unix))]
+        let _ = unix_mode;
+    }
+
     /// Reads the current UTF-8 file and its permissions without changing it, following symlinks.
     /// A missing file is distinct from an existing empty file.
     pub(crate) fn read(path: &Path) -> Result<Self> {
-        let metadata = match fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::Missing),
-            Err(error) => return Err(error).context("failed to inspect file"),
-        };
-        ensure!(metadata.is_file(), "file must be a regular file");
+        Self::read_with(path, true)
+    }
 
-        let mut file = fs::File::open(path).context("failed to open file")?;
+    /// Reads the current UTF-8 file and its permissions without following symlinks.
+    pub(crate) fn read_no_follow(path: &Path) -> Result<Self> {
+        Self::read_with(path, false)
+    }
+
+    fn read_with(path: &Path, follow_symlinks: bool) -> Result<Self> {
+        let mut file = if follow_symlinks {
+            let metadata = match fs::metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Self::Missing);
+                }
+                Err(error) => return Err(error).context("failed to inspect file"),
+            };
+            ensure!(metadata.is_file(), "file must be a regular file");
+            fs::File::open(path).context("failed to open file")?
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                match fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(path)
+                {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(Self::Missing);
+                    }
+                    Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
+                        anyhow::bail!("{} is a symlink; refusing to read it", path.display());
+                    }
+                    Err(error) => return Err(error).context("failed to open file"),
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let metadata = match fs::symlink_metadata(path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(Self::Missing);
+                    }
+                    Err(error) => return Err(error).context("failed to inspect file"),
+                };
+                ensure!(
+                    !metadata.is_symlink(),
+                    "{} is a symlink; refusing to read it",
+                    path.display()
+                );
+                ensure!(metadata.is_file(), "file must be a regular file");
+                fs::File::open(path).context("failed to open file")?
+            }
+        };
+        let metadata = file.metadata().context("failed to read file metadata")?;
+        ensure!(metadata.is_file(), "file must be a regular file");
         #[cfg(unix)]
-        let mode = file
-            .metadata()
-            .context("failed to read file permissions")?
-            .permissions()
-            .mode()
-            & 0o7777;
+        let mode = metadata.permissions().mode() & 0o7777;
         let mut content = String::new();
         file.read_to_string(&mut content)
             .context("failed to read UTF-8 file")?;
@@ -131,9 +196,17 @@ pub struct FileChange {
 
 impl FileChange {
     pub(crate) fn read(path: PathBuf) -> Result<Self> {
+        Self::read_with(path, FileSnapshot::read)
+    }
+
+    pub(crate) fn read_no_follow(path: PathBuf) -> Result<Self> {
+        Self::read_with(path, FileSnapshot::read_no_follow)
+    }
+
+    fn read_with(path: PathBuf, read: impl FnOnce(&Path) -> Result<FileSnapshot>) -> Result<Self> {
         let path = std::path::absolute(path).context("failed to resolve config path")?;
-        let before = FileSnapshot::read(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
+        let before =
+            read(&path).with_context(|| format!("failed to read {}", path.display()))?;
         Ok(Self {
             path,
             after: before.clone(),
