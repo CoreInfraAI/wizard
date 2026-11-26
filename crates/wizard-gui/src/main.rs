@@ -5,9 +5,27 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
-    if args
-        .next()
-        .is_some_and(|arg| wizard_core::media::stdio::is_arg(&arg))
+    let first = args.next();
+    if first.as_deref() == Some(wizard_core::agents::claude_desktop::credential::ARG.as_ref()) {
+        let (Some(id), Some(digest), None) = (args.next(), args.next(), args.next()) else {
+            eprintln!("Expected the Claude Desktop profile ID and credential fingerprint");
+            return ExitCode::FAILURE;
+        };
+        let (Some(id), Some(digest)) = (id.to_str(), digest.to_str()) else {
+            eprintln!("Claude Desktop credential arguments must be valid UTF-8");
+            return ExitCode::FAILURE;
+        };
+        return match wizard_core::agents::claude_desktop::credential::run(id, digest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Claude Desktop credential: {error:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if first
+        .as_deref()
+        .is_some_and(wizard_core::media::stdio::is_arg)
     {
         let port = args
             .next()
@@ -27,16 +45,11 @@ fn main() -> ExitCode {
             }
         };
     }
-    if let Some(arg1) = std::env::args_os().nth(1)
-        && arg1 == "--proxy"
-    {
+    if first.as_deref() == Some(std::ffi::OsStr::new("--proxy")) {
         return wizard_proxy_daemon::main(wizard_core::media::background::Service::default());
     }
 
-    if std::env::args_os()
-        .nth(1)
-        .is_some_and(|arg| arg == "--uninstall-proxy")
-    {
+    if first.as_deref() == Some(std::ffi::OsStr::new("--uninstall-proxy")) {
         return wizard_proxy_daemon::uninstall();
     }
 

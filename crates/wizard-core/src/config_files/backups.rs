@@ -37,18 +37,25 @@ impl AgentKind {
             if parent.file_name().is_some_and(|name| name == "Claude-3p") {
                 return name == Some("claude_desktop_config.json");
             }
-            return parent
-                .file_name()
-                .is_some_and(|name| name == "configLibrary")
-                && parent
-                    .parent()
-                    .and_then(Path::file_name)
-                    .is_some_and(|name| name == "Claude-3p")
-                && name.is_some_and(|name| {
-                    name == "_meta.json"
-                        || name.strip_suffix(".json").is_some_and(|id| {
-                            uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
-                        })
+            let root = parent
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|n| n.to_str());
+            let suffix = match (root, parent.file_name().and_then(|n| n.to_str())) {
+                (Some("Claude-3p"), Some("configLibrary")) if name == Some("_meta.json") => {
+                    return true;
+                }
+                (Some("Claude-3p"), Some("configLibrary")) => ".json",
+                (
+                    Some(wizard_settings::paths::IDENTIFIER),
+                    Some(crate::agents::claude_desktop::credential::DIRECTORY),
+                ) => ".key",
+                _ => return false,
+            };
+            return name
+                .and_then(|name| name.strip_suffix(suffix))
+                .is_some_and(|id| {
+                    uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
                 });
         }
         let names: &[&str] = match self {
