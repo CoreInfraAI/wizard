@@ -56,7 +56,7 @@ impl Tools {
             "video_models" => {
                 serde_json::from_value::<NoArgs>(args)?;
                 let models = self.hub.models().await?.into_values().collect::<Vec<_>>();
-                Ok(json!({"models":models}))
+                Ok(json!({"models": models, "output_dir": self.hub.output_dir()}))
             }
             "video_create" => {
                 let input: Create =

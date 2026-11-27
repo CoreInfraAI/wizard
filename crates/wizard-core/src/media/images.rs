@@ -1,8 +1,8 @@
 //! `OpenRouter` image generation and editing through `CoreInfra` Hub. Wizard reads reference
 //! pictures only from its own media folder.
 use super::{
-    MISSING_KEY, MediaHub, MediaKey, PriceEntry, REQUEST_CANCELLED, extra_fields, read_body,
-    send_paid,
+    MAX_INPUT_BYTES, MISSING_KEY, MediaHub, MediaKey, PriceEntry, REQUEST_CANCELLED, extra_fields,
+    read_body, read_media_file, send_paid,
 };
 use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
@@ -11,20 +11,18 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    io::{Read as _, Write as _},
-    path::{Component, Path, PathBuf},
+    io::Write as _,
+    path::{Path, PathBuf},
 };
 
 pub(super) const IMAGES: &str = "/openrouter/api/v1/images";
-/// Decoded reference bytes in one request. 24 MiB become 32 MiB of base64, Wizard's request cap.
-const MAX_REFERENCE_BYTES: usize = 24 * 1024 * 1024;
 /// Image responses carry base64 inside JSON, up to four images.
 const MAX_IMAGE_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 const UNCERTAIN: &str =
     "Image generation failed. If the outcome is uncertain, do not submit again automatically";
 const TOO_LARGE_REFERENCES: &str = "Reference images are too large: at most about 24 MiB together. Use smaller pictures or fewer references";
-const NOT_AN_IMAGE: &str = "Reference image must be a PNG, JPEG, WebP or GIF file";
+pub(super) const NOT_AN_IMAGE: &str = "Reference image must be a PNG, JPEG, WebP or GIF file";
 
 fn default_one() -> u8 {
     1
@@ -200,43 +198,15 @@ fn reference_images(
     let mut total = 0;
     let folder = std::fs::canonicalize(directory);
     for item in paths {
-        let inside = || {
-            anyhow!(
-                "Reference images must be inside {}: {item}",
-                directory.display()
-            )
-        };
-        let path = Path::new(item);
-        let relative = [Ok(directory), folder.as_deref()]
-            .into_iter()
-            .find_map(|prefix| path.strip_prefix(prefix.ok()?).ok())
-            .unwrap_or(path);
-        // Only plain segments, checked before touching the disk: no root, drive, share or `..`.
-        ensure!(
-            relative
-                .components()
-                .all(|part| matches!(part, Component::Normal(_) | Component::CurDir)),
-            "{}",
-            inside()
-        );
-        let folder = folder.as_deref().map_err(|error| unreadable(error, item))?;
-        let resolved = std::fs::canonicalize(folder.join(relative))
-            .map_err(|error| unreadable(&error, item))?;
-        ensure!(resolved.starts_with(folder), "{}", inside());
-        // Opening a FIFO would wait for a writer without end.
-        ensure!(
-            resolved.is_file(),
-            "Reference image must be a regular file: {item}"
-        );
-        let mut bytes = Vec::new();
-        std::fs::File::open(&resolved)
-            .and_then(|file| {
-                file.take((MAX_REFERENCE_BYTES - total) as u64 + 1)
-                    .read_to_end(&mut bytes)
-            })
-            .map_err(|error| unreadable(&error, item))?;
+        let bytes = read_media_file(
+            item,
+            directory,
+            &folder,
+            MAX_INPUT_BYTES - total,
+            "Reference image",
+            TOO_LARGE_REFERENCES,
+        )?;
         total += bytes.len();
-        ensure!(total <= MAX_REFERENCE_BYTES, "{TOO_LARGE_REFERENCES}");
         urls.push(data_url(&bytes).with_context(|| format!("{NOT_AN_IMAGE}: {item}"))?);
     }
     for (index, uri) in inline.into_iter().enumerate() {
@@ -249,23 +219,14 @@ fn reference_images(
                 format!("Inline reference image must be a data:image/...;base64 URI: {name}")
             })?;
         total += bytes.len();
-        ensure!(total <= MAX_REFERENCE_BYTES, "{TOO_LARGE_REFERENCES}");
+        ensure!(total <= MAX_INPUT_BYTES, "{TOO_LARGE_REFERENCES}");
         urls.push(data_url(&bytes).with_context(|| format!("{NOT_AN_IMAGE}: {name}"))?);
     }
     Ok(urls)
 }
 
-/// A missing reference has its own text. Any other failure is an access problem.
-fn unreadable(error: &std::io::Error, item: &str) -> anyhow::Error {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        anyhow!("Reference image not found: {item}")
-    } else {
-        anyhow!("Wizard cannot read {item}: check that Wizard may access your Downloads folder")
-    }
-}
-
 /// The picture as a data URL whose type comes from its bytes. A reference must be raster.
-fn data_url(bytes: &[u8]) -> Option<String> {
+pub(super) fn data_url(bytes: &[u8]) -> Option<String> {
     let (_, mime) = image_kind(bytes).filter(|&(extension, _)| extension != "svg")?;
     Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
 }
