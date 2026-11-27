@@ -1290,11 +1290,37 @@ async fn transcription_sends_inline_audio_and_returns_json() -> Result<()> {
     );
     assert_eq!(bodies[1]["provider"], json!({"only":["coreinfra"]}));
 
+    // Audio files inside the media folder can be transcribed directly via audio_path.
+    let downloads = fixture.dir.path().join("downloads");
+    std::fs::create_dir_all(&downloads)?;
+    std::fs::write(downloads.join("clip.m4a"), b"RIFF fixture wav")?;
+    let outside = fixture.dir.path().join("outside.wav");
+    std::fs::write(&outside, b"RIFF fixture wav")?;
+    let from_path = fixture
+        .call(
+            &server,
+            "transcription_create",
+            json!({"model":STT_MODEL,"audio_path":"clip.m4a"}),
+        )
+        .await?["structuredContent"]
+        .clone();
+    assert_eq!(from_path["text"], "привет");
+    assert_eq!(
+        posts(&fixture, audio::TRANSCRIPTIONS)[2]["input_audio"],
+        json!({"data":audio,"format":"m4a"})
+    );
+
     for invalid in [
         json!({"model":STT_MODEL,"audio_base64":"not base64!","format":"wav"}),
         json!({"model":STT_MODEL,"audio_base64":"","format":"wav"}),
+        json!({"model":STT_MODEL,"audio_base64":audio}),
+        json!({"model":STT_MODEL,"audio_base64":audio,"audio_path":"clip.m4a","format":"wav"}),
+        json!({"model":STT_MODEL,"audio_path":outside}),
+        json!({"model":STT_MODEL,"audio_path":"../outside.wav"}),
+        json!({"model":STT_MODEL,"audio_path":"missing.wav"}),
         json!({"model":STT_MODEL,"audio_base64":audio,"format":"../wav"}),
         json!({"model":STT_MODEL,"audio_base64":audio,"format":"wav","fields":{"input_audio":{}}}),
+        json!({"model":STT_MODEL,"audio_base64":audio,"format":"wav","fields":{"audio_path":"clip.m4a"}}),
         json!({"model":STT_MODEL,"audio_base64":audio,"format":"wav","fields":{"stream":true}}),
         json!({"model":STT_MODEL,"audio_base64":audio,"format":"wav","fields_json":"[]"}),
         json!({"model":STT_MODEL,"path":"/etc/passwd","format":"wav"}),
@@ -1305,7 +1331,69 @@ async fn transcription_sends_inline_audio_and_returns_json() -> Result<()> {
             .await?;
         assert_eq!(response["isError"], true, "{invalid}");
     }
-    assert_eq!(posts(&fixture, audio::TRANSCRIPTIONS).len(), 2);
+    assert_eq!(posts(&fixture, audio::TRANSCRIPTIONS).len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn video_create_reads_first_frame_image_from_media_folder() -> Result<()> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let fixture = Fixture::new().await?;
+    let server = fixture.start(Some(key(KEY))).await?;
+    let downloads = fixture.dir.path().join("downloads");
+    std::fs::create_dir_all(&downloads)?;
+    std::fs::write(downloads.join("frame.png"), PNG)?;
+    std::fs::write(downloads.join("bad.png"), b"not an image")?;
+    let outside = fixture.dir.path().join("outside.png");
+    std::fs::write(&outside, PNG)?;
+
+    let or_job = fixture
+        .call(
+            &server,
+            "video_create",
+            json!({"model":OR_MODEL,"prompt":"animate","image_path":"frame.png"}),
+        )
+        .await?["structuredContent"]["job"]
+        .clone();
+    assert_eq!(or_job["id"], "job-1");
+    let fal_job = fixture
+        .call(
+            &server,
+            "video_create",
+            json!({"model":FAL_MODEL,"prompt":"animate","image_path":downloads.join("frame.png")}),
+        )
+        .await?["structuredContent"]["job"]
+        .clone();
+    assert_eq!(fal_job["id"], "f-1");
+
+    let expected_url = format!("data:image/png;base64,{}", STANDARD.encode(PNG));
+    assert_eq!(
+        posts(&fixture, OPENROUTER)[0]["frame_images"],
+        json!([{"type":"image_url","image_url":{"url":expected_url},"frame_type":"first_frame"}])
+    );
+    assert_eq!(
+        posts(&fixture, &format!("{FAL}/{}", fal_model(FAL_MODEL)?))[0]["image_url"],
+        expected_url
+    );
+
+    for invalid in [
+        json!({"model":OR_MODEL,"prompt":"x","image_path":outside}),
+        json!({"model":OR_MODEL,"prompt":"x","image_path":"../outside.png"}),
+        json!({"model":OR_MODEL,"prompt":"x","image_path":"bad.png"}),
+        json!({"model":OR_MODEL,"prompt":"x","image_path":"frame.png","fields":{"frame_images":[]}}),
+        json!({"model":FAL_MODEL,"prompt":"x","image_path":"frame.png","fields":{"image_url":"data:image/png;base64,AAAA"}}),
+    ] {
+        let response = fixture
+            .call(&server, "video_create", invalid.clone())
+            .await?;
+        assert_eq!(response["isError"], true, "{invalid}");
+    }
+    assert_eq!(posts(&fixture, OPENROUTER).len(), 1);
+    assert_eq!(
+        posts(&fixture, &format!("{FAL}/{}", fal_model(FAL_MODEL)?)).len(),
+        1
+    );
     Ok(())
 }
 

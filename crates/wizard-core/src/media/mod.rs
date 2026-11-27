@@ -1,6 +1,6 @@
 //! Stateless media tools. Video job references are carried by the caller and contain no
-//! credential. Audio is saved or returned directly. The only files Wizard reads for a caller are
-//! image references inside its own media folder.
+//! credential. Outputs are saved to Wizard's own media folder, and the only files Wizard reads
+//! for a caller are media inputs inside that folder.
 mod audio;
 pub mod background;
 mod images;
@@ -20,11 +20,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use tokio::io::AsyncWriteExt as _;
 
 pub const ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33789);
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+/// Decoded input bytes in one request. 24 MiB become 32 MiB of base64, Wizard's request cap.
+const MAX_INPUT_BYTES: usize = 24 * 1024 * 1024;
 pub const URL: &str = "http://127.0.0.1:33789/mcp";
 const OPENROUTER: &str = "/openrouter/api/v1/videos";
 const FAL: &str = "/fal/api";
@@ -59,6 +61,9 @@ struct Create {
     model: String,
     /// Video description, when the selected model requires one.
     prompt: Option<String>,
+    /// First-frame image in the media folder (Downloads/CoreInfra Media): absolute path or
+    /// relative to that folder. PNG, JPEG, WebP or GIF.
+    image_path: Option<String>,
     /// Extra top-level fields of the provider's JSON body, including inline image inputs.
     fields: Option<Map<String, Value>>,
     /// Alternative for clients that require fixed object schemas. A JSON object string.
@@ -66,16 +71,22 @@ struct Create {
 }
 
 impl Create {
-    fn into_body(self) -> Result<(String, Map<String, Value>)> {
-        let mut body = extra_fields(self.fields, self.fields_json, &["model", "prompt"])?;
+    fn into_body(self) -> Result<(String, Option<String>, Map<String, Value>)> {
+        let mut body = extra_fields(
+            self.fields,
+            self.fields_json,
+            &["model", "prompt", "image_path"],
+        )?;
         ensure!(
-            self.prompt.as_ref().is_some_and(|p| !p.trim().is_empty()) || !body.is_empty(),
+            self.prompt.as_ref().is_some_and(|p| !p.trim().is_empty())
+                || self.image_path.is_some()
+                || !body.is_empty(),
             "Provide a prompt or model-specific inputs"
         );
         if let Some(prompt) = self.prompt {
             body.insert("prompt".into(), prompt.into());
         }
-        Ok((self.model, body))
+        Ok((self.model, self.image_path, body))
     }
 }
 
@@ -239,7 +250,7 @@ impl MediaHub {
         key: Option<&MediaKey>,
         cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Value> {
-        let (model_id, mut body) = input.into_body()?;
+        let (model_id, image_path, mut body) = input.into_body()?;
         let model = self
             .models()
             .await?
@@ -255,13 +266,59 @@ impl MediaHub {
                 .join(&format!("{FAL}/{}", fal_model(&model.id)?))?,
         };
         let key = key.context(MISSING_KEY)?;
+        let payload = if let Some(image_path) = image_path {
+            match model.provider {
+                Provider::Fal => ensure!(
+                    !body.contains_key("image_url"),
+                    "Pass the image in either image_path or fields.image_url"
+                ),
+                Provider::OpenRouter => ensure!(
+                    !body.contains_key("frame_images"),
+                    "Pass the image in either image_path or fields.frame_images"
+                ),
+            }
+            let dir = self
+                .output_dir()
+                .context("Downloads directory unavailable")?
+                .to_owned();
+            let provider = model.provider;
+            tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                let folder = std::fs::canonicalize(&dir);
+                let bytes = read_media_file(
+                    &image_path,
+                    &dir,
+                    &folder,
+                    MAX_INPUT_BYTES,
+                    "Video frame image",
+                    "Video frame image is too large: at most about 24 MiB",
+                )?;
+                let url = images::data_url(&bytes)
+                    .with_context(|| format!("{}: {image_path}", images::NOT_AN_IMAGE))?;
+                match provider {
+                    Provider::Fal => {
+                        body.insert("image_url".into(), url.into());
+                    }
+                    Provider::OpenRouter => {
+                        body.insert(
+                            "frame_images".into(),
+                            json!([{"type":"image_url","image_url":{"url":url},"frame_type":"first_frame"}]),
+                        );
+                    }
+                }
+                Ok(serde_json::to_vec(&body)?)
+            })
+            .await
+            .context("Video request task failed")??
+        } else {
+            serde_json::to_vec(&body)?
+        };
         ensure!(!cancelled(), "{REQUEST_CANCELLED}");
         let req = self
             .client
             .post(url)
             .bearer_auth(&key.token)
             .header("content-type", "application/json")
-            .body(serde_json::to_vec(&body)?);
+            .body(payload);
         let uncertain = "Video submission failed. If the outcome is uncertain, do not submit again automatically";
         let response =
             send_paid(req, "CoreInfra Hub rejected the video request", uncertain).await?;
@@ -496,6 +553,56 @@ async fn save_video(dir: &Path, response: Response) -> Result<PathBuf> {
         );
     }
     Ok(save_download(dir, response, "video-", "mp4").await?.0)
+}
+
+/// Read one regular file inside `directory` (the user's media folder), up to `limit` bytes.
+/// Checks path components before touching disk so foreign roots, drives, shares and `..` never
+/// trigger filesystem access.
+fn read_media_file(
+    item: &str,
+    directory: &Path,
+    canonical_dir: &std::io::Result<PathBuf>,
+    limit: usize,
+    label: &str,
+    too_large: &str,
+) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+
+    let inside = || anyhow!("{label}s must be inside {}: {item}", directory.display());
+    let path = Path::new(item);
+    let relative = [Ok(directory), canonical_dir.as_deref()]
+        .into_iter()
+        .find_map(|prefix| path.strip_prefix(prefix.ok()?).ok())
+        .unwrap_or(path);
+    ensure!(
+        relative
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir)),
+        "{}",
+        inside()
+    );
+    let folder = canonical_dir
+        .as_deref()
+        .map_err(|error| unreadable_media(error, item, label))?;
+    let resolved = std::fs::canonicalize(folder.join(relative))
+        .map_err(|error| unreadable_media(&error, item, label))?;
+    ensure!(resolved.starts_with(folder), "{}", inside());
+    // Opening a FIFO would wait for a writer without end.
+    ensure!(resolved.is_file(), "{label} must be a regular file: {item}");
+    let mut bytes = Vec::new();
+    std::fs::File::open(&resolved)
+        .and_then(|file| file.take(limit as u64 + 1).read_to_end(&mut bytes))
+        .map_err(|error| unreadable_media(&error, item, label))?;
+    ensure!(bytes.len() <= limit, "{too_large}");
+    Ok(bytes)
+}
+
+fn unreadable_media(error: &std::io::Error, item: &str, label: &str) -> anyhow::Error {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        anyhow!("{label} not found: {item}")
+    } else {
+        anyhow!("Wizard cannot read {item}: check that Wizard may access your Downloads folder")
+    }
 }
 
 /// Stream a download into `dir` under a fresh random name. Never overwrites a file.

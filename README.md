@@ -14,7 +14,7 @@ Each paid request uses the calling agent’s active CoreInfra key, cached in mem
 
 ### Video
 
-`video_models` returns the public catalog and prices in RUB per second. `video_create` submits one paid job. Save the full returned `job` object and pass it to `video_result` to poll, including after restarting Wizard. The original Hub and key must still be available. A completed download returns a local MP4 in **Downloads/CoreInfra Media**. Use `download: false` to poll without creating a file. fal also returns its signed result URL in this mode. A job records the key fingerprint, provider, model and upstream ID; polling with a different key is rejected.
+`video_models` returns the public catalog, prices in RUB per second and `output_dir`. `video_create` submits one paid job. For image-to-video, put a PNG, JPEG, WebP or GIF (up to 24 MiB) in **Downloads/CoreInfra Media** and pass its path in `image_path`, or pass inline data URIs via `fields`. Save the full returned `job` object and pass it to `video_result` to poll, including after restarting Wizard. The original Hub and key must still be available. A completed download returns a local MP4 in **Downloads/CoreInfra Media**. Use `download: false` to poll without creating a file. fal also returns its signed result URL in this mode. A job records the key fingerprint, provider, model and upstream ID; polling with a different key is rejected.
 
 ### Speech
 
@@ -32,13 +32,12 @@ Each paid request uses the calling agent’s active CoreInfra key, cached in mem
 
 ### Transcription
 
-`transcription_models` lists models with RUB per minute. `transcription_create` accepts audio only inline as raw base64 in `audio_base64` with its container in `format` (`wav`, `mp3`, `flac`, `m4a`, `ogg`, `webm`, `aac`). Wizard never reads audio files from disk for the agent; the agent encodes the file itself. Keep the audio under about 24 MiB so the request stays within 32 MiB. The result is the Hub JSON (`text`, optional `segments`/`words`, and `usage.cost_rub`) for `response_format` `json` or `verbose_json`.
+`transcription_models` lists models with RUB per minute and `output_dir`. `transcription_create` reads an audio file from **Downloads/CoreInfra Media** via `audio_path` (absolute or relative to that folder; `format` is optional when the filename extension names it) or accepts inline base64 in `audio_base64` with its container in `format` (`wav`, `mp3`, `flac`, `m4a`, `ogg`, `webm`, `aac`). Wizard reads only that folder. Keep the audio under about 24 MiB. The result is the Hub JSON (`text`, optional `segments`/`words`, and `usage.cost_rub`) for `response_format` `json` or `verbose_json`.
 
 ```json
 {
   "model": "openai/whisper-large-v3-turbo",
-  "audio_base64": "<base64 of the recording>",
-  "format": "m4a",
+  "audio_path": "meeting.m4a",
   "language": "ru",
   "response_format": "verbose_json",
   "fields": { "temperature": 0 }

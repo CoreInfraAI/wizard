@@ -1,9 +1,9 @@
 //! `OpenRouter` speech synthesis and transcription through `CoreInfra` Hub.
-//! Audio input is inline only: Wizard never reads a caller-supplied audio path.
+//! Audio files are read only from Wizard's own media folder, or passed inline as base64.
 use super::{
-    MAX_RESPONSE_BYTES, MISSING_KEY, MediaHub, MediaKey, PriceEntry, REQUEST_CANCELLED,
-    content_type, extra_fields, read_json, read_json_response, safe_segment, save_download,
-    send_paid,
+    MAX_INPUT_BYTES, MAX_RESPONSE_BYTES, MISSING_KEY, MediaHub, MediaKey, PriceEntry,
+    REQUEST_CANCELLED, content_type, extra_fields, read_json, read_json_response, read_media_file,
+    safe_segment, save_download, send_paid,
 };
 use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
@@ -11,6 +11,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use std::path::Path;
 
 pub(super) const SPEECH: &str = "/openrouter/api/v1/audio/speech";
 pub(super) const TRANSCRIPTIONS: &str = "/openrouter/api/v1/audio/transcriptions";
@@ -84,10 +85,15 @@ struct TranscriptionModel {
 pub(super) struct TranscriptionCreate {
     /// Transcription model ID from `transcription_models`, such as `openai/whisper-large-v3-turbo`.
     model: String,
-    /// The audio file encoded as standard base64, without a `data:` prefix.
-    audio_base64: String,
+    /// Audio file in the media folder (Downloads/CoreInfra Media): absolute path or relative to
+    /// that folder. Omit when passing `audio_base64`.
+    audio_path: Option<String>,
+    /// Inline audio encoded as standard base64, without a `data:` prefix. Omit when passing
+    /// `audio_path`.
+    audio_base64: Option<String>,
     /// Audio container format, such as `wav`, `mp3`, `flac`, `m4a`, `ogg`, `webm` or `aac`.
-    format: String,
+    /// Optional with `audio_path` when the filename extension names the format.
+    format: Option<String>,
     /// ISO-639-1 language of the audio, such as `ru`. Detected when omitted.
     language: Option<String>,
     /// Context or spelling hints for the transcript.
@@ -351,7 +357,7 @@ impl MediaHub {
                 }
             })
             .collect();
-        Ok(json!({"models": models}))
+        Ok(json!({"models": models, "output_dir": self.output_dir()}))
     }
 
     pub(super) async fn transcription_create(
@@ -361,21 +367,25 @@ impl MediaHub {
         cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Value> {
         model_id(&input.model)?;
-        let format = input.format.to_ascii_lowercase();
-        ensure!(format_name(&format), "Invalid audio format");
-        // Clients often produce data URIs; Hub expects the bare base64 payload.
-        let audio = match input.audio_base64.split_once(";base64,") {
-            Some((scheme, data)) if scheme.starts_with("data:") => data,
-            _ => input.audio_base64.as_str(),
+        let audio_source = match (input.audio_path, input.audio_base64) {
+            (Some(path), None) => Ok(path),
+            (None, Some(inline)) => Err(inline),
+            _ => bail!("Provide either audio_path or audio_base64"),
         };
-        let audio: String = audio.split_ascii_whitespace().collect();
-        let decoded = STANDARD
-            .decode(&audio)
-            .map_err(|_| anyhow!("audio_base64 must be standard base64 audio data"))?;
-        ensure!(!decoded.is_empty(), "audio_base64 is empty");
-        drop(decoded);
+        let format = match (input.format, &audio_source) {
+            (Some(format), _) => format.to_ascii_lowercase(),
+            (None, Ok(path)) => Path::new(path)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_ascii_lowercase)
+                .context("Specify the audio container format in format")?,
+            (None, Err(_)) => bail!("Specify the audio container format in format"),
+        };
+        ensure!(format_name(&format), "Invalid audio format");
         let named = [
             "model",
+            "audio_path",
+            "audio_base64",
             "input_audio",
             "language",
             "prompt",
@@ -390,10 +400,6 @@ impl MediaHub {
             ensure!(format_name(format), "Invalid response_format");
         }
         body.insert("model".into(), input.model.into());
-        body.insert(
-            "input_audio".into(),
-            json!({"data": audio, "format": format}),
-        );
         for (name, value) in [
             ("language", input.language),
             ("prompt", input.prompt),
@@ -403,14 +409,65 @@ impl MediaHub {
                 body.insert(name.into(), value.into());
             }
         }
+        let dir = if audio_source.is_ok() {
+            Some(
+                self.output_dir()
+                    .context("Downloads directory unavailable")?
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
         let key = key.context(MISSING_KEY)?;
+        let payload = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+            let audio = match audio_source {
+                Ok(path) => {
+                    let dir = dir.context("Downloads directory unavailable")?;
+                    let folder = std::fs::canonicalize(&dir);
+                    let bytes = read_media_file(
+                        &path,
+                        &dir,
+                        &folder,
+                        MAX_INPUT_BYTES,
+                        "Audio file",
+                        "Audio file is too large: at most about 24 MiB",
+                    )?;
+                    ensure!(!bytes.is_empty(), "Audio file is empty: {path}");
+                    STANDARD.encode(&bytes)
+                }
+                Err(inline) => {
+                    // Clients often produce data URIs; Hub expects the bare base64 payload.
+                    let audio = match inline.split_once(";base64,") {
+                        Some((scheme, data)) if scheme.starts_with("data:") => data,
+                        _ => inline.as_str(),
+                    };
+                    let audio: String = audio.split_ascii_whitespace().collect();
+                    let decoded = STANDARD
+                        .decode(&audio)
+                        .map_err(|_| anyhow!("audio_base64 must be standard base64 audio data"))?;
+                    ensure!(!decoded.is_empty(), "audio_base64 is empty");
+                    ensure!(
+                        decoded.len() <= MAX_INPUT_BYTES,
+                        "Audio file is too large: at most about 24 MiB"
+                    );
+                    audio
+                }
+            };
+            body.insert(
+                "input_audio".into(),
+                json!({"data": audio, "format": format}),
+            );
+            Ok(serde_json::to_vec(&body)?)
+        })
+        .await
+        .context("Transcription request task failed")??;
         ensure!(!cancelled(), "{REQUEST_CANCELLED}");
         let request = self
             .client
             .post(self.origin.join(TRANSCRIPTIONS)?)
             .bearer_auth(&key.token)
             .header("content-type", "application/json")
-            .body(serde_json::to_vec(&body)?);
+            .body(payload);
         let uncertain =
             "Transcription failed. If the outcome is uncertain, do not submit again automatically";
         let response = send_paid(
