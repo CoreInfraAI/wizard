@@ -1710,6 +1710,7 @@ fn codex_upgrade_from_1_0_10_preserves_restrictions_and_foreign_servers() -> Res
         "coreinfra-video",
         "coreinfra-speech",
         "coreinfra-transcription",
+        "coreinfra-image",
     ] {
         let root = dir.path().join("skills").join(skill);
         let text = fs::read_to_string(root.join("SKILL.md"))?;

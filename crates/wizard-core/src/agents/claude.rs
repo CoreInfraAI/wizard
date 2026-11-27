@@ -415,6 +415,7 @@ mod tests {
             "coreinfra-video",
             "coreinfra-speech",
             "coreinfra-transcription",
+            "coreinfra-image",
         ]
         .map(|name| dir.join("skills").join(name).join("SKILL.md"));
         let registration =
@@ -446,6 +447,8 @@ mod tests {
             read_global()?["mcpServers"]["coreinfra_media"],
             registration.entry
         );
+        // The registration carries the timeout that an image generation needs.
+        assert_eq!(registration.entry["timeout"], 240_000);
         assert!(!registration.entry.to_string().contains("inference-key"));
         assert!(prepare(RoutingMode::Hub, true)?.steps().iter().all(
             |step| matches!(step, PreparedStep::ChangeFile { change } if !change.is_changed())
@@ -478,6 +481,24 @@ mod tests {
             );
             assert_eq!(read_global()?["mcpServers"]["other"], foreign);
         }
+
+        // An entry an older Wizard wrote has no timeout and gets one. A timeout that is
+        // there was set by the user and stays.
+        let mut older = registration.entry.clone();
+        older
+            .as_object_mut()
+            .expect("registration entry")
+            .shift_remove("timeout");
+        let mut custom = registration.entry.clone();
+        custom["timeout"] = json!(90_000);
+        for (written, expected) in [(older, &registration.entry), (custom.clone(), &custom)] {
+            let mut config = read_global()?;
+            config["mcpServers"]["coreinfra_media"] = written;
+            std::fs::write(&global, config.to_string())?;
+            apply(prepare(RoutingMode::Hub, true)?)?;
+            assert_eq!(read_global()?["mcpServers"]["coreinfra_media"], *expected);
+            assert_eq!(read_global()?["mcpServers"]["other"], foreign);
+        }
         apply(prepare_restore_at(
             &dir,
             &global,
@@ -493,7 +514,7 @@ mod tests {
         for mode in [RoutingMode::Hub, RoutingMode::Sub, RoutingMode::Disabled] {
             apply(prepare(mode, false)?)?;
             assert_eq!(std::fs::read_to_string(&skill)?, "my edited skill");
-            assert!(!skills[1].exists() && !skills[2].exists());
+            assert!(!skills[1..].iter().any(|skill| skill.exists()));
             assert_eq!(read_global()?["mcpServers"], json!({"other":foreign}));
         }
         Ok(())
@@ -507,9 +528,14 @@ mod tests {
         let headers = temp.path().join("media-claude-code-headers.json");
         let legacy_headers = temp.path().join("video-claude-code-headers.json");
         let registration = media::server(crate::media::URL, &headers)?;
-        // The 1.0.10 registration: same endpoint, previous name and headers file.
+        // The 1.0.10 registration: same endpoint, previous name and headers file, and no
+        // timeout, which no 1.0.10 entry had.
         let legacy = media::server(crate::media::URL, &legacy_headers)?;
-        let legacy_entry = legacy.entry;
+        let mut legacy_entry = legacy.entry;
+        legacy_entry
+            .as_object_mut()
+            .expect("registration entry")
+            .shift_remove("timeout");
         let old_skill = dir.join("skills/coreinfra-video");
         std::fs::create_dir_all(&old_skill)?;
         std::fs::write(old_skill.join("SKILL.md"), "1.0.10 skill")?;
@@ -545,6 +571,7 @@ mod tests {
             dir.join("skills/coreinfra-transcription/SKILL.md")
                 .is_file()
         );
+        assert!(dir.join("skills/coreinfra-image/SKILL.md").is_file());
 
         // A foreign server under the old name is never touched.
         let foreign =
