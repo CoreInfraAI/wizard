@@ -45,7 +45,12 @@ struct Tools {
 struct NoArgs {}
 
 impl Tools {
-    async fn call(&self, name: &str, args: Value) -> Result<Value> {
+    async fn call(
+        &self,
+        name: &str,
+        args: Value,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Value> {
         match name {
             "video_models" => {
                 serde_json::from_value::<NoArgs>(args)?;
@@ -55,7 +60,7 @@ impl Tools {
             "video_create" => {
                 let input: Create =
                     serde_json::from_value(args).context("Invalid video_create arguments")?;
-                self.hub.create(input, self.key.as_deref()).await
+                self.hub.create(input, self.key.as_deref(), cancelled).await
             }
             "video_result" => {
                 let input: GetResult =
@@ -70,7 +75,9 @@ impl Tools {
             "speech_create" => {
                 let input: SpeechCreate =
                     serde_json::from_value(args).context("Invalid speech_create arguments")?;
-                self.hub.speech_create(input, self.key.as_deref()).await
+                self.hub
+                    .speech_create(input, self.key.as_deref(), cancelled)
+                    .await
             }
             "transcription_models" => {
                 serde_json::from_value::<NoArgs>(args)?;
@@ -80,7 +87,7 @@ impl Tools {
                 let input: TranscriptionCreate = serde_json::from_value(args)
                     .context("Invalid transcription_create arguments")?;
                 self.hub
-                    .transcription_create(input, self.key.as_deref())
+                    .transcription_create(input, self.key.as_deref(), cancelled)
                     .await
             }
             _ => bail!("Unknown media tool"),
@@ -124,10 +131,14 @@ impl ServerHandler for Tools {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        // rmcp keeps running a handler after a cancellation or disconnect, so a paid request
+        // that already started still saves its result. Not started yet, it stops.
+        let ct = context.ct;
+        let cancelled = move || ct.is_cancelled();
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let response = match self.call(&request.name, args).await {
+        let response = match self.call(&request.name, args, &cancelled).await {
             Ok(value) => CallToolResult::structured(value),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(format!("{error:#}"))]),
         };

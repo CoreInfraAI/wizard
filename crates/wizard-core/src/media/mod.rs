@@ -88,7 +88,8 @@ pub struct Job {
 
 const MISSING_KEY: &str = "В активной конфигурации агента нет ключа CoreInfra. Проверьте настройки подключения агента в Wizard";
 
-/// Merge `fields` or `fields_json` into a body after rejecting keys owned by named arguments.
+/// Merge `fields` or `fields_json` into a body after rejecting keys owned by named arguments
+/// or nested wrapper fields.
 fn extra_fields(
     fields: Option<Map<String, Value>>,
     fields_json: Option<String>,
@@ -104,6 +105,10 @@ fn extra_fields(
     if let Some(key) = named.iter().find(|key| body.contains_key(**key)) {
         bail!("Put {key} in the named tool argument, not in fields");
     }
+    ensure!(
+        !body.contains_key("fields") && !body.contains_key("fields_json"),
+        "Put model options directly in fields or fields_json, not in a nested fields or fields_json"
+    );
     Ok(body)
 }
 
@@ -171,6 +176,13 @@ impl MediaHub {
         })
     }
 
+    /// The media folder when known, absolute and UTF-8, so that `json!` cannot panic on it.
+    fn output_dir(&self) -> Option<&Path> {
+        self.output_dir
+            .as_deref()
+            .filter(|directory| directory.is_absolute() && directory.to_str().is_some())
+    }
+
     /// Public Hub price entries accepted by `accept`.
     async fn prices(
         &self,
@@ -219,7 +231,12 @@ impl MediaHub {
         Ok(models)
     }
 
-    async fn create(&self, input: Create, key: Option<&MediaKey>) -> Result<Value> {
+    async fn create(
+        &self,
+        input: Create,
+        key: Option<&MediaKey>,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Value> {
         let (model_id, mut body) = input.into_body()?;
         let model = self
             .models()
@@ -236,13 +253,19 @@ impl MediaHub {
                 .join(&format!("{FAL}/{}", fal_model(&model.id)?))?,
         };
         let key = key.context(MISSING_KEY)?;
+        ensure!(!cancelled(), "{REQUEST_CANCELLED}");
         let req = self
             .client
             .post(url)
             .bearer_auth(&key.token)
             .header("content-type", "application/json")
             .body(serde_json::to_vec(&body)?);
-        let response = read_json(req).await.context("Video submission failed. If the outcome is uncertain, do not submit again automatically")?;
+        let uncertain = "Video submission failed. If the outcome is uncertain, do not submit again automatically";
+        let response =
+            send_paid(req, "CoreInfra Hub rejected the video request", uncertain).await?;
+        let response = read_json_response(response, MAX_RESPONSE_BYTES)
+            .await
+            .context(uncertain)?;
         let id_field = if model.provider == Provider::Fal {
             "request_id"
         } else {
@@ -334,8 +357,7 @@ impl MediaHub {
             }
         };
         let directory = self
-            .output_dir
-            .as_deref()
+            .output_dir()
             .context("Downloads directory unavailable")?;
         let response = send(request).await?;
         result["path"] = json!(save_video(directory, response).await?);
@@ -361,28 +383,62 @@ fn fal_model(model: &str) -> Result<&str> {
     Ok(model)
 }
 
+const REQUEST_CANCELLED: &str = "Media request was cancelled before submission";
+const UNREACHABLE: &str = "Could not reach CoreInfra Hub";
+const HUB_TOO_SLOW: &str =
+    "CoreInfra Hub did not answer in time. The request may still be processed and billed";
+const LOST_RESPONSE: &str = "Connection to CoreInfra Hub was lost before a response arrived. The request may still be processed and billed";
+
 async fn send(request: RequestBuilder) -> Result<Response> {
-    let response = request
-        .send()
-        .await
-        .map_err(|_| anyhow!("Could not reach CoreInfra Hub"))?;
-    let status = response.status();
-    if !status.is_success() {
-        if let Some(seconds) = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-        {
-            bail!(
-                "CoreInfra Hub returned HTTP {} (Retry-After: {seconds}s)",
-                status.as_u16()
-            );
-        }
-        // Error bodies are not shown: they may echo request credentials.
-        bail!("CoreInfra Hub returned HTTP {}", status.as_u16());
+    let response = request.send().await.map_err(|_| anyhow!("{UNREACHABLE}"))?;
+    hub_status(&response)?;
+    Ok(response)
+}
+
+/// Sends a paid request, separating 4xx client rejections from timeouts and server/transport errors
+/// whose billing outcome is uncertain.
+async fn send_paid(request: RequestBuilder, rejected: &str, uncertain: &str) -> Result<Response> {
+    let response = request.send().await.map_err(|error| {
+        // Only a connect failure guarantees the request never reached the Hub.
+        let cause = if error.is_connect() {
+            UNREACHABLE
+        } else if error.is_timeout() {
+            HUB_TOO_SLOW
+        } else {
+            LOST_RESPONSE
+        };
+        anyhow::Error::msg(cause).context(uncertain.to_owned())
+    })?;
+    if let Err(error) = hub_status(&response) {
+        let text = if response.status().is_client_error() {
+            rejected
+        } else {
+            uncertain
+        };
+        return Err(error.context(text.to_owned()));
     }
     Ok(response)
+}
+
+/// The error of a non-success answer. Never reads the body.
+fn hub_status(response: &Response) -> Result<()> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    if let Some(seconds) = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        bail!(
+            "CoreInfra Hub returned HTTP {} (Retry-After: {seconds}s)",
+            status.as_u16()
+        );
+    }
+    // Error bodies are not shown: they may echo request credentials.
+    bail!("CoreInfra Hub returned HTTP {}", status.as_u16())
 }
 
 async fn read_body(mut response: Response, limit: usize, what: &str) -> Result<Vec<u8>> {
@@ -406,7 +462,11 @@ async fn read_json(request: RequestBuilder) -> Result<Value> {
 }
 
 async fn read_json_limit(request: RequestBuilder, limit: usize) -> Result<Value> {
-    let bytes = read_body(send(request).await?, limit, "JSON").await?;
+    read_json_response(send(request).await?, limit).await
+}
+
+async fn read_json_response(response: Response, limit: usize) -> Result<Value> {
+    let bytes = read_body(response, limit, "JSON").await?;
     serde_json::from_slice(&bytes).map_err(|_| anyhow!("Invalid JSON from CoreInfra Hub"))
 }
 

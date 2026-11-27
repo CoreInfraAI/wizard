@@ -1,8 +1,9 @@
 //! `OpenRouter` speech synthesis and transcription through `CoreInfra` Hub.
 //! Audio input is inline only: Wizard never reads a caller-supplied path.
 use super::{
-    MISSING_KEY, MediaHub, MediaKey, PriceEntry, content_type, extra_fields, read_json,
-    safe_segment, save_download, send,
+    MAX_RESPONSE_BYTES, MISSING_KEY, MediaHub, MediaKey, PriceEntry, REQUEST_CANCELLED,
+    content_type, extra_fields, read_json, read_json_response, safe_segment, save_download,
+    send_paid,
 };
 use alloc::collections::BTreeMap;
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
@@ -257,6 +258,7 @@ impl MediaHub {
         &self,
         input: SpeechCreate,
         key: Option<&MediaKey>,
+        cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Value> {
         model_id(&input.model)?;
         let speech_input = match (input.input, input.turns) {
@@ -308,10 +310,10 @@ impl MediaHub {
             body.insert("speed".into(), speed.into());
         }
         let directory = self
-            .output_dir
-            .as_deref()
+            .output_dir()
             .context("Downloads directory unavailable")?;
         let key = key.context(MISSING_KEY)?;
+        ensure!(!cancelled(), "{REQUEST_CANCELLED}");
         let request = self
             .client
             .post(self.origin.join(SPEECH)?)
@@ -319,7 +321,12 @@ impl MediaHub {
             .header("content-type", "application/json")
             .body(serde_json::to_vec(&body)?);
         let uncertain = "Speech synthesis failed. If the outcome is uncertain, do not submit again automatically";
-        let response = send(request).await.context(uncertain)?;
+        let response = send_paid(
+            request,
+            "CoreInfra Hub rejected the speech request",
+            uncertain,
+        )
+        .await?;
         let mime = content_type(&response).unwrap_or_default();
         let extension = audio_extension(&mime, input.response_format.as_deref())
             .context("Hub returned a non-audio response")?;
@@ -351,6 +358,7 @@ impl MediaHub {
         &self,
         input: TranscriptionCreate,
         key: Option<&MediaKey>,
+        cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Value> {
         model_id(&input.model)?;
         let format = input.format.to_ascii_lowercase();
@@ -396,6 +404,7 @@ impl MediaHub {
             }
         }
         let key = key.context(MISSING_KEY)?;
+        ensure!(!cancelled(), "{REQUEST_CANCELLED}");
         let request = self
             .client
             .post(self.origin.join(TRANSCRIPTIONS)?)
@@ -404,7 +413,16 @@ impl MediaHub {
             .body(serde_json::to_vec(&body)?);
         let uncertain =
             "Transcription failed. If the outcome is uncertain, do not submit again automatically";
-        let Value::Object(mut transcript) = read_json(request).await.context(uncertain)? else {
+        let response = send_paid(
+            request,
+            "CoreInfra Hub rejected the transcription request",
+            uncertain,
+        )
+        .await?;
+        let Value::Object(mut transcript) = read_json_response(response, MAX_RESPONSE_BYTES)
+            .await
+            .context(uncertain)?
+        else {
             bail!("Unexpected transcript from CoreInfra Hub");
         };
         if !transcript.contains_key("cost_rub")
