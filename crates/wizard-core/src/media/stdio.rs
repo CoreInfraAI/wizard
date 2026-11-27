@@ -74,7 +74,10 @@ impl Connector {
         {
             return Err(error);
         }
-        serde_json::from_value(reply["result"].take())
+        let result = reply
+            .get_mut("result")
+            .map_or(serde_json::Value::Null, serde_json::Value::take);
+        serde_json::from_value(result)
             .map_err(|_| ErrorData::internal_error("Invalid Wizard media response", None))
     }
 }
@@ -95,11 +98,14 @@ impl ServerHandler for Connector {
     async fn call_tool(
         &self,
         params: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.request::<CallToolResult>("tools/call", params)
-            .await
-            .map(Into::into)
+        // Dropping the loopback request on cancellation lets Wizard skip a paid submission
+        // that has not started yet.
+        tokio::select! {
+            () = context.ct.cancelled() => Err(ErrorData::internal_error("Wizard media request was cancelled", None)),
+            result = self.request::<CallToolResult>("tools/call", params) => result.map(Into::into),
+        }
     }
 }
 
