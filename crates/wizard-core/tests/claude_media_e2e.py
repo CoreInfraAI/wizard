@@ -10,7 +10,8 @@ import threading
 MODEL = "claude-sonnet-4-6"
 # Each skill is loaded before its read-only catalog tool, one per inference round-trip.
 MEDIA = [("video", "coreinfra-video", "video_models"), ("speech", "coreinfra-speech", "speech_models"),
-         ("transcription", "coreinfra-transcription", "transcription_models")]
+         ("transcription", "coreinfra-transcription", "transcription_models"),
+         ("image", "coreinfra-image", "image_models")]
 TOOLS = ["mcp__coreinfra_media__" + tool for _, _, tool in MEDIA]
 
 
@@ -129,7 +130,7 @@ def run(profile, server):
     command = [os.environ["WIZARD_VIDEO_TEST_CLAUDE"], "-p", "--no-session-persistence", "--model", MODEL,
                "--tools", "Skill", "--allowedTools", ",".join(TOOLS), "--permission-mode", "dontAsk",
                "--verbose", "--output-format", "stream-json", "--",
-               "Какие модели для видео, озвучки и распознавания речи доступны в CoreInfra?"]
+               "Какие модели для видео, озвучки, распознавания речи и генерации изображений доступны в CoreInfra?"]
     reply = subprocess.run(command, env=env, cwd=profile.parent, capture_output=True, text=True, encoding="utf-8", timeout=90)
     assert reply.returncode == 0, (reply.stderr + reply.stdout)[-2000:]
     events = [json.loads(line) for line in reply.stdout.splitlines()]

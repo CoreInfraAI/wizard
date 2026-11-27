@@ -12,7 +12,7 @@ SERVER = "coreinfra_media"
 NAMESPACE = "mcp__" + SERVER
 # Read-only catalog tools requested one per inference round-trip, keyed by distinct call IDs.
 CATALOGS = [("call_video", "video_models"), ("call_speech", "speech_models"),
-            ("call_transcription", "transcription_models")]
+            ("call_transcription", "transcription_models"), ("call_image", "image_models")]
 
 
 class CatalogTurn(BaseHTTPRequestHandler):
@@ -75,7 +75,7 @@ def run(profile, model):
             skills[name] = found[0]
         turn = call("turn/start", {"threadId": thread, "input": [
             *({"type": "skill", "name": s["name"], "path": s["path"]} for s in skills.values()),
-            {"type": "text", "text": "List the video, speech and transcription models available in CoreInfra Hub."},
+            {"type": "text", "text": "List the video, speech, transcription and image models available in CoreInfra Hub."},
         ]})["turn"]["id"]
 
         catalogs = {}

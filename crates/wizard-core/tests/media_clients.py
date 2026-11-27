@@ -9,9 +9,9 @@ import subprocess
 import sys
 import threading
 
-MEDIA_SKILLS = {"coreinfra-video", "coreinfra-speech", "coreinfra-transcription"}
+MEDIA_SKILLS = {"coreinfra-video", "coreinfra-speech", "coreinfra-transcription", "coreinfra-image"}
 MEDIA_TOOLS = {"video_models", "video_create", "video_result", "speech_models", "speech_create",
-               "transcription_models", "transcription_create"}
+               "transcription_models", "transcription_create", "image_models", "image_create"}
 
 
 def receive(channel, timeout, operation):
@@ -140,6 +140,11 @@ async def python_client(profile, existing_job):
                 "format": "wav",
             })
             assert not transcript.is_error and transcript.structured_content["text"] == "привет", transcript
+            painters = await wizard.call_tool("image_models", {})
+            assert not painters.is_error, painters
+            assert [m["id"] for m in painters.structured_content["models"]] == ["example/paint"], painters
+            painted = await wizard.call_tool("image_create", {"model": "example/paint", "prompt": "python image"})
+            assert not painted.is_error and Path(painted.structured_content["images"][0]["path"]).is_file(), painted
             for _ in range(2):
                 result = await wizard.call_tool("video_result", {"job": existing_job, "index": 1})
             assert Path(result.structured_content["path"]).read_bytes() == mp4
