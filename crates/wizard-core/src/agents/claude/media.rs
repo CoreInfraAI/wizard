@@ -32,6 +32,13 @@ const SKILLS: &Skills = &[
             ),
         )],
     ),
+    (
+        "coreinfra-image",
+        &[(
+            "SKILL.md",
+            include_str!("../../../../../plugins/coreinfra-media/skills/coreinfra-image/SKILL.md"),
+        )],
+    ),
 ];
 
 /// The registration Wizard writes, and the helper of the 1.0.10 one it replaces.
@@ -73,7 +80,7 @@ pub(super) fn server(url: &str, headers: &Path) -> Result<Server> {
         .map(headers_helper)
         .transpose()?;
     Ok(Server {
-        entry: json!({"type":"http", "url":url, "headersHelper":headers_helper(headers)?}),
+        entry: json!({"type":"http", "url":url, "headersHelper":headers_helper(headers)?, "timeout":240_000}),
         headers: headers.to_owned(),
         legacy_helper,
     })
@@ -113,15 +120,18 @@ pub(super) fn configure(
                 owned || !exists,
                 "В Claude Code уже зарегистрирован другой MCP-сервер coreinfra_media"
             );
+            let servers = config
+                .as_object_mut()
+                .context("Invalid Claude Code config")?
+                .entry("mcpServers")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .context("Claude Code mcpServers must be an object")?;
             if !owned {
-                config
-                    .as_object_mut()
-                    .context("Invalid Claude Code config")?
-                    .entry("mcpServers")
-                    .or_insert_with(|| json!({}))
-                    .as_object_mut()
-                    .context("Claude Code mcpServers must be an object")?
-                    .insert(SERVER.into(), entry.clone());
+                servers.insert(SERVER.into(), entry.clone());
+            } else if servers[SERVER].get("timeout").is_none_or(Value::is_null) {
+                // An older Wizard wrote no timeout. A value that is there is the user's and stays.
+                servers[SERVER]["timeout"] = entry["timeout"].clone();
             }
         } else if owned && let Some(servers) = config["mcpServers"].as_object_mut() {
             servers.shift_remove(SERVER);

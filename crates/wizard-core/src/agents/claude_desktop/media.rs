@@ -9,7 +9,12 @@ const REPO: &str = "CoreInfraAI/wizard";
 // Desktop requires a published full commit SHA for unattended installation (v1.0.11).
 const REVISION: &str = "ccf0217ceb267f35582bf828c08658eaab36a4d3";
 const SERVER: &str = "coreinfra_media";
-const CATALOG_TOOLS: &[&str] = &["video_models", "speech_models", "transcription_models"];
+const CATALOG_TOOLS: &[&str] = &[
+    "video_models",
+    "speech_models",
+    "transcription_models",
+    "image_models",
+];
 
 pub(super) struct Registration {
     pub(super) command: PathBuf,

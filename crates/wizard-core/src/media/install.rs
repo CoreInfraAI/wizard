@@ -57,6 +57,19 @@ const SKILLS: &Skills = &[
             ),
         ],
     ),
+    (
+        "coreinfra-image",
+        &[
+            (
+                "SKILL.md",
+                include_str!("../../../../skills/coreinfra-image/SKILL.md"),
+            ),
+            (
+                "agents/openai.yaml",
+                include_str!("../../../../skills/coreinfra-image/agents/openai.yaml"),
+            ),
+        ],
+    ),
 ];
 
 pub fn sync(

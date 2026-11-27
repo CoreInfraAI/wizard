@@ -6,7 +6,7 @@
     {
       "name": "coreinfra-media",
       "source": "./plugins/coreinfra-media",
-      "description": "Generate video, synthesize speech and transcribe audio through CoreInfra Wizard."
+      "description": "Generate video and images, synthesize speech and transcribe audio through CoreInfra Wizard."
     }
   ]
 }

@@ -1,0 +1,10 @@
+interface:
+  display_name: "CoreInfra Image"
+  short_description: "Генерация и редактирование изображений через модели CoreInfra Hub"
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "coreinfra_media"
+      description: "CoreInfra Wizard media tools"
+      transport: "streamable_http"
+      url: "http://127.0.0.1:33789/mcp"
