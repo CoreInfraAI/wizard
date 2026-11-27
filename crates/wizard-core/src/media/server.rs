@@ -124,22 +124,22 @@ impl ServerHandler for Tools {
         _: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> {
         core::future::ready(Ok(ListToolsResult::with_all_items(vec![
-            Tool::new("video_models", "List current Hub video model IDs, providers and price ranges in RUB per second.", schema_for_type::<NoArgs>())
+            Tool::new("video_models", "List current Hub video model IDs, providers, price ranges in RUB per second, and the folder where media files are read and saved.", schema_for_type::<NoArgs>())
                 .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new("video_create", "Submit one paid video generation. Keep the returned job to poll or resume. Never retry a submission with an uncertain outcome automatically.", schema_for_type::<Create>())
+            Tool::new("video_create", "Submit one paid video generation. Keep the returned job to poll or resume with video_result. Optional image_path is read only from the user's Downloads/CoreInfra Media folder. If this client has a built-in video tool, use it for ordinary requests and call video_create only when the user asks for CoreInfra/Hub or a Hub model, or explicitly agrees to spend Hub balance after that tool fails or refuses. Model IDs come from video_models. Never retry an uncertain submission automatically.", schema_for_type::<Create>())
                 .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
-            Tool::new("video_result", "Poll an existing job using its original connection. A completed download returns an absolute MP4 path.", schema_for_type::<GetResult>()),
+            Tool::new("video_result", "Poll an existing job using its original connection. A completed download saves an MP4 to the user's Downloads/CoreInfra Media folder and returns its absolute path.", schema_for_type::<GetResult>()),
             Tool::new("speech_models", "List Hub text-to-speech models with formats and RUB per 1000 characters. Pass model to get its voices and parameters.", schema_for_type::<SpeechModels>())
                 .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new("speech_create", "Synthesize speech once (paid). Saves the audio to the user's Downloads and returns its absolute path. Never retry an uncertain request automatically.", schema_for_type::<SpeechCreate>())
+            Tool::new("speech_create", "Synthesize speech once (paid). Saves the audio to the user's Downloads/CoreInfra Media folder and returns its absolute path. If this client has a built-in speech tool, use it for ordinary requests and call speech_create only when the user asks for CoreInfra/Hub or a Hub model, or explicitly agrees to spend Hub balance after that tool fails or refuses. Model IDs, voices and formats come from speech_models. Never retry an uncertain request automatically.", schema_for_type::<SpeechCreate>())
                 .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
-            Tool::new("transcription_models", "List Hub speech-to-text models with RUB per minute of audio.", schema_for_type::<NoArgs>())
+            Tool::new("transcription_models", "List Hub speech-to-text models with RUB per minute of audio, and the folder where audio files can be read.", schema_for_type::<NoArgs>())
                 .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new("transcription_create", "Transcribe inline base64 audio once (paid) and return the transcript. Never retry an uncertain request automatically.", schema_for_type::<TranscriptionCreate>())
+            Tool::new("transcription_create", "Transcribe audio once (paid) from audio_path in the user's Downloads/CoreInfra Media folder or inline audio_base64, and return the transcript. If this client has a built-in transcription tool, use it for ordinary requests and call transcription_create only when the user asks for CoreInfra/Hub or a Hub model, or explicitly agrees to spend Hub balance after that tool fails or refuses. Model IDs come from transcription_models. Never retry an uncertain request automatically.", schema_for_type::<TranscriptionCreate>())
                 .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
-            Tool::new("image_models", "List Hub image model IDs and price ranges in RUB per image, and the folder where images are saved.", schema_for_type::<NoArgs>())
+            Tool::new("image_models", "List Hub image model IDs and price ranges in RUB per image, and the folder where images are read and saved.", schema_for_type::<NoArgs>())
                 .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new("image_create", "Generate or edit images once (paid per image). Saves each image to the user's Downloads and returns its absolute path. If this client has a built-in image tool, use it for ordinary requests and call image_create only when the user asks for CoreInfra/Hub or a Hub model, or explicitly agrees to spend Hub balance after that tool fails or refuses. Model IDs come from image_models. Never retry an uncertain request automatically.", schema_for_type::<ImageCreate>())
+            Tool::new("image_create", "Generate or edit images once (paid per image). Saves each image to the user's Downloads/CoreInfra Media folder and returns its absolute path; reference_paths are read only from that folder. If this client has a built-in image tool, use it for ordinary requests and call image_create only when the user asks for CoreInfra/Hub or a Hub model, or explicitly agrees to spend Hub balance after that tool fails or refuses. Model IDs come from image_models. Never retry an uncertain request automatically.", schema_for_type::<ImageCreate>())
                 .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
         ])))
     }
