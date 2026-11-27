@@ -23,7 +23,7 @@ const SKILLS: &Skills = &[
         &[
             (
                 "SKILL.md",
-                include_str!("../../../../skills/coreinfra-video/SKILL.md"),
+                include_str!("../../../../plugins/coreinfra-media/skills/coreinfra-video/SKILL.md"),
             ),
             (
                 "agents/openai.yaml",
@@ -36,7 +36,9 @@ const SKILLS: &Skills = &[
         &[
             (
                 "SKILL.md",
-                include_str!("../../../../skills/coreinfra-speech/SKILL.md"),
+                include_str!(
+                    "../../../../plugins/coreinfra-media/skills/coreinfra-speech/SKILL.md"
+                ),
             ),
             (
                 "agents/openai.yaml",
@@ -49,7 +51,9 @@ const SKILLS: &Skills = &[
         &[
             (
                 "SKILL.md",
-                include_str!("../../../../skills/coreinfra-transcription/SKILL.md"),
+                include_str!(
+                    "../../../../plugins/coreinfra-media/skills/coreinfra-transcription/SKILL.md"
+                ),
             ),
             (
                 "agents/openai.yaml",
@@ -62,7 +66,7 @@ const SKILLS: &Skills = &[
         &[
             (
                 "SKILL.md",
-                include_str!("../../../../skills/coreinfra-image/SKILL.md"),
+                include_str!("../../../../plugins/coreinfra-media/skills/coreinfra-image/SKILL.md"),
             ),
             (
                 "agents/openai.yaml",
