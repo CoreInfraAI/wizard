@@ -1,6 +1,7 @@
 use super::{
     Create, GetResult, MediaHub, MediaKey,
     audio::{SpeechCreate, SpeechModels, TranscriptionCreate},
+    images::ImageCreate,
 };
 use alloc::sync::Arc;
 use anyhow::{Context as _, Result, bail, ensure};
@@ -90,6 +91,17 @@ impl Tools {
                     .transcription_create(input, self.key.as_deref(), cancelled)
                     .await
             }
+            "image_models" => {
+                serde_json::from_value::<NoArgs>(args)?;
+                self.hub.image_models().await
+            }
+            "image_create" => {
+                let input: ImageCreate =
+                    serde_json::from_value(args).context("Invalid image_create arguments")?;
+                self.hub
+                    .image_create(input, self.key.as_deref(), cancelled)
+                    .await
+            }
             _ => bail!("Unknown media tool"),
         }
     }
@@ -124,6 +136,10 @@ impl ServerHandler for Tools {
             Tool::new("transcription_models", "List Hub speech-to-text models with RUB per minute of audio.", schema_for_type::<NoArgs>())
                 .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new("transcription_create", "Transcribe inline base64 audio once (paid) and return the transcript. Never retry an uncertain request automatically.", schema_for_type::<TranscriptionCreate>())
+                .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
+            Tool::new("image_models", "List Hub image model IDs and price ranges in RUB per image, and the folder where images are saved.", schema_for_type::<NoArgs>())
+                .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new("image_create", "Generate or edit images once (paid per image). Saves each image to the user's Downloads and returns its absolute path. If this client has a built-in image tool, use it for ordinary requests and call image_create only when the user asks for CoreInfra/Hub or a Hub model, or explicitly agrees to spend Hub balance after that tool fails or refuses. Model IDs come from image_models. Never retry an uncertain request automatically.", schema_for_type::<ImageCreate>())
                 .with_annotations(ToolAnnotations::new().read_only(false).idempotent(false)),
         ])))
     }

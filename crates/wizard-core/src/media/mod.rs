@@ -1,7 +1,9 @@
 //! Stateless media tools. Video job references are carried by the caller and contain no
-//! credential. Audio is saved or returned directly; Wizard never reads files for the caller.
+//! credential. Audio is saved or returned directly. The only files Wizard reads for a caller are
+//! image references inside its own media folder.
 mod audio;
 pub mod background;
+mod images;
 pub mod install;
 pub mod keys;
 pub mod server;

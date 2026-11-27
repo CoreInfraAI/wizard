@@ -1,5 +1,5 @@
 //! `OpenRouter` speech synthesis and transcription through `CoreInfra` Hub.
-//! Audio input is inline only: Wizard never reads a caller-supplied path.
+//! Audio input is inline only: Wizard never reads a caller-supplied audio path.
 use super::{
     MAX_RESPONSE_BYTES, MISSING_KEY, MediaHub, MediaKey, PriceEntry, REQUEST_CANCELLED,
     content_type, extra_fields, read_json, read_json_response, safe_segment, save_download,

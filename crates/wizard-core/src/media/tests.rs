@@ -22,6 +22,16 @@ const MP4: &[u8] = include_bytes!("../../tests/fixtures/blue.mp4");
 const TTS_MODEL: &str = "example/voice";
 const STT_MODEL: &str = "example/scribe";
 const MP3: &[u8] = b"ID3\x04fixture-mp3";
+const IMAGE_MODEL: &str = "example/paint";
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfixture-png";
+const JPEG: &[u8] = b"\xff\xd8\xff\xe0fixture-jpeg";
+const WEBP: &[u8] = b"RIFF\x00\x00\x00\x00WEBPfixture-webp";
+const GIF: &[u8] = b"GIF89afixture-gif";
+/// With a declaration, comment, doctype and whitespace before the root.
+const SVG: &[u8] = br#"<?xml version="1.0"?>
+<!--Fixture--> <!DOCTYPE svg> <svg xmlns="http://www.w3.org/2000/svg"/>"#;
+const PAGE: &[u8] =
+    br#"<!DOCTYPE html><html><body><svg xmlns="http://www.w3.org/2000/svg"/></body></html>"#;
 
 fn key(token: &str) -> MediaKey {
     MediaKey {
@@ -56,7 +66,9 @@ fn catalog() -> Value {
         "ignored":{"category":"text","endpoints":["/text"],"prices":{}},
         TTS_MODEL:{"category":"speech","display_name":"Voice","endpoints":[audio::SPEECH],"prices":{"input_characters":5000},"lowest_prices":{"input_characters":2500}},
         STT_MODEL:{"category":"speech_recognition","display_name":"Scribe","endpoints":[audio::TRANSCRIPTIONS],"prices":{"audio_seconds":10_000}},
-        "other/tts":{"category":"speech","endpoints":["/openai/api/v1/audio/speech"],"prices":{"input_characters":1}}
+        "other/tts":{"category":"speech","endpoints":["/openai/api/v1/audio/speech"],"prices":{"input_characters":1}},
+        IMAGE_MODEL:{"category":"images","display_name":"Paint","endpoints":[images::IMAGES],"prices":{"images":2_000_000},"lowest_prices":{"images":500_000}},
+        "example/gpt-image":{"category":"images","display_name":"GPT Image","endpoints":["/openai/api/v1/images/generations"],"prices":{"images":9_000_000}}
     }}}})
 }
 
@@ -97,6 +109,30 @@ fn audio_answer(path: &str, body: &Value) -> Option<(&'static str, Vec<u8>)> {
         return Some(("application/json", payload.to_string().into_bytes()));
     }
     None
+}
+
+/// Image answers of the fake Hub, selected by the prompt. The Hub declares JPEG for every image.
+fn image_answer(body: &Value) -> (u16, &'static str, Vec<u8>) {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let image = |bytes: &[u8]| json!({"b64_json":STANDARD.encode(bytes),"media_type":"image/jpeg"});
+    let data = match body["prompt"].as_str() {
+        Some("reject") => {
+            let error = json!({"error":KEY}).to_string().into_bytes();
+            return (422, "application/json", error);
+        }
+        Some("server") => return (502, "application/json", Vec::new()),
+        Some("html") => return (200, "text/html; charset=utf-8", PAGE.to_vec()),
+        Some("svg") => vec![image(SVG)],
+        Some("page") => vec![image(PAGE)],
+        Some("empty") => Vec::new(),
+        Some("garbage") => vec![image(PNG), json!({"b64_json":"not base64!"})],
+        _ => (0..body["n"].as_u64().unwrap_or(1))
+            .map(|_| image(PNG))
+            .collect(),
+    };
+    let answer = json!({"created":1,"data":data,"usage":{"cost_rub":4.5}});
+    (200, "application/json", answer.to_string().into_bytes())
 }
 
 impl Fixture {
@@ -154,6 +190,14 @@ impl Fixture {
                                     .header("content-type", mime)
                                     .body(Full::new(Bytes::from(bytes)))
                                     .expect("audio response"));
+                            }
+                            if authorized && head.method == "POST" && path == images::IMAGES {
+                                let (code, mime, bytes) = image_answer(&body);
+                                return Ok(HttpResponse::builder()
+                                    .status(code)
+                                    .header("content-type", mime)
+                                    .body(Full::new(Bytes::from(bytes)))
+                                    .expect("image response"));
                             }
                             let answer = if path == "/hub/api/prices" && auth.is_none() {
                                 catalog()
@@ -690,6 +734,17 @@ async fn installation_and_catalog_work_without_hub_credentials() -> Result<()> {
         )
         .await?;
     assert_eq!(missing["isError"], true);
+    // The image catalog is free as well; image_create needs the key.
+    let images = fixture.call(&server, "image_models", json!({})).await?;
+    assert_eq!(images["structuredContent"]["models"][0]["id"], IMAGE_MODEL);
+    let generation = fixture
+        .call(
+            &server,
+            "image_create",
+            json!({"model":IMAGE_MODEL,"prompt":"river"}),
+        )
+        .await?;
+    assert_eq!(generation["isError"], true);
     let generation = fixture
         .call(
             &server,
@@ -824,7 +879,10 @@ async fn native_and_python_clients() -> Result<()> {
     let video_bodies: Vec<_> = requests
         .iter()
         .filter(|r| {
-            r.method == "POST" && r.path != audio::SPEECH && r.path != audio::TRANSCRIPTIONS
+            r.method == "POST"
+                && r.path != audio::SPEECH
+                && r.path != audio::TRANSCRIPTIONS
+                && r.path != images::IMAGES
         })
         .map(|r| &r.body)
         .collect();
@@ -843,6 +901,9 @@ async fn native_and_python_clients() -> Result<()> {
     assert!(requests.iter().any(|r| r.method == "POST"
         && r.path == audio::TRANSCRIPTIONS
         && r.body["model"] == STT_MODEL));
+    assert!(requests.iter().any(|r| r.method == "POST"
+        && r.path == images::IMAGES
+        && r.body["prompt"] == "python image"));
     Ok(())
 }
 
@@ -894,6 +955,10 @@ async fn public_media_catalog() -> Result<()> {
         speech.len(),
         transcription.len()
     );
+    let images = hub.image_models().await?;
+    let images = images["models"].as_array().context("image models")?;
+    ensure!(!images.is_empty(), "Hub returned no image models");
+    println!("Live public catalog: {} image models", images.len());
     Ok(())
 }
 
@@ -910,6 +975,30 @@ fn posts(fixture: &Fixture, path: &str) -> Vec<Value> {
         .filter(|r| r.method == "POST" && r.path == path)
         .map(|r| r.body.clone())
         .collect()
+}
+
+/// Every entry of a directory with the content of its files. Links are listed, not followed.
+fn folder_content(directory: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
+    let mut entries = BTreeMap::new();
+    for entry in std::fs::read_dir(directory).expect("media folder") {
+        let entry = entry.expect("directory entry");
+        let content = entry
+            .file_type()
+            .expect("file type")
+            .is_file()
+            .then(|| std::fs::read(entry.path()).expect("file content"));
+        entries.insert(entry.file_name().to_string_lossy().into_owned(), content);
+    }
+    entries
+}
+
+/// Whether `directory` holds a temporary file that never got its final name.
+fn has_part(directory: &Path) -> bool {
+    folder_content(directory).keys().any(|name| {
+        Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("part"))
+    })
 }
 
 #[test]
@@ -945,9 +1034,20 @@ async fn speech_catalog_joins_prices_and_details_validate_the_model() -> Result<
             "speech_models",
             "speech_create",
             "transcription_models",
-            "transcription_create"
+            "transcription_create",
+            "image_models",
+            "image_create"
         ]
     );
+    // Both image tools carry their annotations.
+    let tools = tools["result"]["tools"].as_array().context("tools")?;
+    assert_eq!(tools[7]["annotations"]["readOnlyHint"], true);
+    assert_eq!(tools[8]["annotations"]["readOnlyHint"], false);
+    assert_eq!(tools[8]["annotations"]["idempotentHint"], false);
+    // The schema of `image_create` says that `n` is from 1 to 4, as the tool does.
+    let n = &tools[8]["inputSchema"]["properties"]["n"];
+    assert_eq!(n["minimum"], 1);
+    assert_eq!(n["maximum"], 4);
 
     let list =
         fixture.call(&server, "speech_models", json!({})).await?["structuredContent"].clone();
@@ -1206,6 +1306,350 @@ async fn transcription_sends_inline_audio_and_returns_json() -> Result<()> {
         assert_eq!(response["isError"], true, "{invalid}");
     }
     assert_eq!(posts(&fixture, audio::TRANSCRIPTIONS).len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_models_lists_only_the_images_endpoint_and_needs_no_key() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let server = fixture.start(Some(key(KEY))).await?;
+    let list = fixture.call(&server, "image_models", json!({})).await?["structuredContent"].clone();
+    // `example/gpt-image` is served on the OpenAI-style endpoint only and stays invisible.
+    assert_eq!(
+        list,
+        json!({"models":[{"id":IMAGE_MODEL,"name":"Paint","min_rub_per_image":0.5,"max_rub_per_image":2.0}],
+            "output_dir":fixture.dir.path().join("downloads")})
+    );
+    // A free read: one catalog request without a key. The folder is named, not created.
+    let requests = fixture.requests.lock().expect("requests");
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].path == "/hub/api/prices" && requests[0].auth.is_none());
+    assert!(!fixture.dir.path().join("downloads").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn images_are_saved_with_their_own_type_and_take_folder_references() -> Result<()> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    async fn create(fixture: &Fixture, server: &RunningServer, args: Value) -> Result<Value> {
+        Ok(fixture.call(server, "image_create", args).await?["structuredContent"].clone())
+    }
+    let fixture = Fixture::new().await?;
+    let server = fixture.start(Some(key(KEY))).await?;
+    let downloads = fixture.dir.path().join("downloads");
+
+    // A text-only request creates the media folder. The type comes from the bytes, not from the
+    // JPEG that the Hub declares.
+    let result = create(
+        &fixture,
+        &server,
+        json!({"model":IMAGE_MODEL,"prompt":"cat","n":2,"fields":{"aspect_ratio":"16:9"}}),
+    )
+    .await?;
+    assert_eq!(result["usage"], json!({"cost_rub":4.5}));
+    let saved = result["images"].as_array().context("images")?;
+    assert_eq!(saved.len(), 2);
+    assert_ne!(saved[0]["path"], saved[1]["path"]);
+    for image in saved {
+        let path = Path::new(image["path"].as_str().context("image path")?);
+        assert!(path.starts_with(&downloads), "{}", path.display());
+        assert_eq!(extension(image), Some("png"));
+        assert_eq!(std::fs::read(path)?, PNG);
+        assert_eq!(image["content_type"], "image/png");
+        assert_eq!(image["size_bytes"], PNG.len());
+    }
+
+    // References keep their order: a returned absolute path, a relative path and a path in a
+    // subfolder, then inline pictures whose declared type is not trusted and whose base64 wraps.
+    std::fs::create_dir(downloads.join("sub"))?;
+    std::fs::write(downloads.join("two.jpg"), JPEG)?;
+    std::fs::write(downloads.join("sub/three.webp"), WEBP)?;
+    let gif = STANDARD.encode(GIF);
+    let (head, tail) = gif.split_at(gif.len() / 2);
+    create(
+        &fixture,
+        &server,
+        json!({"model":IMAGE_MODEL,"prompt":"edit","fields_json":"{\"quality\":\"high\"}",
+        "reference_paths":[saved[0]["path"],"two.jpg","sub/three.webp"],
+        "references":[
+            format!("data:image/png;base64,{}", STANDARD.encode(JPEG)),
+            format!("data:image/gif;base64,{head}\n{tail}")
+        ]}),
+    )
+    .await?;
+    let url = |mime: &str, bytes: &[u8]| json!({"type":"image_url","image_url":{"url":format!("data:{mime};base64,{}", STANDARD.encode(bytes))}});
+    assert_eq!(
+        posts(&fixture, images::IMAGES),
+        vec![
+            json!({"aspect_ratio":"16:9","model":IMAGE_MODEL,"prompt":"cat","n":2}),
+            json!({"quality":"high","model":IMAGE_MODEL,"prompt":"edit","input_references":[
+                url("image/png", PNG),
+                url("image/jpeg", JPEG),
+                url("image/webp", WEBP),
+                url("image/jpeg", JPEG),
+                url("image/gif", GIF)
+            ]}),
+        ]
+    );
+
+    // SVG is recognized by its root element and keeps its extension.
+    let result = create(
+        &fixture,
+        &server,
+        json!({"model":IMAGE_MODEL,"prompt":"svg"}),
+    )
+    .await?;
+    let image = &result["images"][0];
+    assert_eq!(extension(image), Some("svg"));
+    assert_eq!(image["content_type"], "image/svg+xml");
+    assert_eq!(
+        std::fs::read(image["path"].as_str().context("SVG path")?)?,
+        SVG
+    );
+    assert!(!has_part(&downloads));
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_refusals_reach_neither_the_images_endpoint_nor_the_media_folder() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let server = fixture.start(Some(key(KEY))).await?;
+    let downloads = fixture.dir.path().join("downloads");
+    let outside = fixture.dir.path().join("outside.png");
+    std::fs::write(&outside, PNG)?;
+    std::fs::create_dir_all(downloads.join("sub"))?;
+    std::fs::write(downloads.join("vector.svg"), SVG)?;
+    std::fs::write(downloads.join("notes.png"), "not an image")?;
+    // Thirteen MiB: twice is above the reference budget.
+    let mut big = PNG.to_vec();
+    big.resize(13 * 1024 * 1024, 0);
+    std::fs::write(downloads.join("big.png"), &big)?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, downloads.join("link.png"))?;
+    let before = folder_content(&downloads);
+
+    let inside = "Reference images must be inside";
+    let not_image = "Reference image must be a PNG, JPEG, WebP or GIF file";
+    let not_uri = "Inline reference image must be a data:image/...;base64 URI";
+    let in_fields = "Pass reference pictures in reference_paths or references, not in fields";
+    // A nested wrapper would reach the Hub as an unknown field: a paid request at the defaults.
+    let nested = "Put model options directly in fields or fields_json";
+    let mut refused = vec![
+        (json!({"reference_paths":[outside]}), inside),
+        (json!({"reference_paths":["../outside.png"]}), inside),
+        (
+            json!({"reference_paths":["missing.png"]}),
+            "Reference image not found",
+        ),
+        (json!({"reference_paths":["sub"]}), "regular file"),
+        (json!({"reference_paths":["vector.svg"]}), not_image),
+        (json!({"reference_paths":["notes.png"]}), not_image),
+        (
+            json!({"reference_paths":["big.png","big.png"]}),
+            "Reference images are too large",
+        ),
+        (
+            json!({"references":["data:image/png;base64,not base64!"]}),
+            not_uri,
+        ),
+        (
+            json!({"references":["https://elsewhere.example/a.png"]}),
+            not_uri,
+        ),
+        (
+            json!({"references":["data:text/plain;base64,AAAA"]}),
+            not_uri,
+        ),
+        (json!({"n":0}), "n must be from 1 to 4"),
+        (json!({"n":5}), "n must be from 1 to 4"),
+        (json!({"prompt":"  "}), "Provide the image description"),
+        (json!({"model":"example/unknown"}), "Unknown image model"),
+        (json!({"model":"example/gpt-image"}), "Unknown image model"),
+        (
+            json!({"fields":{"n":2}}),
+            "Put n in the named tool argument",
+        ),
+        (
+            json!({"fields_json":"{\"input_references\":[]}"}),
+            in_fields,
+        ),
+        (json!({"fields":{"reference_paths":["sub"]}}), in_fields),
+        (json!({"fields":{"fields":{"quality":"high"}}}), nested),
+        (json!({"fields_json":"{\"fields_json\":\"{}\"}"}), nested),
+        (json!({"fields":{"stream":true}}), "stream is not supported"),
+        (
+            json!({"fields":{"response_format":"url"}}),
+            "response_format is not supported",
+        ),
+    ];
+    #[cfg(unix)]
+    refused.push((json!({"reference_paths":["link.png"]}), inside));
+    // Refused before any file system access: another drive, a share and a drive-relative path.
+    #[cfg(windows)]
+    refused.extend(
+        [
+            r"Z:\elsewhere\ref.png",
+            r"\\server\share\ref.png",
+            "C:ref.png",
+        ]
+        .map(|path| (json!({"reference_paths":[path]}), inside)),
+    );
+    for (extra, expected) in &refused {
+        let mut args = json!({"model":IMAGE_MODEL,"prompt":"x"});
+        let object = args.as_object_mut().context("args")?;
+        object.extend(extra.as_object().context("extra")?.clone());
+        let response = fixture.call(&server, "image_create", args).await?;
+        assert_eq!(response["isError"], true, "{extra}");
+        let message = response["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(message.contains(expected), "{extra}: {message}");
+    }
+    let unkeyed = fixture.start(None).await?;
+    let response = fixture
+        .call(
+            &unkeyed,
+            "image_create",
+            json!({"model":IMAGE_MODEL,"prompt":"x"}),
+        )
+        .await?;
+    assert_eq!(response["content"][0]["text"], MISSING_KEY);
+
+    // Nothing was billed, the references are as they were, and the folder holds nothing new.
+    assert!(posts(&fixture, images::IMAGES).is_empty());
+    assert_eq!(folder_content(&downloads), before);
+    assert_eq!(std::fs::read(&outside)?, PNG);
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_failures_after_the_post_say_what_was_saved() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let server = fixture.start(Some(key(KEY))).await?;
+    let downloads = fixture.dir.path().join("downloads");
+    std::fs::create_dir(&downloads)?;
+    let uncertain =
+        "Image generation failed. If the outcome is uncertain, do not submit again automatically: ";
+    let billed = "The request may have been billed. Do not submit again automatically";
+    for (prompt, expected, saved) in [
+        (
+            "reject",
+            &["CoreInfra Hub rejected the image request: CoreInfra Hub returned HTTP 422"][..],
+            0,
+        ),
+        (
+            "server",
+            &[uncertain, "CoreInfra Hub returned HTTP 502"][..],
+            0,
+        ),
+        (
+            "html",
+            &[
+                "No image was saved (Invalid JSON from CoreInfra Hub)",
+                billed,
+            ][..],
+            0,
+        ),
+        (
+            "empty",
+            &[
+                "No image was saved (CoreInfra Hub returned no images)",
+                billed,
+            ][..],
+            0,
+        ),
+        (
+            "page",
+            &[
+                "No image was saved (image 1: is not a PNG, JPEG, GIF, WebP or SVG file)",
+                billed,
+            ][..],
+            0,
+        ),
+        (
+            "garbage",
+            &["Only ", " saved (image 2: does not decode)", billed][..],
+            1,
+        ),
+    ] {
+        let before = folder_content(&downloads);
+        let response = fixture
+            .call(
+                &server,
+                "image_create",
+                json!({"model":IMAGE_MODEL,"prompt":prompt}),
+            )
+            .await?;
+        assert_eq!(response["isError"], true, "{prompt}");
+        let message = response["content"][0]["text"].as_str().context("text")?;
+        for part in expected {
+            assert!(message.contains(part), "{prompt}: {message}");
+        }
+        // Every image saved before the failure stays, and the error names it.
+        let created: Vec<_> = folder_content(&downloads)
+            .into_keys()
+            .filter(|name| !before.contains_key(name))
+            .collect();
+        assert_eq!(created.len(), saved, "{prompt}");
+        for name in created {
+            let path = downloads.join(name).display().to_string();
+            assert!(message.contains(&path), "{prompt}: {message}");
+        }
+    }
+    // Exactly one POST for each case, and no temporary file is left behind.
+    assert_eq!(posts(&fixture, images::IMAGES).len(), 6);
+    assert!(!has_part(&downloads));
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_cancelled_before_the_post_is_not_billed() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let input = serde_json::from_value(json!({"model":IMAGE_MODEL,"prompt":"cat"}))?;
+    let error = fixture
+        .hub
+        .image_create(input, Some(&key(KEY)), &|| true)
+        .await
+        .expect_err("cancelled");
+    assert_eq!(error.to_string(), REQUEST_CANCELLED);
+    assert!(posts(&fixture, images::IMAGES).is_empty());
+    Ok(())
+}
+
+/// A Hub that took the POST and closed the connection before answering may still bill it.
+#[tokio::test]
+async fn image_lost_connection_after_post_does_not_claim_hub_was_unreachable() -> Result<()> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let _ = crate::hub::install_crypto_provider();
+    let dir = tempfile::tempdir()?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let mut hub = MediaHub::new()?;
+    hub.origin = Url::parse(&format!("http://{}", listener.local_addr()?))?;
+    hub.output_dir = Some(dir.path().to_owned());
+    let server = tokio::spawn(async move {
+        let mut buf = [0_u8; 4096];
+        let (mut socket, _) = listener.accept().await?;
+        let _ = socket.read(&mut buf).await?;
+        let body = catalog().to_string();
+        let len = body.len();
+        let reply =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}");
+        socket.write_all(reply.as_bytes()).await?;
+        drop(socket);
+        // The POST: the connection closes before any response header.
+        let (mut socket, _) = listener.accept().await?;
+        let _ = socket.read(&mut buf).await?;
+        anyhow::Ok(())
+    });
+    let input = serde_json::from_value(json!({"model":IMAGE_MODEL,"prompt":"drop"}))?;
+    let error = hub
+        .image_create(input, Some(&key(KEY)), &|| false)
+        .await
+        .expect_err("connection lost");
+    let message = format!("{error:#}");
+    assert!(message.contains(LOST_RESPONSE), "{message}");
+    assert!(!message.contains(UNREACHABLE), "{message}");
+    tokio::time::timeout(Duration::from_secs(5), server).await???;
     Ok(())
 }
 
