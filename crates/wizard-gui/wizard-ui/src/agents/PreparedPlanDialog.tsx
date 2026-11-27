@@ -30,11 +30,11 @@ function PlanSteps({ plan }: { plan: ConnectionPlan }) {
   if (plan.mediaEnabled !== undefined) {
     const server = <Code>coreinfra_media</Code>;
     const skills = <>
-      <Code>coreinfra-video</Code>, <Code>coreinfra-speech</Code> и <Code>coreinfra-transcription</Code>
+      <Code>coreinfra-video</Code>, <Code>coreinfra-speech</Code>, <Code>coreinfra-transcription</Code> и <Code>coreinfra-image</Code>
     </>;
     if (plan.agent === "claude_desktop") {
       steps.unshift(plan.mediaEnabled
-        ? <>Подключит MCP-сервер {server} в Claude Desktop для видео, озвучки и распознавания речи.</>
+        ? <>Подключит MCP-сервер {server} в Claude Desktop для видео, изображений, озвучки и распознавания речи.</>
         : <>Отключит MCP-сервер {server} в Claude Desktop.</>);
     } else {
       steps.unshift(plan.mediaEnabled

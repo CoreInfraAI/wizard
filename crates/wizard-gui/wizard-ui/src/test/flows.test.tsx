@@ -115,7 +115,7 @@ describe("overview system proxy banner", () => {
 it("keeps media local to the draft until confirmation and saves the preference only for the selected agent", async () => {
   const user = userEvent.setup();
   launch("all_agents", "/agents/codex");
-  const name = "Подключить coreinfra-media для видео, озвучки и распознавания речи";
+  const name = "Подключить coreinfra-media для видео, изображений, озвучки и распознавания речи";
   const toggle = await screen.findByRole("switch", { name });
   expect(toggle).not.toBeChecked();
   await user.click(toggle);
@@ -148,7 +148,7 @@ it("offers one Apply to install media in an existing Claude Code gateway profile
     if (claude.status !== "found") throw new Error("Claude Code fixture missing");
     agents.publish({ ...agents.value, claude: { ...claude, data: { ...claude.data, media_needs_apply: true } } });
   });
-  await user.click(await screen.findByRole("switch", { name: "Подключить coreinfra-media для видео, озвучки и распознавания речи" }));
+  await user.click(await screen.findByRole("switch", { name: "Подключить coreinfra-media для видео, изображений, озвучки и распознавания речи" }));
   expect(screen.getByText(/локальный MCP-сервер/)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Применить" }));
   const plan = await screen.findByRole("dialog", { name: "План изменений: Claude Code" });
